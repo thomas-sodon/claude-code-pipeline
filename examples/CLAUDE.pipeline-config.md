@@ -8,5 +8,4 @@ MAIN_BRANCH: main
 PLANS_DIR: ~/.claude/plans
 PROPOSALS_DIR: docs/design
 GATE_WRAPPER: ./.claude/scripts/gate-slot.sh
-AI_REVIEW_CHECK: AI Code Review
 TEST_GUIDELINES: CLAUDE.md#testing

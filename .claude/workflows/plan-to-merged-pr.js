@@ -13,7 +13,7 @@ export const meta = {
 }
 
 // args (a plain string is taken as `concern`):
-//   concern: string            the plan / concern text; for planner 'plan-proposal', the steps in scope for this lane
+//   concern: string            the plan / concern text; for a custom planner that plans a proposal's steps, the steps in scope for this lane
 //   planner?: string           skill that writes the plan (default 'plan'); a custom planner gets `planner_args`
 //   planner_args?: string      args for a custom planner (default: the concern)
 //   proposal?: string          proposal / design doc path; handed to the planner and frames the review alongside the plan
@@ -27,10 +27,10 @@ export const meta = {
 //   existing_pr?: number       ship-only: update + ready this PR instead of creating one
 //   predecessor_prs?: number[] PRs that must read MERGED before a PR is opened or readied (a merge bot / auto-merge may merge any ready PR)
 //   title?: string, pr_note?: string     PR title / extra body text when opening; closing keywords in pr_note are the PR's only ones
-//   gate?: string              gate semaphore wrapper (default ./.claude/scripts/gate-slot.sh; '' runs gates directly)
+//   gate?: string              gate wrapper, e.g. ./.claude/scripts/gate-slot.sh (default '': the agents use GATE_WRAPPER from the Pipeline config when set)
 //   main_branch?: string       integration branch (default 'main')
 //   ai_review_check?: string   name of a CI check that posts AI review comments (default none)
-//   commit_trailers?: string[] lines the workflow's own commits end with (default: the create-pr skill's trailer)
+//   commit_trailers?: string[] lines the workflow's own commits end with (default ['Co-Authored-By: Claude <noreply@anthropic.com>'])
 //   max_review_rounds?: 5, max_polish?: 6, max_monitor_rounds?: 10 (max_rounds is accepted as an alias)
 //   efforts?: { plan, impl, review, fix, polish, merge_check, pr, monitor }  (pr unset = the session's effort, as /create-pr always ran)
 // Monitor-only mode: { pr: number, branch: string, dir?: string } skips straight to the Monitor phase.
@@ -56,7 +56,7 @@ const PREDS = (A.predecessor_prs || []).map(Number)
 // A stacked branch carries unmerged base commits; a ready PR to main would let a merge bot merge them early.
 if (BASES.length && !A.branch) throw new Error('args.bases needs args.branch (the stacked branch to build)')
 if (BASES.length && !BUILD_ONLY && !PREDS.length) throw new Error('a stacked run that opens or readies a PR needs args.predecessor_prs (or ship: false to build only)')
-const GATE = A.gate !== undefined ? A.gate : './.claude/scripts/gate-slot.sh'
+const GATE = A.gate !== undefined ? A.gate : ''
 const TRAILERS = (A.commit_trailers || ['Co-Authored-By: Claude <noreply@anthropic.com>']).join('\n')
 const MAX_REVIEW = A.max_review_rounds ?? 5
 const EFF = { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low', ...(A.efforts || {}) }
@@ -82,17 +82,18 @@ const GUARD = `If a permission check or classifier denies any action, do NOT ret
   `"Surfaced for human review — out of scope for automated remediation." reply once — and report it; a human decides. `
 // Projects may route gh/git network calls through a wrapper (GH_WRAPPER in the Pipeline config); ambient gh auth is the fallback.
 const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
-  `gh is already authenticated, so a skill's missing-token stop (e.g. error=missing_github_token) does not apply — continue with plain gh/git. ` +
+  `A skill's auth check (e.g. /create-pr's gh auth status, which stops with error=gh_unauthenticated) passes when plain gh is authenticated, even if the GH_WRAPPER prefix does not work here; stop only when plain gh is unauthenticated too. ` +
   `For GraphQL owner/name, read them from \`gh repo view --json owner,name\` — never guess the repository name. `
 // Every stage that may run a quality gate — directly or through a skill such as /impl, /polish, /merge-main or /process-comments.
 // The project's gate commands: QUALITY_GATES (and optionally QUALITY_GATES_FAST) in the "Pipeline config" section of CLAUDE.md.
 const GATE_CMDS = `the project's quality gates (QUALITY_GATES, or QUALITY_GATES_FAST for quick iterations, from the "Pipeline config" section of CLAUDE.md)`
 const GATES = `GATE RULES (these override any skill instruction to run gates in the foreground with a fixed timeout): ` +
   (GATE
-    ? `run ${GATE_CMDS} and every other lint / typecheck / test invocation through the gate semaphore, \`${GATE} <command>\`, from the checkout root. ` +
+    ? `run ${GATE_CMDS} and every other lint / typecheck / test invocation through the gate semaphore, \`${GATE} <command>\` (a compound command as \`${GATE} bash -c '<command>'\`, writing any ' inside it as '\\''), from the checkout root. ` +
+      `Use it instead of any GATE_WRAPPER from the Pipeline config, including where a skill says to use GATE_WRAPPER, and never nest the two. ` +
       `It takes a CPU-disjoint slot sized to this machine and pins the run to it; let the test runner size its parallelism from the slot (GATE_SLOT_WORKERS), never a literal worker count. ` +
       `Exit 75 = every slot busy: re-run the same command. Exit 125 (with a "gate-slot:" line on stderr), or 127 / a missing wrapper script = the wrapper cannot run: report it, never bypass the wrapper. Any other exit code is the gated command's own result. `
-    : `run ${GATE_CMDS} from the checkout root. `) +
+    : `run ${GATE_CMDS} from the checkout root, prefixed with GATE_WRAPPER from the same Pipeline config when it is set (\`$GATE_WRAPPER bash -c '<command>'\`, writing any ' inside it as '\\'', so a compound command runs whole under it). `) +
   `Run long gates with run_in_background and output to a log, monitor the log, and do not end your turn until the run exits — no hard timeouts. ` +
   `Write any commit message or PR body that names those tools to a file and pass it with -F / --body-file. `
 const STACK = BASES.length
@@ -369,8 +370,8 @@ if (MONITOR_ONLY) {
         `Rewrite its body (gh pr edit --body-file) in the create-pr skill's body format, dropping any stacking/draft wording, and if it is a draft mark it ready (gh pr ready ${A.existing_pr}).`
       : `On branch ${BRANCH}, invoke the Skill tool with skill "create-pr" to open a PR (not a draft) for: ${CONCERN || A.title}. The work is already committed. ` +
         (SHIP_ONLY
-          ? `The branch already exists on the remote: push any unpushed commits yourself with git push -u origin ${BRANCH} (never force), skip the skill's commit and push steps and its confirmation for pushing to an existing remote branch; if its existing-PR check finds an open draft PR for the branch, mark it ready (gh pr ready) and return it. `
-          : `Treat the skill's token preflight as satisfied by ambient gh auth, and push with git push -u origin ${BRANCH} if its push helper is unavailable. `) +
+          ? `The branch already exists on the remote: push any unpushed commits yourself with git push -u origin ${BRANCH} (never force), then skip the skill's work check (its error=nothing_to_pr stop: the work is already pushed) and its commit and push steps; if its existing-PR check finds an open PR for the branch, mark it ready if it is a draft (gh pr ready) and return it. `
+          : `Its commit step has nothing to commit; its push step is git push -u origin ${BRANCH} (never force), with GH_WRAPPER in front only when it works here. `) +
         (A.title ? `Title it "${A.title}". ` : '') + (A.pr_note ? `Include in the body: ${A.pr_note} ` : '') +
         // A caller that names the issues to close owns that list: the skill's branch/plan/commit detection could add an issue the caller dropped.
         (CLOSES_IN_NOTE ? `The closing keywords in that note are the ONLY ones the PR may carry: skip the skill's issue-detection step and add no other Fixes/Closes/Resolves line. ` : '')) +
@@ -429,7 +430,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   let pushed = false
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
-      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". Resolve every conflict, run the quality gates for touched packages, and push to the PR branch (never force-push, never main).`,
+      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
@@ -454,7 +455,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   if (last.ci_state === 'red' && last.ci_red_caused_by_pr && !pushed) {
     const f = await agent(
       GUARD + WHERE + GATES + AUTH + `CI quality gates are red on PR #${PRN} (branch ${BRANCH}, head ${last.head_sha}) because of this PR. ` +
-      `Read the failing run log, fix the root cause (no noqa/type-ignore/skips), run the gates locally, commit and push to the PR branch.`,
+      `Read the failing run log, fix the root cause (no lint/type-check suppression comments, test skips or lowered thresholds), run the gates locally, commit and push to the PR branch.`,
       opts(`fix-ci-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     if (f) { actions.push({ round: r, step: 'fix-ci', ...f }); pushed = pushed || f.pushed }

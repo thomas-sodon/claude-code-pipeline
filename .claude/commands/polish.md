@@ -49,7 +49,7 @@ Any other tokens are free-form context (e.g. a findings list pasted from `/revie
 
 7. **Re-review.** `git diff` again: every fix addresses its finding, no new bugs, no debug leftovers.
 
-8. **Run the quality gates.** Run `$GATE_WRAPPER $QUALITY_GATES` (omit the prefix when `GATE_WRAPPER` is unset). You may use `QUALITY_GATES_FAST` while iterating, but the final run must be the full `QUALITY_GATES`.
+8. **Run the quality gates.** Run `$GATE_WRAPPER bash -c '<QUALITY_GATES>'` when `GATE_WRAPPER` is set, with the text of `QUALITY_GATES` between the single quotes (so the whole compound command runs under the wrapper, and any `$VAR` in it is expanded by the wrapper's shell; write any `'` inside the gate command as `'\''`), or plain `$QUALITY_GATES` when it is unset. You may use `QUALITY_GATES_FAST` (in the same form) while iterating, but the final run must be the full `QUALITY_GATES`.
    - Run gates in the **foreground** with an explicit Bash `timeout` of `600000` — never `run_in_background`; a backgrounded run is reaped when the turn yields. If the gate is too slow for one call, split it into separate foreground calls. Never end the turn while a gate run is pending.
    - If the wrapper exits `75` (all gate slots busy), re-run; `125` means the wrapper itself cannot run — report it.
    - A failure that already enumerated failing tests is an answered red: fix it, do not blindly re-run. Re-run once only when the failure looks like a resource artifact (runner killed, timeout, OOM), and let that result decide.

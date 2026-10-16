@@ -33,6 +33,8 @@
 # itself cannot run (with a "gate-slot:" line on stderr) — distinct from the small
 # codes test runners use, so a red gate is never mistaken for a broken wrapper.
 # Requires: bash 4.3+, flock (util-linux); taskset to pin (without it runs unpinned, warned).
+# Possibly-empty arrays expand as ${A[@]+"${A[@]}"}: bash before 4.4 treats "${A[@]}"
+# of an empty array as unbound under set -u.
 set -uo pipefail
 
 [[ $# -eq 0 ]] && { echo "gate-slot: no command given" >&2; exit 125; }
@@ -66,7 +68,7 @@ allowed=""
 [[ -r /proc/self/status ]] && allowed="$(awk '/^Cpus_allowed_list:/ {print $2}' /proc/self/status)"
 if [[ "$allowed" =~ ^[0-9,-]+$ ]]; then
   IFS=, read -ra parts <<< "$allowed"
-  for part in "${parts[@]}"; do
+  for part in ${parts[@]+"${parts[@]}"}; do
     if [[ "$part" == *-* ]]; then
       for ((c = ${part%-*}; c <= ${part#*-}; c++)); do CPU_IDS+=("$c"); done
     elif [[ -n "$part" ]]; then
@@ -160,7 +162,7 @@ slot_lock_files() {
 HELD=()
 release_held() {
   local fd
-  for fd in "${HELD[@]}"; do exec {fd}>&-; done
+  for fd in ${HELD[@]+"${HELD[@]}"}; do exec {fd}>&-; done
   HELD=()
 }
 # Take every lock of slot $1 without blocking, or none of them. Returns 1 when a
@@ -222,8 +224,8 @@ echo "$(ts) START pid=$$ slot=$slot cpus=${CPUS:-unknown} mode=$PIN_MODE workers
 child=""; pending=""
 trap 'if [[ -n "$child" ]]; then kill -TERM "$child" 2>/dev/null; else pending=1; fi' TERM HUP INT
 (
-  for fd in "${HELD[@]}"; do exec {fd}>&-; done
-  exec "${PIN[@]}" "$@"
+  for fd in ${HELD[@]+"${HELD[@]}"}; do exec {fd}>&-; done
+  exec ${PIN[@]+"${PIN[@]}"} "$@"
 ) <&0 &
 child=$!
 # A signal that arrived before the command started is delivered to it now.

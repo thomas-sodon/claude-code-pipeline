@@ -28,21 +28,23 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
    - Classify each failing check: a **gate check** is one whose job runs (part of) the same lint / type-check / test / coverage commands as `$QUALITY_GATES` — read the CI workflow files to map it. Gate checks are folded into this run: their failure class must be reproduced and fixed here even if the local run is otherwise green. Any other check (AI review, deploy, …) is **out of scope** — record it for the report; route AI review findings to `/process-comments`.
    - Record each failing gate check's `link` for step 4.
 
-3. **Run the gates** in the foreground with the maximum tool timeout — never in the background, since a backgrounded run can be reaped when the turn yields:
+3. **Run the gates** in the foreground with the maximum tool timeout — never in the background, since a backgrounded run can be reaped when the turn yields. Run exactly one of these, with the text of `QUALITY_GATES` in place of `<QUALITY_GATES>`:
    ```
-   $GATE_WRAPPER $QUALITY_GATES
+   $GATE_WRAPPER bash -c '<QUALITY_GATES>'   # GATE_WRAPPER set: the whole compound command runs under it
+   $QUALITY_GATES                            # GATE_WRAPPER unset
    ```
+   The single quotes leave any `$VAR` in the gate command (such as `$GATE_SLOT_WORKERS`) for the wrapper's shell to expand; write any `'` inside the gate command as `'\''`.
    Capture which stage failed (lint, types, tests, coverage, browser/e2e, …) and the concrete errors.
 
-4. **Fix failures** (skip in `check` mode). Fix in upstream-first order — lint → types → tests → coverage → browser/e2e — so earlier noise doesn't mask later signal. After each fix, re-run the narrowest gate that covers it (`$QUALITY_GATES_FAST` or the single failing tool); allow **3 fix rounds per failure class**, then stop and surface what remains. Finish with one full `$GATE_WRAPPER $QUALITY_GATES` run.
+4. **Fix failures** (skip in `check` mode). Fix in upstream-first order — lint → types → tests → coverage → browser/e2e — so earlier noise doesn't mask later signal. After each fix, re-run the narrowest gate that covers it (`$QUALITY_GATES_FAST` or the single failing tool, in the step 3 form); allow **3 fix rounds per failure class**, then stop and surface what remains. Finish with one full run in the step 3 form.
    - **CI-red class that is green locally.** Pull the failing log: derive the run id from the recorded `link` and run `$GH_WRAPPER gh run view <run-id> --log-failed`. The usual cause is drift from `$MAIN_BRANCH` (CI tested a tree with commits you lack) — the merge in step 5 normally resolves it; let the fresh CI run confirm. A genuine runner-only failure you cannot reproduce goes in the report, never silently pushed over.
 
 5. **Commit and push** (fix mode only; skip in `check` / `no-commit`, or when nothing changed). Only when the final full run is green.
    - Stop and skip if on `$MAIN_BRANCH`.
    - Stage only the files changed during the fix rounds, by explicit name — never `git add -A`, never `.env` or secrets.
    - Commit with a message explaining *why* each fix was needed, ending with the session's `Co-Authored-By` trailer.
-   - `$GH_WRAPPER git fetch origin $MAIN_BRANCH` and `git merge origin/$MAIN_BRANCH --no-edit` (never rebase), resolving conflicts preserving both sides. If the merge changed the tree, re-run `$QUALITY_GATES`; if no longer green, abort the push and surface it.
-   - `$GH_WRAPPER git push -u origin HEAD` — never `--force`. On a non-fast-forward rejection, fetch and merge `origin/<branch>`, re-run the gates, and push again only when green (at most 3 cycles). Any other push failure: stop and surface it.
+   - `$GH_WRAPPER git fetch origin $MAIN_BRANCH` and `git merge origin/$MAIN_BRANCH --no-edit` (never rebase), resolving conflicts preserving both sides. If the merge changed the tree, re-run the full gates in the step 3 form; if no longer green, abort the push and surface it.
+   - `$GH_WRAPPER git push -u origin HEAD` — never `--force`. On a non-fast-forward rejection, fetch and merge `origin/<branch>`, re-run the gates in the step 3 form, and push again only when green (at most 3 cycles). Any other push failure: stop and surface it.
    - Do not wait for the re-triggered CI run.
 
 6. **Report.**

@@ -78,7 +78,7 @@ Overflow findings are handled like threads of the same severity. Top-level human
 
 ## Quality gates
 
-Run `$QUALITY_GATES` **once** over the combined change, with `$GATE_WRAPPER` in front when it is set. Run it in the foreground with a long timeout, never in the background, because a background run can be killed when the turn yields. Fix failures at the root cause. Never use lint suppressions, type-ignore comments or test skips. If a correct change breaks tests that depended on the old behavior, update those tests. If the same root cause fails three times, stop and report it to the user.
+Run `$QUALITY_GATES` **once** over the combined change: as `$GATE_WRAPPER bash -c '<QUALITY_GATES>'` when `GATE_WRAPPER` is set, with the text of `QUALITY_GATES` between the single quotes (so the whole compound command runs under the wrapper, and any `$VAR` in it is expanded by the wrapper's shell; write any `'` inside the gate command as `'\''`), otherwise as `$QUALITY_GATES`. Run it in the foreground with a long timeout, never in the background, because a background run can be killed when the turn yields. Fix failures at the root cause. Never use lint suppressions, type-ignore comments or test skips. If a correct change breaks tests that depended on the old behavior, update those tests. If the same root cause fails three times, stop and report it to the user.
 
 Then run `git diff` and review it yourself: no debug leftovers, no hard-coded paths or secrets, error paths handled, tests that exercise the changed branch, and every change inside its comment's scope.
 
@@ -88,7 +88,7 @@ The push gates the replies. Never post `Fixed locally …` for a change that is 
 
 1. **Nothing to ship.** If every verdict is `not-a-defect`, `declined`, `answer`, `already-addressed` or `out-of-scope`, skip steps 2–3.
 2. **Commit.** Stage only the files you changed with `git add <file>...`. Never use `git add -A`. Never stage `.env` or credentials. Commit with a HEREDOC message that explains *why* each change was made.
-3. **Integrate upstream, then push.** Run `git fetch origin`. If the branch has an upstream, also run `git merge @{u} --no-edit`. Resolve any conflicts by editing the files, then `git add` them and `git commit --no-edit`. If the merge changed the tree, re-run `$QUALITY_GATES` before you push. Then run `git push origin HEAD`. Push only to `headRefName`: **never** to `$MAIN_BRANCH`, and **never** force-push. If the gates or the push fail, stop, report the replies you did not post, and post none of them.
+3. **Integrate upstream, then push.** Run `git fetch origin`. If the branch has an upstream, also run `git merge @{u} --no-edit`. Resolve any conflicts by editing the files, then `git add` them and `git commit --no-edit`. If the merge changed the tree, re-run the gates the same way (`$GATE_WRAPPER bash -c '<QUALITY_GATES>'` when the wrapper is set) before you push. Then run `git push origin HEAD`. Push only to `headRefName`: **never** to `$MAIN_BRANCH`, and **never** force-push. If the gates or the push fail, stop, report the replies you did not post, and post none of them.
 4. **Reply on each processed thread**, including outdated ones. Post each reply with:
    ```
    gh api repos/<owner>/<repo>/pulls/<PR#>/comments --method POST --input - <<'EOF'

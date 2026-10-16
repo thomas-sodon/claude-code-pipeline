@@ -12,28 +12,34 @@ export const meta = {
 
 // args: { lanes: [Lane], root?, date?, gate?, main_branch?, ai_review_check?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, ship?, close? }
 //   root    — directory for lane worktrees (required unless every lane gives its own dir)
+//   date    — suffix of the default lane branch names, e.g. '20261016' (default 'undated')
+//   ship    — default true; false = build only (push, no PR)
+//   close   — default true; false = report confirmed-fixed issues instead of closing them
+//   efforts — { triage, verify, close } for this workflow's stages; the whole object is also passed to plan-to-merged-pr
+//   gate, main_branch, ai_review_check, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds, efforts
+//             and ship: false are passed through to plan-to-merged-pr; no other key is
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
-//   ship    — default true; false = build only (push, no PR)
-//   close   — default true; false = report confirmed-fixed issues instead of closing them
 const A = args || {}
 if (!A.lanes || !A.lanes.length) throw new Error('bug-fix-backlog: args.lanes is required (see the pipeline README)')
 if (!A.root && A.lanes.some(l => !l.dir)) throw new Error('bug-fix-backlog: args.root is required unless every lane gives its own dir')
 const ROOT = A.root
 const DATE = A.date || 'undated'
 const MAIN = A.main_branch || 'main'
-const GATE = A.gate !== undefined ? A.gate : './.claude/scripts/gate-slot.sh'
+const GATE = A.gate !== undefined ? A.gate : ''
 const EFF = { triage: 'medium', verify: 'high', close: 'low', ...(A.efforts || {}) }
 const SHARED = {}
 for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts']) if (A[k] !== undefined) SHARED[k] = A[k]
 if (A.ship === false) SHARED.ship = false
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
-const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (gh is already authenticated, so a skill's missing-token stop does not apply). `
+const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
+  `A skill's auth check (e.g. /bug-fix's stop when its first gh call fails on authentication) passes when plain gh is authenticated, even if the GH_WRAPPER prefix does not work here; stop only when plain gh is unauthenticated too. `
 const GATES = (GATE
-  ? `Run every lint / typecheck / test invocation through the gate semaphore \`${GATE} <command>\` from the checkout root (exit 75 = every slot busy: re-run; exit 125/127 = report, never bypass). `
-  : '') + `Use the project's test runner as CLAUDE.md describes. Background long runs and wait for them to exit. `
+  ? `Run every lint / typecheck / test invocation through the gate semaphore \`${GATE} <command>\` from the checkout root (a compound command as \`${GATE} bash -c '<command>'\`, writing any ' inside it as '\\''; use this instead of any GATE_WRAPPER from the Pipeline config, including where a skill says to use GATE_WRAPPER, and never nest the two; exit 75 = every slot busy: re-run; exit 125/127 = report, never bypass). `
+  : `When the "Pipeline config" section of CLAUDE.md sets GATE_WRAPPER, prefix every lint / typecheck / test invocation with it (a compound command as \`$GATE_WRAPPER bash -c '<command>'\`, writing any ' inside it as '\\''). `) +
+  `Use the project's test runner as CLAUDE.md describes. Background long runs and wait for them to exit. `
 const where = l => `Work ONLY in the git checkout ${l.dir} (cd there / use absolute paths); other agents are using other checkouts, including the main checkout, which you must not touch. `
 const nums = l => l.issues.map(n => '#' + n).join(', ')
 
@@ -41,8 +47,8 @@ const TRIAGE_SCHEMA = {
   type: 'object',
   properties: {
     branch: { type: 'string', description: 'branch checked out in the lane worktree' },
-    ahead_of_main: { type: 'integer', description: 'git rev-list --count origin/${MAIN}..HEAD in the lane worktree after git fetch origin, at setup' },
-    behind_main: { type: 'integer', description: 'git rev-list --count HEAD..origin/${MAIN} in the lane worktree after git fetch origin, at setup' },
+    ahead_of_main: { type: 'integer', description: `git rev-list --count origin/${MAIN}..HEAD in the lane worktree after git fetch origin, at setup` },
+    behind_main: { type: 'integer', description: `git rev-list --count HEAD..origin/${MAIN} in the lane worktree after git fetch origin, at setup` },
     baseline_dirty: { type: 'array', items: { type: 'string' }, description: 'git status --porcelain --untracked-files=all lines in the lane worktree at setup, before any skill ran' },
     issues: {
       type: 'array',
@@ -218,8 +224,8 @@ const results = await pipeline(
     const needsHuman = [
       ...missing.map(n => ({ number: n, why: 'absent from triage output' })),
       ...conflicting.map(n => ({ number: n, why: 'conflicting triage verdicts' })),
-      ...unclosable.map(i => ({ number: i.number, why: atMain ? 'close verdict missing close comment' : 'close verdict judged in a worktree that differs from origin/${MAIN}' })),
-      ...stalePlans.map(i => ({ number: i.number, why: 'plan verdict judged in a worktree behind origin/${MAIN}' })),
+      ...unclosable.map(i => ({ number: i.number, why: atMain ? 'close verdict missing close comment' : `close verdict judged in a worktree that differs from origin/${MAIN}` })),
+      ...stalePlans.map(i => ({ number: i.number, why: `plan verdict judged in a worktree behind origin/${MAIN}` })),
     ]
     for (const i of planned) {
       const rep = repro.find(x => x.number === i.number)
@@ -262,7 +268,7 @@ const results = await pipeline(
       closed = (await agent(
         GUARD + AUTH + where(l) +
         `Close each issue below as already fixed. Immediately before each close, re-check: gh issue view <n> --json state (skip it if no longer OPEN), and gh pr list --state open --search "<n> in:body" --json number,body — skip it if an open PR body has a closing keyword for it. ` +
-        `Close with gh issue close <n> --reason completed --comment "$(cat <file>)" (gh issue close has no --comment-file flag), writing the comment (the triage's close comment, which quotes the evidence, ending "Auto-closed by /bug-fix after verifying intent against current ${MAIN}; two independent refuters found no remaining instance.") to a file in your scratchpad first. Change nothing else on the issue.\n` +
+        `Close with gh issue close <n> --reason completed --comment "$(cat <file>)" (gh issue close has no --comment-file flag), writing the comment (the triage's close comment, which quotes the evidence, with its closing "Closed by /bug-fix …" line replaced by — not followed by — "Auto-closed by /bug-fix after verifying intent against current ${MAIN}; two independent refuters found no remaining instance.") to a file in your scratchpad first. Change nothing else on the issue.\n` +
         JSON.stringify(v.confirmedFixed.map(i => ({ number: i.number, close_reason: i.close_reason, close_comment: i.close_comment })), null, 1),
         { label: `close:${l.key}`, phase: 'Close', effort: EFF.close, schema: CLOSE_SCHEMA },
       )) || { closed: [], not_closed: v.confirmedFixed.map(i => ({ number: i.number, reason: 'close stage failed' })) }

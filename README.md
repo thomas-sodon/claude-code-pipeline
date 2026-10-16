@@ -1,5 +1,7 @@
 # claude-code-pipeline
 
+[![ci](https://github.com/thomas-sodon/claude-code-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/thomas-sodon/claude-code-pipeline/actions/workflows/ci.yml)
+
 A plan → implement → review → polish → PR → monitor pipeline for
 [Claude Code](https://claude.com/claude-code), packaged as three workflows and the
 nine slash commands they drive. Drop the `.claude/` directory into any repository,
@@ -26,6 +28,10 @@ until it settles.
 
 Keep the judgment of *what* to build with a human; automate *how* it gets built and
 shipped.
+
+Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
+[maestro-sdk](https://github.com/thomas-sodon/maestro-sdk) and
+[maestro-review](https://github.com/thomas-sodon/maestro-review).
 
 ## What is in here
 
@@ -70,7 +76,10 @@ One concern from a sentence to a PR, then babysit it:
    re-reviewed until no `bug` or `concern` remains. Suggestions and nits go to the
    fixer but never block. A defect still standing after `max_review_rounds` stops
    the run before anything is pushed.
-4. **Polish**: `/polish` until a round finds nothing and the gates are green.
+4. **Polish**: `/polish` until a round finds nothing and the gates are green, for at
+   most `max_polish` rounds (default 6). If no round comes back clean, the run goes
+   on anyway and reports `polish_clean: false`; the merge check then always re-runs
+   the full gates and stops before any push or PR unless they are green.
 5. **PR**: commit, merge `origin/main` (and any stacked bases), re-run the gates,
    then `/create-pr`.
 6. **Monitor**: each round observes CI, the AI review check (if you have one),
@@ -131,6 +140,7 @@ Requirements:
 - Claude Code with **workflows** support (the `.claude/workflows/*.js` scripts run
   through its Workflow tool), plus Skill and Agent support for the commands.
 - `git` and an authenticated `gh` CLI, for the PR and issue stages.
+- `python3`, which `/review-changes` uses to read the session transcript.
 - A GitHub repository with CI. An AI review check is optional.
 - For `gate-slot.sh`: Linux, bash 4.3+, `flock` (util-linux) and, to pin CPUs,
   `taskset`.
@@ -151,20 +161,48 @@ Then add a `## Pipeline config` section to your project's root `CLAUDE.md` (see
 |---|---|---|
 | `QUALITY_GATES` | full gate command; must exit 0 when green | **required** |
 | `QUALITY_GATES_FAST` | quicker subset for iterating | `QUALITY_GATES` |
-| `MAIN_BRANCH` | integration branch | `main` |
+| `MAIN_BRANCH` | integration branch, read by the commands | `main` |
 | `PLANS_DIR` | where plans are written | `~/.claude/plans` |
 | `PROPOSALS_DIR` | design / proposal docs | none |
 | `GH_WRAPPER` | prefix for gh / git network commands (e.g. a script that loads a token) | none (ambient `gh auth`) |
 | `GATE_WRAPPER` | prefix for every gate run | none; use `./.claude/scripts/gate-slot.sh` when several agents share a host |
-| `AI_REVIEW_CHECK` | name of a CI check that posts AI review comments | none |
 | `TEST_GUIDELINES` | where your testing rules live | `CLAUDE.md` |
 
-The workflows take `main_branch`, `ai_review_check` and `gate` as args too
-(`gate: ''` runs gates directly, without the semaphore).
+The workflows do not read `MAIN_BRANCH`; pass `main_branch` when your integration
+branch is not `main`. They also take two settings only as args: `ai_review_check`,
+the name of a CI check that posts AI review comments (default none), which the
+monitor waits for before counting comments; and `gate`, a gate wrapper that
+the agents use instead of `GATE_WRAPPER`, never nesting the two (default `''`: the
+agents use `GATE_WRAPPER` when it is set, else run the gates directly).
+
+With a wrapper set, every gate runs as `$GATE_WRAPPER bash -c '<QUALITY_GATES>'`,
+with the gate command's text between the single quotes, so a compound command such
+as `lint && typecheck && test` runs whole under the wrapper rather than only its
+first command. The single quotes leave a variable such as `$GATE_SLOT_WORKERS` for
+the wrapper's shell to expand; write a `'` inside the gate command as `'\''`.
+
+### State outside the repo
+
+The commands and `gate-slot.sh` keep a little state in your home directory, shared
+by every checkout:
+
+- `~/.claude/plans/` (`PLANS_DIR`): the plans `/plan` and `/bug-fix` write.
+- `~/.claude/last-plan-by-folder.json`: the latest plan per working directory,
+  written by `/plan` and `/bug-fix` and read by the other commands.
+- `~/.claude/reviews/<branch-slug>.json`: the review-findings ledger that
+  `/review-changes` writes and `/polish` updates.
+- `~/.claude/bug-fix-progress.json`: claims that stop two `/bug-fix` sessions
+  working on one issue.
+- `~/.cache/gate-slot-locks/` (`GATE_LOCK_DIR`): `gate-slot.sh`'s lock files and
+  its `gate-runs.log`.
+
+`/review-changes` also reads Claude Code's own session transcripts under
+`~/.claude/projects/`, without writing to them.
 
 ## Worked example
 
-A TypeScript service with lint, typecheck and Jest. In `CLAUDE.md`:
+This example is illustrative: the project, findings and runs are made up to show
+the flow. A TypeScript service with lint, typecheck and Jest. In `CLAUDE.md`:
 
 ```md
 ## Pipeline config
@@ -172,13 +210,12 @@ A TypeScript service with lint, typecheck and Jest. In `CLAUDE.md`:
 QUALITY_GATES: npm run lint && npm run typecheck && npm test
 QUALITY_GATES_FAST: npm run lint && npm test -- --onlyChanged
 GATE_WRAPPER: ./.claude/scripts/gate-slot.sh
-AI_REVIEW_CHECK: AI Code Review
 ```
 
 **One concern.** In Claude Code, ask for the workflow:
 
 > Run the plan-to-merged-pr workflow with
-> `{ concern: "GET /orders re-reads the price table on every request; cache it per process and invalidate on the price-update webhook" }`
+> `{ concern: "GET /orders re-reads the price table on every request; cache it per process and invalidate on the price-update webhook", ai_review_check: "AI Code Review" }`
 
 What happens:
 
@@ -233,6 +270,11 @@ After it merges, ship `b` with `predecessor_prs: [<a's PR>]`.
   save the fix as a diff file, check out `HEAD` for those paths, run the test, then
   `git apply` the diff, or make a WIP commit on your own branch.
 - **Never force-push and never push to main.** Merges, not rebases.
+- **Gates in the foreground, or in the background and watched.** Run on their own,
+  the commands run gates in the foreground with a long timeout, since a background
+  run can be reaped when the turn ends. Inside a workflow, the agents run long gates
+  in the background by design, write the output to a log and watch it, and do not
+  end their turn until the run exits.
 - **Gate slots.** When several agents share a machine, route every gate run
   through `.claude/scripts/gate-slot.sh <command>`. It plans CPU-disjoint slots
   from the CPU affinity, any cgroup CPU quota and the memory bound (tune with
@@ -250,7 +292,8 @@ After it merges, ship `b` with `predecessor_prs: [<a's PR>]`.
 ```js
 {
   concern: 'what to change',
-  planner: 'plan',                 // or your own planning skill; it gets planner_args (default: the concern)
+  planner: 'plan',                 // or your own planning skill, which gets planner_args
+  planner_args: '...',             // args for a custom planner (default: the concern)
   proposal: 'docs/design/x.md',    // design doc: handed to the planner and frames the review
   context: 'scouting hints for the planner',
   plan_text: '...',                // an already-written plan (skips planning; needs branch)
@@ -260,19 +303,28 @@ After it merges, ship `b` with `predecessor_prs: [<a's PR>]`.
   ship: true,                      // false = build only
   ship_only: false, existing_pr: 123, predecessor_prs: [120, 121],
   title: 'PR title', pr_note: 'extra PR body text, e.g. Fixes #12',
-  main_branch: 'main', ai_review_check: '', gate: './.claude/scripts/gate-slot.sh',
-  commit_trailers: ['Co-Authored-By: ...'],
-  max_review_rounds: 5, max_polish: 6, max_monitor_rounds: 10,
+  main_branch: 'main', ai_review_check: '',
+  gate: '',                        // '' = GATE_WRAPPER from the Pipeline config, if set;
+                                   // e.g. './.claude/scripts/gate-slot.sh' to force the semaphore
+  commit_trailers: ['Co-Authored-By: Claude <noreply@anthropic.com>'],
+  max_review_rounds: 5, max_polish: 6, max_monitor_rounds: 10,   // max_rounds is an alias of max_monitor_rounds
   efforts: { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low' },
+                                   // efforts.pr (unset) sets /create-pr's effort; unset keys inherit the session's
 }
 ```
 
 `bug-fix-backlog`: `{ lanes: [{ key, issues, branch?, dir? }], root, date, ship, close, efforts: { triage, verify, close }, ... }`.
-Any other key is passed through to `plan-to-merged-pr`. Lanes must not share a key,
-an issue, a `dir` or a `branch`.
+`date` suffixes the default lane branch names (`bugfix/<key>-<issues>-<date>`).
+Only `gate`, `main_branch`, `ai_review_check`, `commit_trailers`,
+`max_review_rounds`, `max_polish`, `max_monitor_rounds`, `efforts` (the whole
+object, so it may carry `plan-to-merged-pr`'s keys too) and `ship: false` are passed
+through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or a
+`branch`.
 
-`proposal-build-chain`: `{ lanes: [{ key, dir, branch, bases?, proposal, concern }], ... }`.
-Shared keys are passed through to every lane.
+`proposal-build-chain`: `{ lanes: [{ key, dir, branch, bases?, proposal, concern, planner_args? }], planner, ... }`.
+`planner`, `gate`, `main_branch`, `commit_trailers`, `max_review_rounds`,
+`max_polish` and `efforts` are passed through to every lane; a lane's own
+`planner_args` goes to its custom planner.
 
 Every result carries a `status`:
 
@@ -284,7 +336,14 @@ Every result carries a `status`:
 - `failed_at_push`, `blocked_at_pr`
 - after monitoring: the PR's last state (`OPEN` / `MERGED` / `CLOSED`), or `monitor_failed`
 
-To resume a stopped run, re-invoke it with the same args and `resumeFromRunId`.
+To resume a stopped run, ask Claude Code to call the Workflow tool again with the
+same args and `resumeFromRunId` set to the run id the tool reported for the stopped
+run. `resumeFromRunId` is a parameter of the Workflow tool, not a workflow arg.
+Completed agent calls are replayed from the record up to the first call whose order
+or inputs differ; everything after it runs live. In `bug-fix-backlog` the lanes run
+in parallel and spawn in completion order, so a resume can diverge early and repeat
+finished work; its close and ship stages re-check the issue and PR state before
+acting.
 
 ## License
 

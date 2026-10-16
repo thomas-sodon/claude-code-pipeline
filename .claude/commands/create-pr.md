@@ -6,6 +6,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `MAIN_BRANCH` — integration branch (default `main`).
 - `GH_WRAPPER` — optional prefix for every `gh`, `git push` and `git fetch` command (e.g. a script that loads a token from `.env`). When unset, run them bare and rely on the ambient `gh auth`.
 - `PLANS_DIR` — where plan files live (default `~/.claude/plans`).
+- `QUALITY_GATES` — the project's gate command; named only in the PR body's test plan (this command never runs it).
 
 ## Arguments
 

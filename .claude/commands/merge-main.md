@@ -30,10 +30,12 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
    - Remove all conflict markers, `git add <file>`, and finish with `git commit --no-edit`.
    - For an ambiguous or high-risk resolution (both sides changed the same logic incompatibly), explain it to the user, citing the plan step or acceptance criterion that drove it.
 
-6. **Run the quality gates** in the foreground with the maximum tool timeout — never in the background, since a backgrounded run can be reaped when the turn yields:
+6. **Run the quality gates** in the foreground with the maximum tool timeout — never in the background, since a backgrounded run can be reaped when the turn yields. Run exactly one of these, with the text of `QUALITY_GATES` in place of `<QUALITY_GATES>`:
    ```
-   $GATE_WRAPPER $QUALITY_GATES
+   $GATE_WRAPPER bash -c '<QUALITY_GATES>'   # GATE_WRAPPER set: the whole compound command runs under it
+   $QUALITY_GATES                            # GATE_WRAPPER unset
    ```
+   The single quotes leave any `$VAR` in the gate command (such as `$GATE_SLOT_WORKERS`) for the wrapper's shell to expand; write any `'` inside the gate command as `'\''`.
    On failure (usually a merge incompatibility), fix the root cause — no suppressions, skips, or lowered thresholds — stage the fix, amend the merge commit, and re-run until green.
 
 7. **Push** — only once every gate passed, and never with `--force`:
@@ -44,7 +46,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
    - Rejected as non-fast-forward (someone pushed to this branch) → recovery cycle:
      1. `$GH_WRAPPER git fetch origin <branch>` then `git merge origin/<branch> --no-edit` (no rebase).
      2. Resolve any conflicts as in step 5.
-     3. Re-run `$QUALITY_GATES`; fix failures as new commits (do not amend), so each upstream round stays auditable.
+     3. Re-run the gates as in step 6 (through `$GATE_WRAPPER bash -c '<QUALITY_GATES>'` when the wrapper is set); fix failures as new commits (do not amend), so each upstream round stays auditable.
      4. Push again. At most 3 recovery cycles; then stop with `error=push_contended` — the branch is being actively pushed and the user must coordinate.
    - Any other failure (auth, protected branch, hook) → stop and surface it; do not retry blindly.
 
@@ -54,7 +56,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 
 Only when step 5 has conflicts. Read-only, best-effort context: a missing or unclear plan never blocks, reorders, or aborts the merge — fall back to git history.
 
-1. **From the branch name.** `git rev-parse --abbrev-ref HEAD`, strip a leading `feat/`/`fix/`/`refactor/`, and read `$PLANS_DIR/<slug>.md`. If absent and the branch ends in a `/impl` uid segment (`-<token>` matching `^[0-9]{12}[0-9a-f]*$`), strip only that segment and retry once — never strip an ordinary slug word. When `$PROPOSALS_DIR` is set and the slug names a proposal number, a matching proposal doc's steps and acceptance criteria may serve as the intent source if no plan file exists.
+1. **From the branch name.** `git rev-parse --abbrev-ref HEAD`, strip a leading `feat/`/`fix/`/`refactor/`, and read `$PLANS_DIR/<slug>.md`. If absent and the branch ends in a `/impl` uid segment (`-<token>` matching `^[0-9]{12}[0-9a-f]*$`), strip only that segment and retry once — never strip an ordinary slug word. When `$PROPOSALS_DIR` is set and the slug names a doc there (as a `/impl` doc-mode branch, `feat/<doc-slug>-step<M>-…`, does), that doc's steps and acceptance criteria may serve as the intent source if no plan file exists.
 2. **Folder pointer fallback.** Otherwise read `~/.claude/last-plan-by-folder.json`, look up this absolute working directory, and use the named plan if it still exists and is non-empty — announcing that it came from the pointer so the user can object.
 3. **Never** fall back to the globally newest plan in `$PLANS_DIR`; it is shared across checkouts and may belong to another branch.
 4. **Confirm relevance.** Read the plan in full. If none of its cited files intersect the conflicted (or merged) files, use it only as weak background, never as the tie-breaker; if most cited paths do not exist in the tree, discard it.

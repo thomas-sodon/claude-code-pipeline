@@ -23,16 +23,16 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
    **1a — Plan file (primary).** Read `~/.claude/last-plan-by-folder.json` (keyed by absolute working directory, maintained by `/plan`). If this directory's entry points at an existing, non-empty plan, use it and announce `Plan context: <path> (written <written_at>)`. Otherwise fall back to the most recently modified non-empty `*.md` in `$PLANS_DIR` and warn `No folder plan pointer — using the most-recent plan globally; verify it matches this branch`. If none exists, `plan_path` is null. Read the plan in full: goal, files/symbols touched, verification/acceptance criteria. If most paths it cites do not exist in the tree, warn that it looks unrelated, set `plan_path` to null, and lean on 1b and the code. Never edit the plan.
 
-   **1b — Session transcript (supplement).** Claude Code stores sessions under `~/.claude/projects/<slug>/`, where `<slug>` is the absolute working directory with `/` replaced by `-`. From the most recent non-empty `.jsonl` there, extract the first user message, any `ExitPlanMode` plan inputs, and the final `TodoWrite` snapshot. These files are large — parse them with a script, never Read them whole:
+   **1b — Session transcript (supplement).** Claude Code stores sessions under `~/.claude/projects/<slug>/`, where `<slug>` is the absolute working directory with every non-alphanumeric character replaced by `-`. From the most recent non-empty `.jsonl` there, extract the first user message, any `ExitPlanMode` plan inputs, and the final `TodoWrite` snapshot. These files are large — parse them with a script, never Read them whole:
 
    ```bash
    python3 - <<'PY'
-   import json, os, glob
-   d = os.path.expanduser("~/.claude/projects/" + os.getcwd().replace("/", "-"))
+   import json, os, glob, re
+   d = os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
    files = sorted((f for f in glob.glob(d + "/*.jsonl") if os.path.getsize(f) > 0),
                   key=os.path.getmtime, reverse=True)
    if not files:
-       print("NO_SESSION"); raise SystemExit
+       print(f"NO_SESSION (looked in {d})"); raise SystemExit
    first, plans, todos = None, [], []
    for line in open(files[0]):
        try: o = json.loads(line)
@@ -77,7 +77,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 8. **Check docs and leftovers.** If modules, CLI/public interfaces, or documented design decisions changed, `CLAUDE.md` and docs must match. Flag debug output, commented-out code, context-free `TODO`/`FIXME`, breakpoints, hard-coded paths, secrets; for uncommitted scope, flag staged secret files.
 
-9. **Gates (optional).** You may run `$GATE_WRAPPER $QUALITY_GATES` in the foreground (Bash `timeout` `600000`) to confirm the change would pass, but never modify code here.
+9. **Gates (optional).** You may run the gates — `$GATE_WRAPPER bash -c '<QUALITY_GATES>'` when `GATE_WRAPPER` is set (the text of `QUALITY_GATES` between the single quotes; write any `'` inside the gate command as `'\''`), else `$QUALITY_GATES` — in the foreground (Bash `timeout` `600000`) to confirm the change would pass, but never modify code here.
 
 10. **Assess the "why".** Did the change solve the stated problem? Did planned items fail to land? Is there a simpler approach? Plan/diff disagreement is a finding.
 

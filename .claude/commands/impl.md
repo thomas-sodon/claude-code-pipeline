@@ -83,7 +83,7 @@ Only after *Decide* returns Go, and before the first edit.
    - Plan-file mode: `feat/<plan-slug>-<uid>` (plan basename without `.md`).
    - Doc mode: `feat/<doc-slug>-step<M>-<step-slug>-<uid>`.
    - Sanitize the base slug: lowercase, non-alphanumeric runs → `-`, trim and collapse `-`. Empty → fall back to `feat/plan` (or `feat/<doc-slug>-step<M>`).
-   - `<uid>` is generated once per invocation and **must carry random entropy**: `date -u +%y%m%d%H%M%S` followed by `openssl rand -hex 3`. Do not assign it to a shell variable named `UID` (read-only in bash); use e.g. `SUFFIX`.
+   - `<uid>` is generated once per invocation and **must carry random entropy**: `date -u +%y%m%d%H%M%S` followed by `od -An -N3 -tx1 /dev/urandom | tr -d ' '` (six random hex digits). Do not assign it to a shell variable named `UID` (read-only in bash); use e.g. `SUFFIX`.
    - `git checkout -b <name>`. If it already exists, regenerate the suffix with fresh random hex and retry. Never ask the user for a branch name, never reuse or clobber existing work.
 4. Print `Branch: <name> (<auto-created from $MAIN_BRANCH | pre-existing>)`. Implementation never begins with HEAD on `$MAIN_BRANCH`.
 
@@ -96,7 +96,7 @@ Only after *Decide* returns Go, and before the first edit.
    - If the step adds or removes a module, changes a CLI/API surface, or changes a documented design decision, update the project's docs (and `CLAUDE.md` if an invariant changed) in the same step.
    - If a step proves infeasible as written, stop and surface it. Do not improvise a materially different scope.
 3. **Self-review.** Run `git diff` after each step and check for leftover debug code, breakpoints, hard-coded paths, secrets, dead branches, happy-path-only tests, and missing error handling.
-4. **Run the quality gates.** Use `$GATE_WRAPPER $QUALITY_GATES_FAST` while iterating and finish with `$GATE_WRAPPER $QUALITY_GATES`, plus every check in the plan's `## Verification` (in doc mode, each `Acceptance:` criterion must be demonstrably met).
+4. **Run the quality gates.** Use `$QUALITY_GATES_FAST` while iterating and finish with `$QUALITY_GATES` — each as `$GATE_WRAPPER bash -c '<gate command>'` when `GATE_WRAPPER` is set, so the whole compound command runs under the wrapper and any `$VAR` in it is expanded by the wrapper's shell (write any `'` inside the gate command as `'\''`) — plus every check in the plan's `## Verification` (in doc mode, each `Acceptance:` criterion must be demonstrably met).
    - Run gates in the **foreground** with an explicit long Bash timeout (e.g. `600000`), never in the background — a backgrounded run is reaped when the turn yields and the work stalls silently. If the full gate exceeds the ceiling, split it into its component commands as separate foreground calls.
    - Under `.claude/scripts/gate-slot.sh`: exit `75` means every slot is busy — re-run; `125` means the wrapper could not run — report it rather than treating it as a red gate.
    - Classify a red run before re-running: enumerated test/lint/type failures are an answered red — fix them; a timeout, an OOM-killed worker, or a runner that never started is a resource artifact — re-run once and let that result decide.
