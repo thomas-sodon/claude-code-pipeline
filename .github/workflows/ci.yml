@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax-check workflow scripts
+        run: node ci/check-workflows.mjs .claude/workflows
+      - name: shellcheck
+        run: shellcheck .claude/scripts/*.sh
+      - name: gate-slot smoke test
+        run: |
+          set -u
+          export GATE_LOCK_DIR="$RUNNER_TEMP/gate-locks"
+          rc=0; .claude/scripts/gate-slot.sh bash -c 'test -n "$GATE_SLOT_WORKERS" && exit 7' || rc=$?
+          test "$rc" -eq 7 || { echo "expected the command's own exit code 7, got $rc"; exit 1; }
+          rc=0; .claude/scripts/gate-slot.sh || rc=$?
+          test "$rc" -eq 125 || { echo "expected 125 with no command, got $rc"; exit 1; }
+      - name: Commands are present and project-agnostic
+        run: |
+          for c in plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates; do
+            test -s ".claude/commands/$c.md" || { echo "missing .claude/commands/$c.md"; exit 1; }
+          done
+          if grep -rniE 'maestro|/home/|/opt/' .claude; then
+            echo "project-specific reference found in .claude/"; exit 1
+          fi
