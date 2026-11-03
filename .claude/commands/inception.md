@@ -22,6 +22,8 @@ When the workflow finishes, report its status and the artifacts, then:
 - `docs_pr`: the PR. `docs_committed`: the branch and worktree, and `resume_args` to build later.
 - `blocked` or `failed_at_<stage>`: the reason, and the `retry_args` (or `resume_args`) to run the workflow with once it is fixed.
 
+A build that stopped part-way (`failed_at_skeleton`, `failed_at_inception_pr`, `lanes_stopped`) keeps everything that pushed; `how_to_continue` says what it needs. If a step stopped with a question (`stop_reason`), ask the user that question — never answer it yourself — and run `retry_args` with their answer as `build_context`. If a human-gated step blocks the lanes, ask the user whether they have done it, and once they have, run `retry_args` with `human_done: [<step>]`.
+
 ## Rules
 
 - The user owns every decision. A recommendation is shown, never taken; an unanswered question is asked again, never filled in.

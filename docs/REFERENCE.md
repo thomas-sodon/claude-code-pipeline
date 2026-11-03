@@ -154,8 +154,10 @@ directly, the workflow takes:
   repo: '/abs/path/to/repo',        // where to start it (default: the current checkout's repository)
   root: '/abs/path/to/worktrees',   // inception + lane worktrees (default: <repo>-worktrees)
   slug: 'recipe-swap',              // default: derived from the idea
-  answers: { i1: 'Web app', i3: ['Running cost'] },   // by question id
+  answers: { i1: 'Web app', i3: ['Running cost'] },   // the pending questions' answers, by id
   state: { ... },                   // from the previous next_args, unchanged
+  build_context: '...',             // your answers to questions a build step stopped on
+  human_done: [3],                  // human-gated design-doc steps you have completed
   main_branch: 'main', record_dir: 'docs/inception',
   max_questions: 8, intake_rounds: 2, directions: 4, critics: 3, judges: 3,
   efforts: { intake: 'high', brief: 'medium', directions: 'high', propose: 'high', critique: 'medium',
@@ -173,6 +175,9 @@ Each question is shaped for AskUserQuestion (`id`, `header` of at most 12 charac
 Ask every question, set `next_args.answers[id]` (a label, an array of labels for a
 multi-select, `[]` for none, or the user's own words), and run the workflow again with
 `next_args`. A run with a question still unanswered asks it again and spends no agent.
+Only an answer that is wholly "none" means none. A question an agent left without
+options offers "No preference" (the proposals decide it, with reasons) and "In my own
+words", which is not an answer on its own: the user picks Other and writes one.
 
 | Gate | Question ids | Asked after |
 |---|---|---|
@@ -182,26 +187,34 @@ multi-select, `[]` for none, or the user's own words), and run the workflow agai
 | `design` | `d1`, `d2`, … (skipped when nothing is open) | the design check of your choice |
 | `build` | `build` | the ADR, design doc and `CLAUDE.md` are committed |
 
-`state` holds everything decided so far: question texts, directions, proposal paths,
-scores, document paths and steps. A stage whose result is in `state` never runs again,
-so each answer stays bound to what it answered. Answering `winner` with "none of them"
-clears the proposals and asks the directions question again.
+`state` holds everything decided so far: question texts, every answer once its gate
+has passed, directions, proposal paths, scores, document paths, steps and build
+progress. A stage whose result is in `state` never runs again, and a recorded answer
+cannot be changed by a later run, so each answer stays bound to what it answered.
+Answering `winner` with "none of them" clears the proposals (the docs later name them
+as rejected) and asks the directions question again. The grafts question always ends
+with "Adopt none".
 
 Terminal statuses:
 
-- `built`: `pr`, `pr_status`, `skeleton`, `lanes` (step, branch, status per lane;
-  human-gated steps are skipped, or stop the chain when a later step depends on
-  them), `open_questions` and `ship_plan`, which holds the `plan-to-merged-pr`
-  ship-only args per lane in merge order. The first lane's args name the inception
-  PR as predecessor. Each later lane's args carry its `bases` and no
-  `predecessor_prs`, so `plan-to-merged-pr` refuses them until you add the PR of
-  every lane below it.
+- `built`: `pr`, `pr_status`, `skeleton`, `lanes` (step, branch, status per lane: a
+  human-gated step is skipped unless a later step depends on it), `open_questions`
+  and `ship_plan`. `ship_plan` holds the `plan-to-merged-pr` ship-only args per lane,
+  in merge order, with the run's build settings (`main_branch`, `ai_review_check`,
+  `gate`, …). The first lane's args name the inception PR as predecessor. Each later
+  lane's args carry its `bases` and no `predecessor_prs`, so `plan-to-merged-pr`
+  refuses them until you add the PR of every lane below it.
+- `failed_at_skeleton`, `failed_at_inception_pr`, `lanes_stopped`: a build that
+  stopped part-way. Everything that pushed is kept in `state`, so `retry_args`
+  skips it. A step that stopped with a question (`stop_reason`) gets the user's
+  answer through `build_context`. Lanes waiting on a human-gated step continue
+  once `human_done` names it.
 - `docs_pr`: the docs-only PR. `docs_committed`: nothing pushed; `resume_args` asks
   the build question again.
 - `blocked`: the repository has no first commit on `origin/<main>` (the pipeline
   never pushes to main), or the inception worktree could not be set up.
-- `failed_at_intake` … `failed_at_docs`, `failed_at_docs_pr`, `failed_at_skeleton`:
-  `retry_args` re-runs that stage and keeps everything decided before it.
+- `failed_at_intake` … `failed_at_docs`, `failed_at_docs_pr`: `retry_args` re-runs
+  that stage and keeps everything decided before it.
 
 Where things go: the inception worktree is `<root>/inception-<slug>` on branch
 `inception/<slug>`; the record (brief, proposals, comparison) is in

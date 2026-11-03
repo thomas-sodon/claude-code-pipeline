@@ -31,8 +31,11 @@ export const meta = {
 //   repo?: string            a checkout of the repository to start it in (default: the current checkout's)
 //   root?: string            directory for the inception worktree and the lane worktrees (default: <repo>-worktrees)
 //   slug?: string            kebab-case name for this inception (default: derived from the idea)
-//   answers?: object         the user's answers so far, by question id
+//   answers?: object         the user's answers to the pending questions, by question id (answers recorded at an
+//                            earlier gate live in state and cannot be changed afterwards)
 //   state?: object           from the previous run's next_args; pass it back unchanged
+//   build_context?: string   the user's answers to questions a build step stopped on, handed to every build step
+//   human_done?: number[]    human-gated design-doc steps the user has completed, so the steps after them can build
 //   main_branch?: 'main', record_dir?: 'docs/inception'
 //   max_questions?: 8 (per gate), intake_rounds?: 2 (1–3), directions?: 4 (3–4), critics?: 3 (1–3), judges?: 3 (1–5)
 //   efforts?: { intake, brief, directions, propose, critique, revise, judge, synthesize, design, docs, publish }
@@ -48,7 +51,10 @@ const S = JSON.parse(JSON.stringify(A.state || {}))
 S.v = 1
 S.idea = IDEA
 S.questions = S.questions || {}
-const ANS = { ...(A.answers || {}) }
+S.answers = S.answers || {}
+// Answers recorded when their gate passed live in state and win: a caller that drops or changes one cannot
+// change what the stages after it were built on.
+const ANS = { ...(A.answers || {}), ...S.answers }
 const MAIN = A.main_branch || 'main'
 const RECORD_DIR = String(A.record_dir || 'docs/inception').replace(/\/+$/, '')
 const clamp = (v, lo, hi, d) => Math.min(hi, Math.max(lo, Number.isInteger(v) ? v : d))
@@ -81,8 +87,11 @@ const chip = s => {
   const cut = t.slice(0, 13).lastIndexOf(' ')
   return (cut > 0 ? t.slice(0, cut) : t.slice(0, 12)).trim()
 }
+// An option label: at most five words, without a "(Recommended)" an agent wrote into it (the workflow adds its own).
+const label5 = s => words(squash(s).replace(/\s*\(recommended\)$/i, ''), 5)
 const asList = v => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]).map(squash).filter(Boolean)
-const NONE = /^(none|nothing|no(ne)? of (them|these|those)|neither)\b/i
+// Only an answer that is wholly "none" means none; "Neither as written: …" is the user's own answer.
+const NONE = /^(none|nothing|neither)( of (them|these|those|the above))?[\s.!]*$/i
 
 // ---- Prompt fragments
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
@@ -271,7 +280,11 @@ const PUBLISH_SCHEMA = {
 
 // ---- Questions and answers
 // Stored as { id, gate, header, question, why, multi_select, options: [{ label, description }], recommended: [label], recommended_reason }.
-const answered = q => Object.prototype.hasOwnProperty.call(ANS, q.id) && (asList(ANS[q.id]).length > 0 || (q.multi_select && Array.isArray(ANS[q.id])))
+// The placeholder option that keeps a free-text question askable; picking it means "let me write it", not an answer.
+const OWN_WORDS = { label: 'In my own words', description: 'Choose Other and write your answer; this option alone is not an answer.' }
+const ownWords = q => asList(ANS[q.id]).some(p => norm(p) === norm(OWN_WORDS.label))
+const answered = q => Object.prototype.hasOwnProperty.call(ANS, q.id) && !ownWords(q) &&
+  (asList(ANS[q.id]).length > 0 || (q.multi_select && Array.isArray(ANS[q.id])))
 // The user's answer: each part matched to an option where it names one, otherwise kept as their own words.
 const picks = q => {
   const parts = asList(ANS[q.id])
@@ -282,6 +295,7 @@ const picks = q => {
   })
 }
 const answerText = q => {
+  if (!answered(q)) return '(no answer)'
   const ps = picks(q)
   if (!ps.length) return q.multi_select ? 'none' : '(no answer)'
   return ps.map(p => {
@@ -291,10 +305,7 @@ const answerText = q => {
 }
 const qa = gate => Object.values(S.questions).filter(q => q.gate === gate).map(q => `- [${q.id}] ${q.question}\n  Answer: ${answerText(q)}`).join('\n')
 // A question an agent wrote, made askable: unique option labels of 1–5 words, 2–4 options, a short header.
-const PAD = [
-  { label: 'No preference', description: 'Leave it to the proposals, which must decide it with reasons.' },
-  { label: 'Something else', description: 'Answer in your own words.' },
-]
+const PAD = [{ label: 'No preference', description: 'Leave it to the proposals, which must decide it with reasons.' }, OWN_WORDS]
 const addQuestions = (gate, prefix, list) => {
   const taken = Object.keys(S.questions).filter(id => new RegExp(`^${prefix}\\d+$`).test(id)).length
   const raw = (list || []).filter(q => q && squash(q.question))
@@ -304,8 +315,8 @@ const addQuestions = (gate, prefix, list) => {
     const options = []
     for (const o of q.options || []) {
       // A label over five words keeps its full text at the head of the description rather than losing it.
-      const full = squash(o && o.label)
-      const label = words(full, 5)
+      const full = squash(o && o.label).replace(/\s*\(recommended\)$/i, '')
+      const label = label5(full)
       if (!label || seen.has(norm(label)) || options.length === 4) continue
       seen.add(norm(label))
       options.push({ label, description: clip(label === full ? o.description : `${full} — ${squash(o.description)}`, 240) })
@@ -346,14 +357,14 @@ const artifacts = () => {
   if (S.docs) { f.adr = at(S.docs.adr); f.design_doc = at(S.docs.design_doc) }
   return f
 }
+// `clear` drops answers that are to be asked again, from the args and from state.
+const without = (o, ids) => { const c = { ...o }; for (const id of ids) delete c[id]; return c }
 const ask = (gate, qs, summary, extra = {}) => {
   const { clear = [], ...rest } = extra
-  const answers = { ...ANS }
-  for (const id of clear) delete answers[id]
   return {
     status: 'needs_input', gate, summary, ...rest, artifacts: artifacts(),
     questions: qs.map(shown),
-    next_args: { ...A, answers, state: { ...S, pending: { gate, ids: qs.map(q => q.id) } } },
+    next_args: { ...A, answers: without(ANS, clear), state: { ...S, answers: without(S.answers, clear), pending: { gate, ids: qs.map(q => q.id) } } },
     how_to_continue: HOW,
   }
 }
@@ -452,7 +463,7 @@ const synthPrompt = (props, t) => GUARD + where() +
   `The judges' reasons, dealbreakers and graft ideas:\n${JSON.stringify(t.notes, null, 1)}\n` +
   `Sections: # Comparison: ${S.title}; ## Recommendation (${t.recommendation ? `${t.recommendation}${t.close ? ' — but the top two are within judging noise: say what would tip the decision' : ', and why'}` : 'none of the proposals clears the panel: say why'}); ` +
   `## Scores (a table of the criteria and their weights by proposal, with the weighted totals; mark each score whose judges differ by 2 or more); ## Where the judges disagreed; ## Dealbreakers; ## Each proposal (its strongest case, its biggest risk, and what would have to be true to choose it); ## Candidate grafts; ## What the decision still depends on.\n` +
-  `Return summary (three to five lines for the user), recommendation_reason (one or two sentences), and grafts — at most 4, merged from the judges' lists, each with label (1–5 words), from (the source proposal key), idea and benefit. Do not commit.`
+  `Return summary (three to five lines for the user), recommendation_reason (one or two sentences), and grafts — at most 3, merged from the judges' lists, each with label (1–5 words), from (the source proposal key), idea and benefit. Do not commit.`
 
 const designPrompt = () => {
   const base = S.proposals.find(p => p.key === S.decision.base)
@@ -473,9 +484,12 @@ const designPrompt = () => {
 }
 const docsPrompt = () => {
   const base = S.proposals.find(p => p.key === S.design.base)
+  // A rejected proposal whose file a later proposal reused is not named: that file now holds the later one.
+  const rejected = (S.rejected || []).filter((r, i, all) => !S.proposals.some(p => p.path === r.path) && all.findIndex(x => x.path === r.path) === i)
   return GUARD + where() + ASK +
     `Write the inception package for ${S.title} and commit it on ${S.branch}. Read first: the brief ${at(BRIEF())}, the comparison ${at(COMPARISON())}, the proposals (${S.proposals.map(p => at(p.path)).join(', ')}) and the decisions below.\n` +
     `The architecture the user chose: ${JSON.stringify(S.decision.answer)}${base ? ` (proposal ${base.key}, ${at(base.path)})` : ''}. Adopted grafts: ${S.decision.grafts.length ? JSON.stringify(S.decision.grafts) : 'none'}.\n` +
+    (rejected.length ? `Proposals the user rejected in an earlier round, together with the rest of that round (their files stay in the record; list them in the ADR's Alternatives considered): ${rejected.map(r => `${r.label} (${r.path})`).join('; ')}.\n` : '') +
     `Design questions and the user's answers — decisions, to follow exactly:\n${qa('design') || '(none were needed)'}\n\n` +
     `1. ADR. Follow the repository's ADR convention if it has one (directory, numbering, template); otherwise write docs/adr/0001-${S.slug}-architecture.md: title; Status: Accepted; Context (from the brief); Decision (the chosen architecture and the adopted grafts); Alternatives considered (every other proposal, why it lost, a link to its file); Consequences (good, bad, risks); References (the brief, the comparison, the design doc).\n` +
     `2. Design doc: docs/design/${S.slug}.md (or the same name in the PROPOSALS_DIR the repository's CLAUDE.md sets): the buildable design. Sections: Overview; Architecture (components, responsibilities, data flow, a mermaid diagram); Technology decisions (each with its reason, tied to the brief or an answer); Data model; Interfaces; Quality attributes and how each is met; Security; Operations; Risks; Open questions (only what the user left open); and "## Steps", an ordered checkbox list in exactly this form, which /impl and the workflows parse:\n` +
@@ -549,11 +563,18 @@ const tally = (props, runs) => {
   return { judged, totals, breakers, ranking, recommendation, close, notes, table: { criteria, proposals: rows } }
 }
 const proposalFields = r => ({ summary: squash(r.summary), stack: (r.stack || []).map(squash), top_risk: squash(r.top_risk), assumptions: (r.assumptions || []).map(squash) })
+const ADOPT_NONE = { label: 'Adopt none', description: 'Keep the chosen proposal as it is.' }
 
 // ---- Never past an unanswered question
 if (S.pending) {
-  const missing = S.pending.ids.map(id => S.questions[id]).filter(q => q && !answered(q))
-  if (missing.length) return ask(S.pending.gate, missing, `${missing.length} question(s) are still unanswered; the pipeline does not continue on assumptions.`)
+  const waiting = S.pending.ids.map(id => S.questions[id]).filter(Boolean)
+  // Each answer is recorded in state as it arrives, so a later caller cannot lose it.
+  for (const q of waiting) if (answered(q)) S.answers[q.id] = ANS[q.id]
+  const missing = waiting.filter(q => !answered(q))
+  if (missing.length) {
+    return ask(S.pending.gate, missing, `${missing.length} question(s) are still unanswered; the pipeline does not continue on assumptions.` +
+      (missing.some(ownWords) ? ` "${OWN_WORDS.label}" is not an answer by itself: choose Other and write it.` : ''))
+  }
   S.pending = null
 }
 
@@ -594,11 +615,10 @@ if (!S.brief) {
   const r = await agent(briefPrompt(last), { label: `brief-${S.intake.rounds}`, phase: 'Brief', effort: EFF.brief, schema: BRIEF_SCHEMA })
   if (!r) return failed('brief')
   if (r.blocked) return done('blocked', { blocked_reason: r.blocked_reason || `${S.dir} could not be set up`, retry_args: { ...A, answers: ANS, state: { ...S, pending: null } } })
-  const follow = last ? [] : r.follow_up_questions || []
   if (last && (r.follow_up_questions || []).length) log(`Brief: ${r.follow_up_questions.length} more question(s) after the last intake round were not asked — check the brief's Open questions`)
-  if (follow.length) {
+  const qs = last ? [] : addQuestions('intake', 'i', r.follow_up_questions)
+  if (qs.length) {
     S.intake.rounds++
-    const qs = addQuestions('intake', 'i', follow)
     return ask('intake', qs, `Your answers opened ${qs.length} follow-up question(s). The draft brief is at ${at(BRIEF())}.`)
   }
   S.brief = { summary: squash(r.summary), criteria: criteriaFrom(r.quality_attributes), hard_constraints: (r.hard_constraints || []).map(squash).filter(Boolean) }
@@ -616,7 +636,7 @@ if (!S.directions) {
     let key = slugify(d.key || d.label, 16) || `d${i + 1}`
     while (keys.has(key)) key = `${key}${i + 1}`
     keys.add(key)
-    let label = words(d.label, 5) || key
+    let label = label5(d.label) || key
     while (labels.has(norm(label))) label = `${label} ${i + 1}`
     labels.add(norm(label))
     return { key, label, sketch: squash(d.sketch), optimizes: squash(d.optimizes), sacrifices: squash(d.sacrifices), serves: squash(d.serves) }
@@ -642,7 +662,7 @@ if (!S.chosen) {
       continue
     }
     const n = chosen.filter(c => c.custom).length + 1
-    let label = words(p.text, 5)
+    let label = label5(p.text)
     while (chosen.some(c => norm(c.label) === norm(label)) || S.directions.some(d => norm(d.label) === norm(label))) label = `${label} ${n}`
     chosen.push({ key: `own${n}`, label, sketch: p.text, optimizes: '', sacrifices: '', serves: '', custom: true })
   }
@@ -683,9 +703,11 @@ if (!S.proposals) {
   const P = Object.fromEntries(S.proposals.map(p => [p.key, p]))
   const seen = new Set()
   const grafts = []
+  // At most three, so "Adopt none" fits as the fourth option: the question always offers two to four.
+  seen.add(norm(ADOPT_NONE.label))
   for (const g of syn.grafts || []) {
-    const label = words(g.label, 5)
-    if (!label || seen.has(norm(label)) || grafts.length === 4) continue
+    const label = label5(g.label)
+    if (!label || seen.has(norm(label)) || grafts.length === 3) continue
     seen.add(norm(label))
     grafts.push({ label, from: P[g.from] ? g.from : '', idea: squash(g.idea), benefit: squash(g.benefit) })
   }
@@ -704,7 +726,7 @@ if (!S.proposals) {
     id: 'grafts', gate: 'decision', header: 'Grafts', multi_select: true,
     question: 'Which ideas from the other proposals should the chosen architecture adopt? Choose none to adopt nothing.',
     why: 'A graft improves the chosen design without changing its core; one that comes from the proposal you choose is already part of it.',
-    options: grafts.map(g => ({ label: g.label, description: clip(`From ${P[g.from] ? P[g.from].label : 'the judges'}: ${g.idea} — ${g.benefit}`, 300) })),
+    options: [...grafts.map(g => ({ label: g.label, description: clip(`From ${P[g.from] ? P[g.from].label : 'the judges'}: ${g.idea} — ${g.benefit}`, 300) })), ADOPT_NONE],
     recommended: [], recommended_reason: '',
   }
   const qs = [winner, graftQ].filter(Boolean)
@@ -724,12 +746,16 @@ if (!S.decision) {
   // None of them: back to the directions gate, keeping the brief.
   if (!pick.option && NONE.test(pick.text)) {
     log('The user chose none of the proposals: back to the directions gate')
+    // Their files stay in the record; the docs name them as rejected unless a new proposal reuses the file.
+    S.rejected = [...(S.rejected || []), ...S.proposals.map(p => ({ key: p.key, label: p.label, path: p.path }))]
     for (const k of ['chosen', 'proposals', 'comparison']) delete S[k]
     for (const id of ['winner', 'grafts']) delete S.questions[id]
     return ask('directions', [S.questions.directions], 'You chose none of the proposals. Pick other directions, or describe your own under Other, and the competition runs again.', { clear: ['directions', 'winner', 'grafts'], directions: S.directions })
   }
   const base = pick.option ? S.proposals.find(p => p.label === pick.option) : null
-  const grafts = S.questions.grafts ? picks(S.questions.grafts).map(p => S.comparison.grafts.find(g => g.label === p.option) || { label: p.text, from: '', idea: p.text, benefit: '' }) : []
+  const grafts = S.questions.grafts
+    ? picks(S.questions.grafts).filter(p => p.option !== ADOPT_NONE.label).map(p => S.comparison.grafts.find(g => g.label === p.option) || { label: p.text, from: '', idea: p.text, benefit: '' })
+    : []
   S.decision = { answer: pick.text, base: base ? base.key : '', grafts }
 }
 
@@ -781,11 +807,9 @@ const [buildPick] = picks(S.questions.build)
 const choice = buildPick && buildPick.option
 if (!choice) return ask('build', [S.questions.build], 'Pick one of the build options.', { clear: ['build'] })
 if (choice === 'Stop here') {
-  const answers = { ...ANS }
-  delete answers.build
   return done('docs_committed', {
     how_to_continue: `The documents are committed on ${S.branch} in ${S.dir}; nothing was pushed. To build later, run this workflow with resume_args and answer the build question again.`,
-    resume_args: { ...A, answers, state: { ...S, pending: { gate: 'build', ids: ['build'] } } },
+    resume_args: { ...A, answers: without(ANS, ['build']), state: { ...S, answers: without(S.answers, ['build']), pending: { gate: 'build', ids: ['build'] } } },
   })
 }
 phase('Build')
@@ -796,7 +820,11 @@ if (choice === 'Docs PR only') {
 }
 const child = async (lane, extra) => {
   try {
-    return await workflow('plan-to-merged-pr', { ...BUILD_SHARED, lane, repo: S.repo.toplevel, proposal: S.docs.design_doc, ...extra })
+    return await workflow('plan-to-merged-pr', {
+      ...BUILD_SHARED, lane, repo: S.repo.toplevel, proposal: S.docs.design_doc,
+      ...(A.build_context ? { context: `The user's answers to questions an earlier attempt stopped on: ${A.build_context}` } : {}),
+      ...extra,
+    })
   } catch (err) {
     log(`${lane}: ${err && err.message ? err.message : err}`)
     return null
@@ -804,63 +832,101 @@ const child = async (lane, extra) => {
 }
 const runSummary = r => ({ status: r.status, review_clean: r.review_clean, polish_clean: r.polish_clean, stop_reason: r.stop_reason || '', open_questions: r.open_questions || [] })
 const concernOf = s => `Step ${s.number} of the design doc ${S.docs.design_doc}: ${s.title}. ${s.description}` + (s.acceptance.length ? ` Acceptance: ${s.acceptance.join('; ')}.` : '')
+const ANSWER_HINT = 'Put your answer to its question in build_context and run retry_args'
+// Build progress lives in state, so running again skips what already pushed: the skeleton, the inception PR, each lane.
+S.build = S.build || { skeleton: null, pr: null, lanes: [] }
+const B = S.build
+const again = () => ({ ...A, answers: ANS, state: { ...S, pending: null } })
 
 // The skeleton is built on the docs commit and reviewed from it, so its review sees the skeleton alone while
 // the one inception PR carries both.
-const skeleton = await child('skeleton', { concern: concernOf(S.docs.steps[0]), dir: S.dir, branch: S.branch, review_base: S.docs.sha, ship: false })
-if (!skeleton || skeleton.status !== 'pushed') return failed('skeleton', { skeleton: skeleton ? runSummary(skeleton) : { status: 'failed' } })
+if (!B.skeleton) {
+  const r = await child('skeleton', { concern: concernOf(S.docs.steps[0]), dir: S.dir, branch: S.branch, review_base: S.docs.sha, ship: false })
+  if (!r || r.status !== 'pushed') {
+    return failed('skeleton', {
+      skeleton: r ? runSummary(r) : { status: 'failed' },
+      how_to_continue: r && r.stop_reason ? `The skeleton stopped: ${r.stop_reason} ${ANSWER_HINT}.` : 'Run retry_args to build the skeleton again; work already on its branch is kept.',
+    })
+  }
+  B.skeleton = { ...runSummary(r), plan: r.plan || '' }
+}
 
-const shipInceptionPR = () => child('inception-pr', {
-  ship_only: true, dir: S.dir, branch: S.branch, title: clip(`Inception: ${S.title}`, 70), plan_text: skeleton.plan || '',
-  pr_note: `This pull request starts ${S.title}: the inception record under ${S.record}/ (the brief, ${S.proposals.length} competing proposals and how they compared), the architecture decision ${S.docs.adr}, the design doc ${S.docs.design_doc} and CLAUDE.md with the pipeline config, plus step 1 of the design doc, the walking skeleton. The later steps follow as stacked pull requests.`,
-})
+const shipInceptionPR = async () => {
+  if (B.pr) return { status: 'opened earlier', pr: B.pr }
+  const r = await child('inception-pr', {
+    ship_only: true, dir: S.dir, branch: S.branch, title: clip(`Inception: ${S.title}`, 70), plan_text: B.skeleton.plan,
+    pr_note: `This pull request starts ${S.title}: the inception record under ${S.record}/ (the brief, ${S.proposals.length} competing proposals and how they compared), the architecture decision ${S.docs.adr}, the design doc ${S.docs.design_doc} and CLAUDE.md with the pipeline config, plus step 1 of the design doc, the walking skeleton. The later steps follow as stacked pull requests.`,
+  })
+  if (r && r.pr && r.pr.pr_number) B.pr = { pr_number: r.pr.pr_number, url: r.pr.url }
+  return r
+}
 // Every later code step, stacked in order on everything below it; a lane that does not push ends the chain.
+// A human-gated step is skipped unless a later step depends on it; then the chain waits until human_done names it.
+const SETTLED = ['pushed', 'skipped_human_step', 'done_by_human']
 const buildLanes = async () => {
-  const out = []
-  const bases = [S.branch]
+  const humanDone = (A.human_done || []).map(Number)
   const rest = S.docs.steps.slice(1)
   for (const s of rest) {
+    const prior = B.lanes.find(l => l.step === s.number)
+    if (prior && SETTLED.includes(prior.status)) continue
+    B.lanes = B.lanes.filter(l => l.step !== s.number)
     if (s.human_gated) {
       const needed = rest.some(x => x.number > s.number && x.depends_on.includes(s.number))
-      out.push({ step: s.number, title: s.title, status: needed ? 'waits_on_human' : 'skipped_human_step', human_gated: s.human_gated })
-      if (needed) { log(`Step ${s.number} needs a person (${s.human_gated}) and later steps depend on it — the lanes stop here`); break }
+      const status = humanDone.includes(s.number) ? 'done_by_human' : needed ? 'waits_on_human' : 'skipped_human_step'
+      B.lanes.push({ step: s.number, title: s.title, status, human_gated: s.human_gated })
+      if (status === 'waits_on_human') { log(`Step ${s.number} needs a person (${s.human_gated}) and later steps depend on it — the lanes stop here`); break }
       continue
     }
     const lane = { key: `step${s.number}`, step: s.number, title: s.title, branch: `feat/${S.slug}-step${s.number}-${slugify(s.title, 30) || 'step'}`, dir: `${S.root}/${S.slug}-step${s.number}` }
-    const r = await child(lane.key, { concern: concernOf(s), dir: lane.dir, branch: lane.branch, bases: [...bases], ship: false })
+    const bases = [S.branch, ...B.lanes.filter(l => l.status === 'pushed' && l.step < s.number).sort((a, b) => a.step - b.step).map(l => l.branch)]
+    const r = await child(lane.key, { concern: concernOf(s), dir: lane.dir, branch: lane.branch, bases, ship: false })
     const status = (r && r.status) || 'failed'
-    out.push({ ...lane, ...(r ? runSummary(r) : {}), status, plan: (r && r.plan) || '' })
+    B.lanes.push({ ...lane, ...(r ? runSummary(r) : {}), status, plan: (r && r.plan) || '' })
     if (status !== 'pushed') { log(`Lane ${lane.key}: ${status} — the later steps stack on it, so the chain stops here`); break }
-    bases.push(lane.branch)
   }
-  const reached = new Set(out.map(l => l.step))
+  B.lanes.sort((a, b) => a.step - b.step)
+  const reached = new Set(B.lanes.map(l => l.step))
   const unbuilt = rest.filter(s => !reached.has(s.number)).map(s => s.number)
   if (unbuilt.length) log(`Not built: step(s) ${unbuilt.join(', ')}`)
-  return out
 }
 const all = choice === 'Skeleton + all lanes'
 // The inception PR is opened and babysat while the lanes build on its branch.
-const [shipped, laneRuns] = all ? await parallel([shipInceptionPR, buildLanes]) : [await shipInceptionPR(), []]
-const lanes = laneRuns || []
-const prn = shipped && shipped.pr && shipped.pr.pr_number
-const pushed = lanes.filter(l => l.status === 'pushed')
-// Ready-to-run ship-only args per lane. Each carries its bases, so plan-to-merged-pr refuses to open its PR
-// until predecessor_prs names every PR below it and each reads MERGED; only the first lane's is known now.
+const [shipped] = all ? await parallel([shipInceptionPR, buildLanes]) : [await shipInceptionPR()]
+const prn = B.pr && B.pr.pr_number
+const stopped = all ? B.lanes.find(l => !SETTLED.includes(l.status)) : null
+const pushed = B.lanes.filter(l => l.status === 'pushed')
+// Ready-to-run ship-only args per lane, with the run's build settings. Each carries its bases, so
+// plan-to-merged-pr refuses to open its PR until predecessor_prs names every PR below it and each reads MERGED;
+// only the first lane's predecessor is known now.
 const shipPlan = pushed.map((l, i) => ({
   lane: l.key, branch: l.branch,
   when: i ? `after the PR for ${pushed[i - 1].key} merges` : `after the inception PR${prn ? ` #${prn}` : ''} merges`,
   args: {
-    ship_only: true, branch: l.branch, dir: l.dir, title: clip(`Step ${l.step}: ${l.title}`, 70), proposal: S.docs.design_doc, plan_text: l.plan,
-    bases: [S.branch, ...pushed.slice(0, i).map(x => x.branch)], ...(i === 0 && prn ? { predecessor_prs: [prn] } : {}),
+    ...BUILD_SHARED, lane: l.key, ship_only: true, branch: l.branch, dir: l.dir, title: clip(`Step ${l.step}: ${l.title}`, 70),
+    proposal: S.docs.design_doc, plan_text: l.plan, bases: [S.branch, ...pushed.slice(0, i).map(x => x.branch)],
+    ...(i === 0 && prn ? { predecessor_prs: [prn] } : {}),
   },
   note: i === 0 && prn ? '' : 'set predecessor_prs to the PR numbers of the inception PR and of every lane below this one before running it',
 }))
-return done('built', {
+const laneHint = l => (l.status === 'waits_on_human'
+  ? `Step ${l.step} needs a person: ${l.human_gated}. Once it is done, run retry_args with human_done: [${l.step}].`
+  : `Lane ${l.key} stopped at ${l.status}${l.stop_reason ? `: ${l.stop_reason}` : ''}. ${l.stop_reason ? ANSWER_HINT : 'Fix the cause and run retry_args'}; the lanes below it are kept.`)
+const result = {
   build: choice,
-  pr: (shipped && shipped.pr) || null, pr_status: shipped ? shipped.status : 'failed',
-  skeleton: runSummary(skeleton),
-  lanes: lanes.map(({ plan, ...l }) => l),
+  pr: B.pr, pr_status: shipped ? shipped.status : 'failed',
+  skeleton: runSummary(B.skeleton),
+  lanes: B.lanes.map(({ plan, ...l }) => l),
   ship_plan: shipPlan,
-  open_questions: [...(skeleton.open_questions || []), ...lanes.flatMap(l => l.open_questions || [])],
-  how_to_continue: `Review and merge the inception PR${prn ? ` #${prn}` : ''} yourself. Then ship each built lane in order with plan-to-merged-pr and its ship_plan args, once every PR below it has merged.`,
+  open_questions: [...(B.skeleton.open_questions || []), ...B.lanes.flatMap(l => l.open_questions || [])],
+}
+if (!prn) {
+  return done('failed_at_inception_pr', {
+    ...result, retry_args: again(),
+    how_to_continue: `The inception PR did not open (${shipped ? shipped.status : 'the step failed'}${shipped && shipped.stop_reason ? `: ${shipped.stop_reason}` : ''}). Fix that, then run retry_args; the skeleton and the lanes that pushed are kept.` + (stopped ? ` ${laneHint(stopped)}` : ''),
+  })
+}
+if (stopped) return done('lanes_stopped', { ...result, retry_args: again(), how_to_continue: laneHint(stopped) })
+return done('built', {
+  ...result, resume_args: again(),
+  how_to_continue: `Review and merge the inception PR #${prn} yourself. Then ship each built lane in order with plan-to-merged-pr and its ship_plan args, once every PR below it has merged.`,
 })

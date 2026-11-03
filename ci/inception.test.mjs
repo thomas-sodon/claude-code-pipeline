@@ -307,5 +307,147 @@ test('inception: the /inception command and the workflow describe the same loop'
     assert.ok(how.includes(s), `how_to_continue does not mention ${s}`)
     assert.ok(command.includes(s.replace('(Recommended)', '"(Recommended)"')) || command.includes(s), `/inception does not mention ${s}`)
   }
-  for (const s of ['idea-to-inception', 'needs_input', 'ship_plan', 'retry_args', 'resume_args', 'predecessor_prs']) assert.ok(command.includes(s), `/inception does not mention ${s}`)
+  for (const s of ['idea-to-inception', 'needs_input', 'ship_plan', 'retry_args', 'resume_args', 'predecessor_prs', 'build_context', 'human_done', 'lanes_stopped']) assert.ok(command.includes(s), `/inception does not mention ${s}`)
+})
+
+// ---- Regressions found by an independent review of the workflow
+
+// Every question a gate returns must be one AskUserQuestion accepts.
+const assertAskable = result => {
+  for (const q of result.questions) {
+    assert.ok(q.header.length <= 12, `${q.id}: header "${q.header}"`)
+    assert.ok(q.options.length >= 2 && q.options.length <= 4, `${q.id} has ${q.options.length} option(s)`)
+    for (const o of q.options) assert.ok(o.label.replace(/ \(Recommended\)$/, '').split(' ').length <= 5, `${q.id}: label "${o.label}"`)
+    assert.ok(q.options.filter(o => /\(Recommended\)/.test(o.label)).every(o => / \(Recommended\)$/.test(o.label) && !/\(Recommended\).*\(Recommended\)/.test(o.label)), `${q.id}: doubled recommendation`)
+  }
+}
+
+test('review: every gate returns only questions AskUserQuestion accepts, a single graft included', async () => {
+  const runs = await journey()
+  for (const t of Object.values(runs)) assertAskable(t.result)
+  const grafts = runs.decision.result.questions.find(q => q.id === 'grafts')
+  assert.deepEqual(grafts.options.map(o => o.label), ['Managed auth service', 'Adopt none'])
+  const design = await run('idea-to-inception', answer(runs.decision, { winner: 'Modular monolith', grafts: ['Adopt none'] }), { agent: agents() })
+  assert.match(promptOf(design, /^design$/), /Grafts adopted from other proposals: none/)
+})
+
+test('review: only an answer that is wholly "none" counts as none', async () => {
+  const agent = agents()
+  const { decision } = await journey(agent)
+  const free = await run('idea-to-inception', answer(decision, { winner: 'Neither as written: the monolith, with serverless image resizing', grafts: [] }), { agent })
+  assert.equal(free.result.gate, 'design')
+  assert.match(promptOf(free, /^design$/), /Neither as written/)
+  const none = await run('idea-to-inception', answer(decision, { winner: 'None of them.', grafts: [] }), { agent })
+  assert.equal(none.result.gate, 'directions')
+  const first = await run('idea-to-inception', { idea: IDEA }, { agent })
+  const own = await run('idea-to-inception', answer(first, { i1: 'Web app', i2: 'Thousands', i3: ['None of these – accessibility matters most'], i4: 'No preference' }), { agent })
+  assert.match(promptOf(own, /^brief-1$/), /\[i3\] .*\n {2}Answer: "None of these – accessibility matters most" \(in the user's own words\)/)
+})
+
+test('review: the ship plan carries the build settings the run was given', async () => {
+  const settings = { main_branch: 'trunk', ai_review_check: 'AI Code Review', gate: './g.sh', commit_trailers: ['Co-Authored-By: X <x@y>'] }
+  const agent = agents()
+  const first = await run('idea-to-inception', { idea: IDEA, ...settings }, { agent })
+  const { build } = await (async () => {
+    const d = await run('idea-to-inception', answer(first, { i1: 'Web app', i2: 'Thousands', i3: ['Running cost'], i4: 'No preference' }), { agent })
+    const dec = await run('idea-to-inception', answer(d, { directions: ['Modular monolith', 'Serverless functions'] }), { agent })
+    const des = await run('idea-to-inception', answer(dec, { winner: 'Modular monolith', grafts: [] }), { agent })
+    return { build: await run('idea-to-inception', answer(des, { d1: 'Lint, types, tests', d2: 'GitHub Actions' }), { agent }) }
+  })()
+  const children = []
+  const t = await run('idea-to-inception', answer(build, { build: 'Skeleton + all lanes' }), { agent, workflow: builds(children) })
+  for (const c of children) assert.deepEqual([c.main_branch, c.ai_review_check, c.gate], ['trunk', 'AI Code Review', './g.sh'])
+  for (const s of t.result.ship_plan) {
+    assert.deepEqual([s.args.main_branch, s.args.ai_review_check, s.args.gate, s.args.commit_trailers], ['trunk', 'AI Code Review', './g.sh', ['Co-Authored-By: X <x@y>']])
+    assert.ok(!('context' in s.args))
+  }
+})
+
+test('review: an agent\'s own "(Recommended)" never reaches a label', async () => {
+  const marked = { ...DIRECTIONS, directions: DIRECTIONS.directions.map((d, i) => (i ? d : { ...d, label: 'Modular monolith (Recommended)' })), recommended: [] }
+  const agent = agents([/^directions$/, marked], [/^judge-/, judge({ mono: [4, 4, 4, 4], serverless: [4, 4, 4, 3] })])
+  const { directions, decision } = await journey(agent)
+  assert.deepEqual(directions.result.questions[0].options.map(o => o.label), ['Modular monolith', 'Serverless functions', 'Local-first app'])
+  assert.ok(decision.result.questions[0].options.every(o => !/Recommended/.test(o.label)))
+})
+
+test('review: picking the "In my own words" placeholder is not an answer', async () => {
+  const lone = { ...INTAKE, questions: [Q('Data', 'What data does it keep?', [])] }
+  const agent = agents([/^intake$/, lone])
+  const first = await run('idea-to-inception', { idea: IDEA }, { agent })
+  assert.deepEqual(first.result.questions[0].options.map(o => o.label), ['No preference', 'In my own words'])
+  const again = await run('idea-to-inception', answer(first, { i1: 'In my own words' }), { agent })
+  assert.equal(again.calls.length, 0)
+  assert.match(again.result.summary, /choose Other/)
+})
+
+test('review: answers recorded at a gate survive a caller that passes only the newest ones', async () => {
+  const followUp = { ...BRIEF, follow_up_questions: [Q('Platforms', 'Which phone platforms?', ['iOS', 'Android', 'Both'])] }
+  const first = await run('idea-to-inception', { idea: IDEA }, { agent: agents([/^brief-1$/, followUp]) })
+  const second = await run('idea-to-inception', answer(first, { i1: 'Phone app', i2: 'Thousands', i3: ['Privacy'], i4: 'No preference' }), { agent: agents([/^brief-1$/, followUp]) })
+  // Only the follow-up answer is passed; the intake answers come from state.
+  const third = await run('idea-to-inception', { ...second.result.next_args, answers: { i5: 'Both' } }, { agent: agents() })
+  const brief = promptOf(third, /^brief-2$/)
+  assert.match(brief, /\[i1\] .*\n {2}Answer: Phone app/)
+  assert.match(brief, /\[i3\] .*\n {2}Answer: Privacy/)
+  assert.doesNotMatch(brief, /\(no answer\)|Answer: none/)
+  // A recorded answer cannot be swapped by a later caller.
+  assert.equal(third.result.next_args.state.answers.i1, 'Phone app')
+})
+
+test('review: follow-up questions with no text do not use up an intake round', async () => {
+  const empty = { ...BRIEF, follow_up_questions: [{ ...Q('X', '', ['a', 'b']) }] }
+  const first = await run('idea-to-inception', { idea: IDEA }, { agent: agents([/^brief-1$/, empty]) })
+  const next = await run('idea-to-inception', answer(first, { i1: 'Web app', i2: 'Thousands', i3: [], i4: 'No preference' }), { agent: agents([/^brief-1$/, empty]) })
+  assert.equal(next.result.gate, 'directions')
+})
+
+test('review: proposals rejected with "none" are named as rejected in the docs', async () => {
+  const agent = agents()
+  const { decision } = await journey(agent)
+  const back = await run('idea-to-inception', answer(decision, { winner: 'None of them', grafts: [] }), { agent })
+  const dec2 = await run('idea-to-inception', answer(back, { directions: ['Local-first app', 'Serverless functions'] }), { agent })
+  const des = await run('idea-to-inception', answer(dec2, { winner: 'Local-first app', grafts: [] }), { agent })
+  const docs = await run('idea-to-inception', answer(des, { d1: 'Lint, types, tests', d2: 'GitHub Actions' }), { agent })
+  const prompt = promptOf(docs, /^docs$/)
+  assert.match(prompt, /rejected in an earlier round[^\n]*Modular monolith[^\n]*proposals\/mono\.md/)
+  assert.doesNotMatch(prompt, /rejected in an earlier round[^\n]*Serverless functions/)
+})
+
+test('review: a build that stopped resumes where it stopped, with the user\'s answer passed on', async () => {
+  const { build } = await journey()
+  // The inception PR fails to open, and lane step4 stops with a question.
+  const first = []
+  const t1 = await run('idea-to-inception', answer(build, { build: 'Skeleton + all lanes' }), {
+    agent: agents(),
+    workflow: builds(first, a => (a.ship_only && { status: 'blocked_at_merge_check' }) || (a.lane === 'step4' && { status: 'failed_at_impl', stop_reason: 'Should a swap expire?' })),
+  })
+  assert.equal(t1.result.status, 'failed_at_inception_pr')
+  assert.deepEqual(t1.result.lanes.map(l => [l.step, l.status]), [[2, 'pushed'], [3, 'skipped_human_step'], [4, 'failed_at_impl']])
+  assert.match(t1.result.how_to_continue, /build_context/)
+  // The retry skips the pushed skeleton and step 2, opens the PR, and rebuilds step 4 with the answer as context.
+  const second = []
+  const t2 = await run('idea-to-inception', { ...t1.result.retry_args, build_context: 'Swaps expire after a week.' }, { agent: agents(), workflow: builds(second) })
+  assert.deepEqual(second.map(c => c.lane), ['inception-pr', 'step4'])
+  assert.match(second[1].context, /Swaps expire after a week/)
+  assert.deepEqual(second[1].bases, ['inception/recipe-swap', 'feat/recipe-swap-step2-share-a-recipe'])
+  assert.equal(t2.result.status, 'built')
+  assert.deepEqual(t2.result.ship_plan.map(s => s.lane), ['step2', 'step4'])
+  // A third run has nothing left to build.
+  const third = []
+  const t3 = await run('idea-to-inception', { ...t2.result.resume_args }, { agent: agents(), workflow: builds(third) })
+  assert.deepEqual(third, [])
+  assert.equal(t3.result.status, 'built')
+})
+
+test('review: a human-gated step that later steps need waits until the user says it is done', async () => {
+  const docs = { ...DOCS, steps: [step(1, 'Walking skeleton'), step(2, 'Cloud account', { human_gated: 'create the cloud account' }), step(3, 'Share a recipe')] }
+  const { build } = await journey(agents([/^docs$/, docs]))
+  const t1 = await run('idea-to-inception', answer(build, { build: 'Skeleton + all lanes' }), { agent: agents([/^docs$/, docs]), workflow: builds([]) })
+  assert.equal(t1.result.status, 'lanes_stopped')
+  assert.match(t1.result.how_to_continue, /human_done: \[2\]/)
+  const children = []
+  const t2 = await run('idea-to-inception', { ...t1.result.retry_args, human_done: [2] }, { agent: agents([/^docs$/, docs]), workflow: builds(children) })
+  assert.deepEqual(children.map(c => c.lane), ['step3'])
+  assert.deepEqual(t2.result.lanes.map(l => [l.step, l.status]), [[2, 'done_by_human'], [3, 'pushed']])
 })
