@@ -32,7 +32,7 @@ jobs:
           test "$rc" -eq 125 || { echo "expected 125 with no command, got $rc"; exit 1; }
       - name: Commands are present and project-agnostic
         run: |
-          for c in plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates; do
+          for c in plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates inception; do
             test -s ".claude/commands/$c.md" || { echo "missing .claude/commands/$c.md"; exit 1; }
           done
           if grep -rniE 'maestro|/home/|/opt/' .claude; then
