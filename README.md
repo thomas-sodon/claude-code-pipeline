@@ -2,7 +2,9 @@
 
 Turn one sentence describing a change into a review-clean, CI-green pull request:
 Claude Code workflows that plan, implement, review, polish, open and babysit the PR,
-with every stage run in a fresh session.
+with every stage run in a fresh session. Or start from an idea: competing
+architectural proposals, your decision, and a walking skeleton, with every
+decision asked, never assumed.
 
 [![ci](https://github.com/thomas-sodon/claude-code-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/thomas-sodon/claude-code-pipeline/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -20,6 +22,7 @@ cd your-project && mkdir -p .claude
 cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scripts .claude/
 printf '\n## Pipeline config\n\nQUALITY_GATES: npm test\n' >> CLAUDE.md   # your gate command
 claude   # then: "Run the plan-to-merged-pr workflow with { concern: '<what to change>' }"
+         # or, for new software: /inception <your idea>
 ```
 
 Requirements, the full config keys and the example config are in
@@ -34,6 +37,15 @@ Requirements, the full config keys and the example config are in
              plan                         bug or concern     /create-pr         until it settles
 ```
 
+New software starts one step earlier, from an idea (`/inception`):
+
+```
+ idea ──> Intake ──> Brief ──> Directions ──> Proposals ──> Judge ──> Design ──> Docs ──> Build
+          you        your      you pick       one per       panel     you pin   ADR,     skeleton PR
+          answer     words     2 to 4         direction,    scores;   down      design   + later steps
+                                              3 critics     you pick  the rest  doc      as stacked lanes
+```
+
 ## How it works
 
 - **Fresh session per stage.** Each command runs in its own session, so context
@@ -45,6 +57,9 @@ Requirements, the full config keys and the example config are in
   before the PR is opened and again after merging `main`.
 - **A human keeps the judgment.** You choose the concern and you merge; the
   workflow never force-pushes, never pushes to main and never merges.
+- **Ask, never assume.** What only you can decide is asked, not guessed: inception
+  stops at every decision, and a build stage that would have to guess a
+  load-bearing detail stops with the question instead.
 
 ## Why this exists
 
@@ -79,13 +94,17 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
     plan-to-merged-pr.js      the engine: one concern from plan to a watched PR
     bug-fix-backlog.js        triage + adversarial verification + ship, per bug lane
     proposal-build-chain.js   stacked lanes of a design doc, built in order
+    idea-to-inception.js      an idea to competing proposals, a decision and a skeleton
   commands/
     plan.md  impl.md  review-changes.md  polish.md  create-pr.md
-    process-comments.md  merge-main.md  quality-gates.md  bug-fix.md
+    process-comments.md  merge-main.md  quality-gates.md  bug-fix.md  inception.md
   scripts/
     gate-slot.sh              optional host-wide semaphore for gate runs
 examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
+ci/
+  check-workflows.mjs         static checks of the runtime's rules
+  harness.mjs  *.test.mjs     every workflow's control flow, run with stubbed agents
 ```
 
 | Command | Does |
@@ -99,6 +118,7 @@ examples/
 | `/merge-main` | Merges the latest main (never rebases), resolves conflicts using the originating plan, runs gates, pushes. |
 | `/quality-gates` | Runs the project's gates plus whatever the PR's CI is red on, fixes failures at the root, commits and pushes. |
 | `/bug-fix <n>` | Triages an issue by intent against today's code: writes a fix plan, or closes it with evidence. `--dry-run` changes nothing. |
+| `/inception <idea>` | Runs `idea-to-inception`, asks you every question it stops on, and runs it again with your answers until it finishes. |
 
 ## The workflows
 
@@ -165,6 +185,49 @@ otherwise a merge bot could merge the unmerged base commits it carries. Once
 those merges land, run `plan-to-merged-pr` with `ship_only: true` and
 `predecessor_prs`; it refuses to open anything until each one reads `MERGED`.
 
+### `idea-to-inception`
+
+Takes an original idea through competing architectural proposals to an architecture
+decision, its documents and a walking skeleton. It asks you at every decision instead
+of assuming. Start it with `/inception <your idea>`.
+
+1. **Intake** (read-only) restates the idea and asks only what would change the
+   architecture and what the idea leaves open: users and how they reach it, scale,
+   data and compliance, integrations, hosting and budget, the team's stack, the first
+   version, and which qualities matter most. If an answer opens a new question, there is
+   one follow-up round.
+2. **Brief**: your answers, verbatim. A gap you leave becomes an open question, and
+   "no preference" becomes a choice the proposals must make and justify.
+3. **Directions**: three or four genuinely different bets (topology, data model,
+   runtime, build versus buy), one of them the simplest that works. You pick two to
+   four, or describe your own.
+4. **Proposals**: one per direction, written independently (none reads another), each
+   listing every assumption the brief does not establish. Three critics attack each
+   proposal: requirements fit and hidden assumptions; delivery risk; and operations,
+   security and cost. Each proposal is then revised.
+5. **Judging**: a panel (three judges, each reading the proposals in a different order)
+   scores every proposal on every criterion, weighted by your priorities. The script
+   does the arithmetic, and a comparison document records it.
+6. **Decision**: you pick the winner, plus any grafts from the runners-up. An option
+   is marked recommended only when the result is not a close call. Answering "none of
+   them" sends other directions into the competition.
+7. **Design**: before anything is written, it asks what your choice still leaves open,
+   including the quality-gate commands and, if the repository has none, CI.
+8. **Docs**: an ADR, a design doc with checkbox steps (step 1 is the walking skeleton)
+   and `CLAUDE.md` with the Pipeline config, all committed on `inception/<slug>` in a
+   worktree of its own.
+9. **Build**, as far as you choose. Step 1 runs through `plan-to-merged-pr`, reviewed
+   against the docs commit, and opens as the inception PR (docs plus skeleton), which
+   is monitored. Meanwhile the later steps are built as stacked build-only lanes, each
+   with ready-to-run ship args. You can also stop at a docs-only PR, or with the docs
+   committed locally. Merging is yours.
+
+Each run returns at the next decision with `status: needs_input`, questions shaped
+for AskUserQuestion, and `next_args`; `/inception` asks you, then runs it again with
+your answers. Everything decided so far travels in `next_args.state`, so finished
+stages never re-run and your answers stay bound to the exact proposals they
+answered, even in a later session.
+
 ## Worked example
 
 This example is illustrative: the project, findings and runs are made up to show
@@ -225,12 +288,35 @@ Both branches are built and pushed. Ship lane `a` with
 `{ ship_only: true, branch: 'feat/events-a', dir: '/abs/wt/a', title: '…' }`.
 After it merges, ship `b` with `predecessor_prs: [<a's PR>]`.
 
+**An idea to inception.**
+
+> /inception A place where friends swap family recipes, with the story behind each one
+
+- Intake asks four questions: where people use it (web, recommended because recipes
+  travel by link, or a phone app), how many users in a year, which qualities matter
+  most, and what the team knows. You answer: web, thousands, running cost, TypeScript.
+- The brief is written, and three directions come back: a modular monolith on one VM,
+  serverless functions with a managed database, and a local-first app. You pick the
+  first two.
+- Both proposals are written and critiqued; the monolith's operations critic finds
+  it has no backups, and its revision adds them. The judges score them 4.67 and 3.22,
+  so you pick the monolith and graft on the other proposal's managed auth.
+- Design asks two things: the gate commands, and whether to add CI. You answer
+  `npm run lint && npm run typecheck && npm test`, and GitHub Actions.
+- The ADR, the design doc (four steps; step 3, the first production deploy, is
+  human-gated) and `CLAUDE.md` are committed. You choose "Skeleton + all lanes": the
+  inception PR opens with the docs and the skeleton, and steps 2 and 4 are built as
+  stacked branches, each with its ship args, to ship in order.
+
 ## Operating rules baked in
 
 - **Fresh session per stage.** Context stays small, and the reviewer did not
   write the code it is reviewing.
 - **A denied action stays denied.** If a permission check refuses something, the
   agent reports it as blocked and does not try another route.
+- **Nobody is asked mid-run, so nothing is guessed.** A stage whose skill would
+  ask a person stops with the question (`stop_reason`), or carries it to the PR body
+  (`open_questions`), instead of assuming an answer.
 - **No `git stash` in parallel worktrees.** Every worktree of a repo shares one
   stash list, so one lane can pop another lane's entry. For a before/after check,
   save the fix as a diff file, check out `HEAD` for those paths, run the test, then
@@ -247,8 +333,9 @@ After it merges, ship `b` with `predecessor_prs: [<a's PR>]`.
 
 ## Reference
 
-Workflow args, modes, result statuses, resuming a stopped run, gate wrappers and
-the state kept in your home directory are in [docs/REFERENCE.md](docs/REFERENCE.md).
+Workflow args, modes, result statuses, the inception gates, resuming a stopped run,
+gate wrappers, the state kept in your home directory and how the workflows are
+tested are in [docs/REFERENCE.md](docs/REFERENCE.md).
 
 ## License
 

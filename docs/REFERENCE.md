@@ -2,7 +2,7 @@
 
 Detailed reference for [claude-code-pipeline](../README.md): workflow modes and
 args, configuration, gate wrappers, the state kept outside the repo, result
-statuses and resuming a stopped run.
+statuses, the inception gates, resuming a stopped run and testing the workflows.
 
 ## `plan-to-merged-pr` modes
 
@@ -12,6 +12,10 @@ statuses and resuming a stopped run.
 | build-only | `{ concern, ship: false, branch, dir, bases }` | a stacked lane whose predecessors are not merged yet: everything up to the merge check, then push, no PR |
 | ship-only | `{ ship_only: true, branch, dir, title \| existing_pr, predecessor_prs }` | open (or ready) the PR for a built lane once every PR below it has merged, then monitor |
 | monitor-only | `{ pr, branch, dir }` | babysit an existing PR |
+
+In ship-only and monitor-only runs, pass the lane's plan as `plan_text` (a build-only
+run returns it as `plan`), so the merge and comment steps judge against it. Without
+it, they never fall back to the newest plan file.
 
 ## Install and configuration
 
@@ -84,10 +88,15 @@ host must share `GATE_LOCK_DIR`.
   planner_args: '...',             // args for a custom planner (default: the concern)
   proposal: 'docs/design/x.md',    // design doc: handed to the planner and frames the review
   context: 'scouting hints for the planner',
-  plan_text: '...',                // an already-written plan (skips planning; needs branch)
+  plan_text: '...',                // an already-written plan (skips planning; needs branch);
+                                   // in ship-only / monitor-only runs, the plan the merge and comment steps use
   dir: '/abs/path/to/checkout',    // work only here; created as a worktree if absent
+  repo: '/abs/path/to/repo',       // the repository a missing dir is created from (default: the current one)
   branch: 'feat/...',
   bases: ['feat/earlier-lane'],    // stacked-on branches, last contains the others
+  review_base: 'origin/main',      // what the review measures the change from (default: origin/<last base>,
+                                   // else origin/<main_branch>); a ref or a commit id
+  lane: 'a',                       // prefix for every agent label and log line (concurrent runs)
   ship: true,                      // false = build only
   ship_only: false, existing_pr: 123, predecessor_prs: [120, 121],
   title: 'PR title', pr_note: 'extra PR body text, e.g. Fixes #12',
@@ -112,17 +121,94 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
 `proposal-build-chain`: `{ lanes: [{ key, dir, branch, bases?, proposal, concern, planner_args? }], planner, ... }`.
 `planner`, `gate`, `main_branch`, `commit_trailers`, `max_review_rounds`,
 `max_polish` and `efforts` are passed through to every lane; a lane's own
-`planner_args` goes to its custom planner.
+`planner_args` goes to its custom planner. With `proposal` set, the default planner
+runs as `/plan --proposal=<path>`, which plans the lane as an increment of the doc
+rather than routing it back to the doc.
 
-Every result carries a `status`:
+A `plan-to-merged-pr` result carries a `status`:
 
 - `pushed` (build-only)
-- `failed_at_plan`, `failed_at_impl`
+- `failed_at_plan`, `failed_at_impl`, both with `stop_reason`: the skill's error or
+  recommendation, or the question only a human can answer. The run stops rather
+  than guess.
 - `review_failed`, `blocked_at_review`
 - `blocked_at_predecessors`
 - `failed_at_merge_check`, `blocked_at_merge_check`
 - `failed_at_push`, `blocked_at_pr`
 - after monitoring: the PR's last state (`OPEN` / `MERGED` / `CLOSED`), or `monitor_failed`
+
+It also carries `open_questions`: fixes `/polish` left unapplied because they need a
+person's call. The same questions appear in the PR body under "Questions for the
+reviewer". A PR on a repository without CI settles once no check has reported, rather
+than waiting out every monitor round.
+
+## `idea-to-inception`
+
+Start it with `/inception <idea>`, which runs the gate loop below for you. Run
+directly, the workflow takes:
+
+```js
+{
+  idea: 'the idea, in your words',  // required on every run
+  context: '...',                   // anything else every stage should know
+  repo: '/abs/path/to/repo',        // where to start it (default: the current checkout's repository)
+  root: '/abs/path/to/worktrees',   // inception + lane worktrees (default: <repo>-worktrees)
+  slug: 'recipe-swap',              // default: derived from the idea
+  answers: { i1: 'Web app', i3: ['Running cost'] },   // by question id
+  state: { ... },                   // from the previous next_args, unchanged
+  main_branch: 'main', record_dir: 'docs/inception',
+  max_questions: 8, intake_rounds: 2, directions: 4, critics: 3, judges: 3,
+  efforts: { intake: 'high', brief: 'medium', directions: 'high', propose: 'high', critique: 'medium',
+             revise: 'medium', judge: 'high', synthesize: 'medium', design: 'high', docs: 'high', publish: 'low' },
+  // for the build, passed to plan-to-merged-pr:
+  planner, gate, ai_review_check, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds,
+  build_efforts: { ... },           // plan-to-merged-pr's efforts
+}
+```
+
+**The gate loop.** A run stops at the next decision and returns
+`{ status: 'needs_input', gate, summary, artifacts, questions, next_args, how_to_continue }`.
+Each question is shaped for AskUserQuestion (`id`, `header` of at most 12 characters,
+`question`, 2–4 `options`, `multiSelect`, `why`), with any recommended option first.
+Ask every question, set `next_args.answers[id]` (a label, an array of labels for a
+multi-select, `[]` for none, or the user's own words), and run the workflow again with
+`next_args`. A run with a question still unanswered asks it again and spends no agent.
+
+| Gate | Question ids | Asked after |
+|---|---|---|
+| `intake` | `i1`, `i2`, … (a follow-up round continues the numbering) | the read-only intake, or a brief whose answers opened a question |
+| `directions` | `directions` (multi-select, two to four) | the brief and the candidate directions |
+| `decision` | `winner`, `grafts` | the proposals, critiques, revisions, judging and comparison |
+| `design` | `d1`, `d2`, … (skipped when nothing is open) | the design check of your choice |
+| `build` | `build` | the ADR, design doc and `CLAUDE.md` are committed |
+
+`state` holds everything decided so far: question texts, directions, proposal paths,
+scores, document paths and steps. A stage whose result is in `state` never runs again,
+so each answer stays bound to what it answered. Answering `winner` with "none of them"
+clears the proposals and asks the directions question again.
+
+Terminal statuses:
+
+- `built`: `pr`, `pr_status`, `skeleton`, `lanes` (step, branch, status per lane;
+  human-gated steps are skipped, or stop the chain when a later step depends on
+  them), `open_questions` and `ship_plan`, which holds the `plan-to-merged-pr`
+  ship-only args per lane in merge order. The first lane's args name the inception
+  PR as predecessor. Each later lane's args carry its `bases` and no
+  `predecessor_prs`, so `plan-to-merged-pr` refuses them until you add the PR of
+  every lane below it.
+- `docs_pr`: the docs-only PR. `docs_committed`: nothing pushed; `resume_args` asks
+  the build question again.
+- `blocked`: the repository has no first commit on `origin/<main>` (the pipeline
+  never pushes to main), or the inception worktree could not be set up.
+- `failed_at_intake` … `failed_at_docs`, `failed_at_docs_pr`, `failed_at_skeleton`:
+  `retry_args` re-runs that stage and keeps everything decided before it.
+
+Where things go: the inception worktree is `<root>/inception-<slug>` on branch
+`inception/<slug>`; the record (brief, proposals, comparison) is in
+`<record_dir>/<slug>/`; the ADR follows the repository's convention or
+`docs/adr/0001-<slug>-architecture.md`; the design doc is `docs/design/<slug>.md` (or
+in `PROPOSALS_DIR`). Lane `N` builds `feat/<slug>-step<N>-<title>` in
+`<root>/<slug>-step<N>`.
 
 ## Resuming a stopped run
 
@@ -134,6 +220,30 @@ or inputs differ; everything after it runs live. In `bug-fix-backlog` the lanes 
 in parallel and spawn in completion order, so a resume can diverge early and repeat
 finished work; its close and ship stages re-check the issue and PR state before
 acting.
+
+`idea-to-inception` needs `resumeFromRunId` only for a run that stopped mid-stage. Its
+decisions travel in `next_args.state`, so moving from gate to gate never re-runs a
+stage, even from another session. Within a stage its agents run in barriers that
+issue them in a fixed order, so a resume replays them. Once the build stage runs
+the inception PR and the lanes concurrently, a resume can diverge there.
+
+## Testing the workflows
+
+```sh
+node ci/check-workflows.mjs .claude/workflows   # static: meta, phases, clock/random calls, nesting
+node --test ci/*.test.mjs                        # control flow, with stubbed agents
+```
+
+`ci/harness.mjs` runs a workflow script with scripted agents. It checks every agent's
+phase against `meta.phases`, every schema against what the StructuredOutput tool
+accepts, and every stub reply against its schema. It forbids clock and random calls
+and nested `workflow()` calls, and can run a real child workflow one level down. A test
+answers agents by label:
+
+```js
+const t = await run('plan-to-merged-pr', { concern: 'x' }, { agent: call => replies[call.label] })
+t.result; t.calls; t.logs   // the script's return value, every agent call (prompt, label, phase), its log lines
+```
 
 ## State outside the repo
 
@@ -149,6 +259,10 @@ by every checkout:
   working on one issue.
 - `~/.cache/gate-slot-locks/` (`GATE_LOCK_DIR`): `gate-slot.sh`'s lock files and
   its `gate-runs.log`.
+
+`idea-to-inception` also creates worktrees under its `root` (default:
+`<repo>-worktrees`, next to the repository). Remove one with `git worktree remove`
+once its branch has merged.
 
 `/review-changes` also reads Claude Code's own session transcripts under
 `~/.claude/projects/`, without writing to them.
