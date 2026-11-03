@@ -346,7 +346,10 @@ const results = await pipeline(
     }
     const status = (r && r.status) || 'failed'
     log(`${l.key}: ${status}${r && r.pr ? ` (${r.pr.url})` : ''}`)
-    return { ...summary, status, spared_tests: spared, pr: r && r.pr, review_clean: r && r.review_clean, polish_clean: r && r.polish_clean, final_state: r && r.final_state }
+    return {
+      ...summary, status, spared_tests: spared, pr: r && r.pr, review_clean: r && r.review_clean, polish_clean: r && r.polish_clean,
+      stop_reason: (r && r.stop_reason) || '', open_questions: (r && r.open_questions) || [], final_state: r && r.final_state,
+    }
   },
 )
 

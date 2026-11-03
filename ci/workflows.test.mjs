@@ -31,12 +31,12 @@ const promptOf = (trace, re) => {
 // ---- plan-to-merged-pr
 
 const PR = {
-  plan: { branch: 'feat/cache-price-table-20261016', plan: '# Plan: Cache the price table\n\n## Implementation steps\n1. Add the cache.' },
-  impl: { summary: 'built the cache', files_changed: ['src/prices.ts', 'test/prices.test.ts'], gates_green: true },
+  plan: { completed: true, branch: 'feat/cache-price-table-20261016', plan: '# Plan: Cache the price table\n\n## Implementation steps\n1. Add the cache.' },
+  impl: { completed: true, summary: 'built the cache', files_changed: ['src/prices.ts', 'test/prices.test.ts'], gates_green: true },
   clean: { findings: [], completed: true },
   bug: { findings: [{ file: 'src/prices.ts', severity: 'bug', description: 'the webhook clears the wrong key' }], completed: true },
   fix: { summary: 'fixed the key', declined: [], gates_green: true },
-  polish: { issues_found_and_fixed: 0, summary: 'clean', gates_green: true },
+  polish: { issues_found_and_fixed: 0, unresolved_questions: [], summary: 'clean', gates_green: true },
   merge: { blocked: false, merge_check: 'merged 2 commits from origin/main; gates green', gates_green: true, pushed: false },
   pushed: { blocked: false, merge_check: 'merged; gates green', gates_green: true, pushed: true, pushed_sha: '0123456789abcdef' },
   opened: { blocked: false, pr_number: 42, url: 'https://github.com/o/r/pull/42', head_branch: 'feat/cache-price-table-20261016' },
@@ -142,12 +142,43 @@ test('plan-to-merged-pr: a proposal lane is planned with /plan --proposal, so it
   }
 })
 
+test('plan-to-merged-pr: a planner that stops without a plan stops the run, with its reason', async () => {
+  const stopped = { completed: false, stop_reason: 'error=concern_not_reproducible: fixed in abc123', branch: 'main', plan: '' }
+  const t = await run('plan-to-merged-pr', { concern: 'x' }, { agent: fullRun([/^plan$/, stopped]) })
+  assert.equal(t.result.status, 'failed_at_plan')
+  assert.match(t.result.stop_reason, /concern_not_reproducible/)
+  assert.deepEqual(labels(t), ['plan'])
+  // A plan that left the checkout on main is never built on.
+  const onMain = await run('plan-to-merged-pr', { concern: 'x' }, { agent: fullRun([/^plan$/, { ...PR.plan, branch: 'main' }]) })
+  assert.equal(onMain.result.status, 'failed_at_plan')
+  assert.deepEqual(labels(onMain), ['plan'])
+})
+
+test('plan-to-merged-pr: an implementer that stops early, or would have to guess, stops the run with its question', async () => {
+  const stopped = { ...PR.impl, completed: false, stop_reason: 'The plan does not say whether the cache is per process or shared: which?' }
+  const t = await run('plan-to-merged-pr', { concern: 'x' }, { agent: fullRun([/^impl$/, stopped]) })
+  assert.equal(t.result.status, 'failed_at_impl')
+  assert.match(t.result.stop_reason, /per process or shared/)
+  assert.deepEqual(labels(t), ['plan', 'impl'])
+  assert.match(promptOf(t, /^impl$/), /do not guess/)
+})
+
+test('plan-to-merged-pr: a fix polish would have asked about is surfaced to the reviewer, not counted as clean', async () => {
+  const asks = { ...PR.polish, unresolved_questions: ['Should a stale price fall back to the table or fail the request?'] }
+  const t = await run('plan-to-merged-pr', { concern: 'x' }, { agent: fullRun([/^polish-/, asks]) })
+  assert.equal(t.result.polish_clean, false)
+  assert.deepEqual(labels(t).filter(l => l.startsWith('polish-')), ['polish-1'])
+  assert.deepEqual(t.result.open_questions, asks.unresolved_questions)
+  assert.match(promptOf(t, /^merge-check$/), /polish never reached a clean, green round/)
+  assert.match(promptOf(t, /^create-pr$/), /Questions for the reviewer[\s\S]*stale price/)
+})
+
 test('plan-to-merged-pr: an already-written plan skips the planner but must find its branch', async () => {
   const given = { plan_text: '# Plan: fix it', dir: '/wt/fix', branch: 'bugfix/a-1-x' }
-  const ok = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { branch: 'bugfix/a-1-x', plan: 'given' }]) })
+  const ok = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { completed: true, branch: 'bugfix/a-1-x', plan: 'given' }]) })
   assert.equal(ok.result.status, 'OPEN')
   assert.match(promptOf(ok, /^impl$/), /# Plan: fix it/)
-  const wrong = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { branch: 'main', plan: 'given' }]) })
+  const wrong = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { completed: true, branch: 'main', plan: 'given' }]) })
   assert.equal(wrong.result.status, 'failed_at_plan')
   assert.deepEqual(labels(wrong), ['setup'])
 })

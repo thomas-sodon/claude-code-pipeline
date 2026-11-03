@@ -112,22 +112,28 @@ const REVIEW_BASE = BASES.length ? `origin/${BASES[BASES.length - 1]}` : `origin
 const REVIEW_SCOPE = `all:${REVIEW_BASE}`
 const SCOPE_NOTE = BASES.length ? ` If ${REVIEW_BASE} does not resolve (merged and deleted), use args "all:origin/${MAIN}" instead. ` : ' '
 
+// Nobody answers questions inside a workflow, so a stage whose skill would stop or ask must say so in its
+// result (completed=false with a stop_reason, or an unresolved question) instead of guessing or going quiet.
 const PLAN_SCHEMA = {
   type: 'object',
   properties: {
+    completed: { type: 'boolean', description: 'false when no plan was produced: the planning skill stopped (an error= code or a routing recommendation), or it needed an answer only a human can give' },
+    stop_reason: { type: 'string', description: 'when completed=false: why, verbatim (the error code or recommendation, or the question for a human)' },
     branch: { type: 'string', description: 'feature branch created and checked out for this work' },
-    plan: { type: 'string', description: 'full plan text: files, changes, tests, verification' },
+    plan: { type: 'string', description: 'full plan text: files, changes, tests, verification (empty when completed=false)' },
   },
-  required: ['branch', 'plan'],
+  required: ['completed', 'branch', 'plan'],
 }
 const STEP_SCHEMA = {
   type: 'object',
   properties: {
+    completed: { type: 'boolean', description: 'false when the skill stopped before implementing the whole plan: a plan-review blocker, an infeasible step, an error= stop, or a load-bearing detail the plan leaves open' },
+    stop_reason: { type: 'string', description: 'when completed=false: why, verbatim; for a detail the plan leaves open, the question to ask' },
     summary: { type: 'string' },
     files_changed: { type: 'array', items: { type: 'string' } },
     gates_green: { type: 'boolean', description: 'the project quality gates all pass' },
   },
-  required: ['summary', 'files_changed', 'gates_green'],
+  required: ['completed', 'summary', 'files_changed', 'gates_green'],
 }
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -152,10 +158,11 @@ const POLISH_SCHEMA = {
   type: 'object',
   properties: {
     issues_found_and_fixed: { type: 'integer', description: 'count of bugs/issues fixed this round (0 = clean)' },
+    unresolved_questions: { type: 'array', items: { type: 'string' }, description: 'fixes not applied because the skill would first ask the user (a behaviour change they may not intend), each as the question to ask; [] when none' },
     summary: { type: 'string' },
     gates_green: { type: 'boolean' },
   },
-  required: ['issues_found_and_fixed', 'summary', 'gates_green'],
+  required: ['issues_found_and_fixed', 'unresolved_questions', 'summary', 'gates_green'],
 }
 const OBSERVE_SCHEMA = {
   type: 'object',
@@ -235,7 +242,9 @@ const planContext = () => {
     ? `This branch implements the plan below${doc}: use it wherever the skill consults a plan (implementation plan, originating plan, plan context). It is authoritative: ignore the plan pointer and every other plan file.\n\n${text}\n\n`
     : `No plan was handed to this run${doc}: use the folder plan pointer's plan only if it cites files this branch changes, and never fall back to the newest plan file in the plans directory. `
 }
-const done = (status, extra) => ({ branch: BRANCH, plan: plan && plan.plan, impl, review_clean: reviewClean, polish_clean: clean, status, ...extra })
+// Questions polish could not ask; they travel to the PR body and the result.
+let openQuestions = []
+const done = (status, extra) => ({ branch: BRANCH, plan: plan && plan.plan, impl, review_clean: reviewClean, polish_clean: clean, open_questions: openQuestions, status, ...extra })
 if (MONITOR_ONLY) {
   pr = { pr_number: A.pr, url: `PR #${A.pr}` }
   log(`Monitor-only mode for PR #${A.pr} (${BRANCH})`)
@@ -269,23 +278,33 @@ if (MONITOR_ONLY) {
       : `The planning skill creates no branch; AFTER it finishes, as a separate step, create and check out a feature branch off an up-to-date ${MAIN} (descriptive name, dated). Verify it with git rev-parse --abbrev-ref HEAD (never ${MAIN}). `
     plan = A.plan_text
       ? await agent(
-        WORK + setup + `The plan is already written; do NOT invoke a planning skill. Run git rev-parse --abbrev-ref HEAD in that checkout and return its output verbatim as branch (do not switch branches to make it match), leave any uncommitted work there in place, and return plan "given".`,
+        WORK + setup + `The plan is already written; do NOT invoke a planning skill. Run git rev-parse --abbrev-ref HEAD in that checkout and return its output verbatim as branch (do not switch branches to make it match), leave any uncommitted work there in place, and return plan "given" with completed=true (completed=false, with the reason, only if the checkout cannot be set up).`,
         opts('setup', 'Plan', 'merge_check', PLAN_SCHEMA),
       ).then(r => {
-        if (!r) return null
+        if (!r || r.completed === false) return r && { ...r, plan: '' }
         // A checkout on another branch must stop the run, never be built on as if it were BRANCH.
-        if ((r.branch || '').trim() !== BRANCH) { log(`Setup found ${DIR || 'the checkout'} on ${r.branch || '(unknown)'}, not ${BRANCH}`); return null }
-        return { branch: BRANCH, plan: A.plan_text }
+        if ((r.branch || '').trim() !== BRANCH) return { completed: false, stop_reason: `setup found ${DIR || 'the checkout'} on ${r.branch || '(unknown)'}, not ${BRANCH}`, branch: r.branch || '', plan: '' }
+        return { completed: true, branch: BRANCH, plan: A.plan_text }
       })
       : await agent(
       WORK + setup + skillCall +
       (CONTEXT ? `Scout context already found: ${CONTEXT}\n` : '') +
       `Do NOT stop for interactive approval or plan mode — produce the plan directly. ` + branchAfter +
-      `The plan must list each acceptance criterion with its current status, the ordered per-file edits, the tests, and the gate commands. Return the branch and the full plan.`,
+      `The plan must list each acceptance criterion with its current status, the ordered per-file edits, the tests, and the gate commands. Return the branch and the full plan. ` +
+      `If the skill stops without a plan (an error= stop or a routing recommendation), or needs an answer only a human can give, do not write a plan yourself: return completed=false with stop_reason (the question, when it is one).`,
       opts('plan', 'Plan', 'plan', PLAN_SCHEMA),
     )
-    if (!plan) return done('failed_at_plan')
-    BRANCH = plan.branch
+    if (!plan || plan.completed === false || !String(plan.plan || '').trim()) {
+      const why = (plan && plan.stop_reason) || (plan ? 'the planner returned no plan' : 'the planning stage failed to report')
+      log(`Planning stopped: ${why}`)
+      return done('failed_at_plan', { stop_reason: why })
+    }
+    // A plan that left the checkout on the integration branch is never built on.
+    if (!String(plan.branch || '').trim() || plan.branch.trim() === MAIN) {
+      log(`Planning left the checkout on ${plan.branch || '(no branch)'} — refusing to build on ${MAIN}`)
+      return done('failed_at_plan', { stop_reason: `the checkout is on ${plan.branch || '(no branch)'}, not a feature branch` })
+    }
+    BRANCH = plan.branch.trim()
     log(`Plan ready on branch ${BRANCH}`)
     const AUTHORITATIVE = `The plan below is authoritative for this branch; ignore any other plan file in the plans directory.\n\n${plan.plan}\n\n`
 
@@ -293,10 +312,17 @@ if (MONITOR_ONLY) {
     phase('Implement')
     impl = await agent(
       WORK + `You are on branch ${BRANCH}. Invoke the Skill tool with skill "impl", and implement this plan (do not wait for approval). ${AUTHORITATIVE}` +
-      `Include/adjust tests. Run ${GATE_CMDS}. Do not commit.`,
+      `Include/adjust tests. Run ${GATE_CMDS}. Do not commit. ` +
+      `Nobody can answer questions during this run: where the skill would ask the user to confirm plan-review concerns, proceed (this workflow approves the plan); ` +
+      `where it would ask about a load-bearing detail the plan leaves open, do not guess — stop and return completed=false with the question as stop_reason. ` +
+      `Return completed=false with the reason, too, if the skill stops on a blocker, an infeasible step or an error.`,
       opts('impl', 'Implement', 'impl', STEP_SCHEMA),
     )
-    if (!impl) return done('failed_at_impl')
+    if (!impl || impl.completed === false) {
+      const why = (impl && impl.stop_reason) || 'the implement stage failed to report'
+      log(`Implementation stopped: ${why}`)
+      return done('failed_at_impl', { stop_reason: why })
+    }
     log(`Implemented: ${impl.files_changed.join(', ')} (gates ${impl.gates_green ? 'green' : 'RED'})`)
 
     // ---- Review until no defect remains: every fix is re-reviewed; a defect left at the cap blocks the PR.
@@ -344,14 +370,22 @@ if (MONITOR_ONLY) {
     for (let i = 1; i <= MAX_POLISH && !clean; i++) {
       const p = await agent(
         WORK + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". ` + planContext() + `Fix every bug found and run the quality gates. ` +
+        `Nobody can answer questions during this run: where the skill says to ask the user before a fix (a behaviour change they may not intend), do not apply that fix — list it under unresolved_questions as the question to ask. ` +
         `Report how many issues you found and fixed this round (0 if the diff was already clean) and whether gates are green.`,
         opts(`polish-${i}`, 'Polish', 'polish', POLISH_SCHEMA),
       )
       if (!p) continue
-      log(`Polish round ${i}: fixed ${p.issues_found_and_fixed}, gates ${p.gates_green ? 'green' : 'RED'}`)
-      clean = p.issues_found_and_fixed === 0 && p.gates_green
+      openQuestions = (p.unresolved_questions || []).filter(q => q && q.trim())
+      log(`Polish round ${i}: fixed ${p.issues_found_and_fixed}, gates ${p.gates_green ? 'green' : 'RED'}${openQuestions.length ? `, ${openQuestions.length} question(s) for a human` : ''}`)
+      clean = p.issues_found_and_fixed === 0 && p.gates_green && !openQuestions.length
+      // Only questions remain: another round cannot answer them.
+      if (!clean && p.issues_found_and_fixed === 0 && p.gates_green) break
     }
-    if (!clean) log(`Polish did not reach a clean round within ${MAX_POLISH} rounds — proceeding anyway; flag in final report`)
+    if (!clean) {
+      log(openQuestions.length
+        ? `Polish stopped with ${openQuestions.length} question(s) only a human can answer — reported in the result${BUILD_ONLY ? '' : ' and the PR body'}`
+        : `Polish did not reach a clean round within ${MAX_POLISH} rounds — proceeding anyway; flag in final report`)
+    }
   }
 
   // ---- Commit, then merge check; push here only in build-only mode
@@ -396,6 +430,8 @@ if (MONITOR_ONLY) {
         (A.title ? `Title it "${A.title}". ` : '') + (A.pr_note ? `Include in the body: ${A.pr_note} ` : '') +
         // A caller that names the issues to close owns that list: the skill's branch/plan/commit detection could add an issue the caller dropped.
         (CLOSES_IN_NOTE ? `The closing keywords in that note are the ONLY ones the PR may carry: skip the skill's issue-detection step and add no other Fixes/Closes/Resolves line. ` : '')) +
+    // What polish could not ask goes to the human who reviews the PR.
+    (openQuestions.length ? `Add a "Questions for the reviewer" section to the body listing each of these, which an automated run could not answer: ${JSON.stringify(openQuestions)}. ` : '') +
     `Return the PR number, URL and its head branch (gh pr view --json headRefName); set blocked=true if a predecessor is not merged or the PR could not be opened.`,
     opts(A.existing_pr ? 'ready-pr' : 'create-pr', 'PR', 'pr', SHIP_PR_SCHEMA),
   )
