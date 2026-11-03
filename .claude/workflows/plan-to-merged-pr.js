@@ -103,12 +103,13 @@ const PREDS_CHECK = PREDS.length
   ? `First confirm each of ${PREDS.map(n => '#' + n).join(', ')} reads MERGED (gh pr view <n> --json state). If any does not, change nothing and report blocked=true naming it. `
   : ''
 const WORK = GUARD + WHERE + GATES
-// Review scope: a stacked branch's HEAD carries its bases' commits, so review only this branch's own change.
-// `bases` are ordered so the last one contains the others.
-const REVIEW_SCOPE = BASES.length ? `all:origin/${BASES[BASES.length - 1]}` : ''
-const SCOPE_NOTE = REVIEW_SCOPE
-  ? ` If origin/${BASES[BASES.length - 1]} no longer resolves after a git fetch (merged and deleted), use args "all" instead. `
-  : ''
+// Review scope: always measured from a remote ref. A worktree is cut from origin/<main> and never moves the local
+// <main> branch, so a review against a stale local <main> takes every commit main gained since as part of this
+// change, and the fixer then "fixes" them. A stacked branch's HEAD carries its bases' commits, so it is reviewed
+// against its last base (`bases` are ordered so the last one contains the others).
+const REVIEW_BASE = BASES.length ? `origin/${BASES[BASES.length - 1]}` : `origin/${MAIN}`
+const REVIEW_SCOPE = `all:${REVIEW_BASE}`
+const SCOPE_NOTE = BASES.length ? ` If ${REVIEW_BASE} does not resolve (merged and deleted), use args "all:origin/${MAIN}" instead. ` : ' '
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -286,7 +287,7 @@ if (MONITOR_ONLY) {
     let fixes = 0, reviewed = false
     for (let round = 1; ; round++) {
       const review = await agent(
-        WORK + `On branch ${BRANCH} (changes may be uncommitted), invoke the Skill tool with skill "review-changes"${REVIEW_SCOPE ? ` with args "${REVIEW_SCOPE}"` : ''}.${SCOPE_NOTE} ${frame}` +
+        WORK + `On branch ${BRANCH} (changes may be uncommitted), invoke the Skill tool with skill "review-changes" with args "${REVIEW_SCOPE}".${SCOPE_NOTE}${frame}` +
         `Report every finding (bug/concern/suggestion/nit), verified against the code. Do not edit files and do not change git state. ` +
         `Set completed=false if the skill stopped without reviewing (an empty findings list must mean a real, clean review).` +
         (history.length ? `\nEarlier rounds and what the fixer did (confirm each is resolved; do not re-report fixed items or ones validly declined below):\n${JSON.stringify(history, null, 1)}` : ''),

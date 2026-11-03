@@ -96,6 +96,14 @@ test('plan-to-merged-pr: a stacked build-only lane pushes its branch and opens n
   assert.match(promptOf(t, /^plan$/), /from origin\/feat\/events-a/)
 })
 
+test('plan-to-merged-pr: the review is measured from origin, never from a possibly stale local main', async () => {
+  // A worktree cut from origin/main leaves local main where it was; a diff against it would show main's newer commits.
+  const t = await run('plan-to-merged-pr', { concern: 'x', dir: '/wt/x', branch: 'feat/x' }, { agent: fullRun([/^plan$/, { ...PR.plan, branch: 'feat/x' }]) })
+  assert.match(promptOf(t, /^review-changes-1$/), /with args "all:origin\/main"/)
+  const trunk = await run('plan-to-merged-pr', { concern: 'x', main_branch: 'trunk' }, { agent: fullRun() })
+  assert.match(promptOf(trunk, /^review-changes-1$/), /with args "all:origin\/trunk"/)
+})
+
 test('plan-to-merged-pr: an already-written plan skips the planner but must find its branch', async () => {
   const given = { plan_text: '# Plan: fix it', dir: '/wt/fix', branch: 'bugfix/a-1-x' }
   const ok = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { branch: 'bugfix/a-1-x', plan: 'given' }]) })
