@@ -74,6 +74,13 @@ const clip = (s, n) => { const t = squash(s); return t.length > n ? `${t.slice(0
 const words = (s, n) => squash(s).split(' ').slice(0, n).join(' ')
 const slugify = (s, n) => squash(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, n).replace(/-+$/, '')
 const norm = s => squash(s).replace(/\s*\(recommended\)$/i, '').toLowerCase()
+// A chip label of at most 12 characters: an agent's longer one is cut at a word boundary, never mid-word.
+const chip = s => {
+  const t = squash(s)
+  if (t.length <= 12) return t
+  const cut = t.slice(0, 13).lastIndexOf(' ')
+  return (cut > 0 ? t.slice(0, cut) : t.slice(0, 12)).trim()
+}
 const asList = v => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]).map(squash).filter(Boolean)
 const NONE = /^(none|nothing|no(ne)? of (them|these|those)|neither)\b/i
 
@@ -88,7 +95,7 @@ const at = rel => `${S.dir}/${rel}`
 const BRIEF = () => `${S.record}/brief.md`
 const COMPARISON = () => `${S.record}/comparison.md`
 const propPath = key => `${S.record}/proposals/${key}.md`
-const QUESTION_FORMAT = `the same format as the intake questions: header of at most 12 characters, question, why, multi_select, 2–4 options with label (1–5 words) and description, and recommended only with a reason`
+const QUESTION_FORMAT = `the same format as the intake questions: header of at most 12 characters (such as "Gates" or "CI"), question, why, multi_select, 2–4 options with label (1–5 words) and description, and recommended only with a reason`
 
 // ---- Schemas
 const OPTION = { type: 'object', properties: { label: { type: 'string', description: '1–5 words' }, description: { type: 'string', description: 'one line: what choosing it implies' } }, required: ['label', 'description'] }
@@ -307,7 +314,7 @@ const addQuestions = (gate, prefix, list) => {
     const recommended = asList(q.recommended).map(r => options.find(o => norm(o.label) === norm(r))).filter(Boolean).map(o => o.label)
     const n = taken + i + 1
     const item = {
-      id: `${prefix}${n}`, gate, header: squash(q.header).slice(0, 12) || `Question ${n}`.slice(0, 12),
+      id: `${prefix}${n}`, gate, header: chip(q.header) || `Question ${n}`,
       question: squash(q.question), why: squash(q.why), multi_select: !!q.multi_select, options,
       recommended, recommended_reason: recommended.length ? squash(q.recommended_reason) : '',
     }
@@ -322,7 +329,7 @@ const shown = q => {
   return {
     id: q.id, header: q.header, question: q.question, multiSelect: q.multi_select,
     options: ordered.map(o => ({ label: rec.includes(o.label) ? `${o.label} (Recommended)` : o.label, description: o.description })),
-    why: q.why + (q.recommended_reason ? ` Recommended because ${q.recommended_reason}` : ''),
+    why: q.why + (q.recommended_reason ? ` Recommended: ${q.recommended_reason}` : ''),
   }
 }
 
@@ -375,7 +382,7 @@ const intakePrompt = () => GUARD + AUTH + READ_ONLY +
   `   - what the first usable version must do, and what is explicitly out of scope;\n` +
   `   - which quality attributes matter most: ask this unless the idea ranks them, as a multi-select of the four most relevant to this idea (for example time to market, running cost, scalability, reliability, security and privacy, offline use, latency, ease of operation).\n` +
   `   Do not ask what the idea or the repository already answers, what would not change the architecture, or what a later design step settles once the architecture is chosen (libraries, naming, screens). At most ${MAX_QUESTIONS} questions, the most architecture-shaping first; fewer is better.\n` +
-  `   Each question: header (a chip label of at most 12 characters), question (one sentence ending with "?"), why (the architectural decision its answer drives), multi_select (true when several answers can hold at once), and 2–4 options — concrete, distinct answers, each with a label of 1–5 words and a one-line description of what choosing it implies for the architecture. Add no "Other" or "Not sure" option: the user can always answer in their own words. ` +
+  `   Each question: header (a chip label of at most 12 characters, such as "Platform", "Scale", "Data" or "MVP scope"), question (one sentence ending with "?"), why (the architectural decision its answer drives), multi_select (true when several answers can hold at once), and 2–4 options — concrete, distinct answers, each with a label of 1–5 words and a one-line description of what choosing it implies for the architecture. Add no "Other" or "Not sure" option: the user can always answer in their own words. ` +
   `Set recommended to an option's label only when the idea itself argues for it, with recommended_reason saying how; otherwise leave both empty. Never recommend just to fill a gap.\n` +
   `4. title: the product, in at most 6 words. slug: kebab-case, at most 40 characters, not already used by a branch inception/<slug> (git branch -a) or a directory ${RECORD_DIR}/<slug> on origin/${MAIN}.`
 

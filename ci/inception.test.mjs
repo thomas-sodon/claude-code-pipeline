@@ -109,8 +109,10 @@ test('inception: the first run only restates the idea and asks, in AskUserQuesti
     assert.ok(q.options.length >= 2 && q.options.length <= 4, q.id)
     for (const o of q.options) assert.ok(o.label.replace(' (Recommended)', '').split(' ').length <= 5, o.label)
   }
+  // An over-long header is cut at a word boundary, never mid-word.
+  assert.equal(qs[0].header, 'Platform')
   assert.deepEqual(qs[0].options.map(o => o.label), ['Web app (Recommended)', 'Phone app'])
-  assert.match(qs[0].why, /Recommended because recipes are shared by link/)
+  assert.match(qs[0].why, /Recommended: recipes are shared by link/)
   assert.equal(qs[1].options.length, 4)
   assert.equal(qs[2].multiSelect, true)
   // A five-word cap keeps the full text in the description; a lone option is padded rather than dropped.
