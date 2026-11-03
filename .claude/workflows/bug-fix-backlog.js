@@ -335,6 +335,8 @@ const results = await pipeline(
     try {
       r = await workflow('plan-to-merged-pr', {
         ...SHARED,
+        // Lanes ship concurrently: the prefix keeps each one's agents and log lines apart.
+        lane: l.key,
         concern,
         plan_text: planText,
         dir: l.dir,

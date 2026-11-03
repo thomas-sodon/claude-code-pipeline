@@ -21,8 +21,12 @@ export const meta = {
 //   plan_text?: string         an already-written plan (e.g. from bug-fix-backlog's triage); skips the planning skill, needs `branch`.
 //                              In ship-only and monitor-only runs it is only the plan handed to the merge and comment steps
 //   dir?: string               checkout / worktree to work in (created from the last base when `branch` is given and it is absent)
+//   repo?: string              repository to create a missing `dir` worktree from (default: the current checkout's)
 //   branch?: string            use this branch instead of letting the planner create one
 //   bases?: string[]           branches this work is stacked on (merged before planning and at the merge check)
+//   review_base?: string       ref or commit the review measures this branch's change from (default origin/<last base>,
+//                              else origin/<main>), e.g. the commit that landed the docs a walking skeleton is built on
+//   lane?: string              short name prefixed to every agent label and log line, so concurrent runs stay distinguishable
 //   ship?: boolean             default true; false = build only: commit, merge check, push the branch, open no PR
 //   ship_only?: boolean        skip planning/building: open (or ready `existing_pr`) a PR for `branch`, then monitor
 //   existing_pr?: number       ship-only: update + ready this PR instead of creating one
@@ -57,13 +61,18 @@ const PREDS = (A.predecessor_prs || []).map(Number)
 // A stacked branch carries unmerged base commits; a ready PR to main would let a merge bot merge them early.
 if (BASES.length && !A.branch) throw new Error('args.bases needs args.branch (the stacked branch to build)')
 if (BASES.length && !BUILD_ONLY && !PREDS.length) throw new Error('a stacked run that opens or readies a PR needs args.predecessor_prs (or ship: false to build only)')
+// The review base is spliced into the skill's args, so it must be a bare ref or commit id.
+if (A.review_base && !/^[\w./@^~-]+$/.test(A.review_base)) throw new Error('args.review_base must be a git ref or commit id')
+const REPO = A.repo || ''
+const LANE = A.lane ? String(A.lane) : ''
+const say = message => log(LANE ? `[${LANE}] ${message}` : message)
 const GATE = A.gate !== undefined ? A.gate : ''
 const TRAILERS = (A.commit_trailers || ['Co-Authored-By: Claude <noreply@anthropic.com>']).join('\n')
 const MAX_REVIEW = A.max_review_rounds ?? 5
 const EFF = { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low', ...(A.efforts || {}) }
 // Agent options; an unset effort inherits the session's.
 const opts = (label, ph, effortKey, schema) => {
-  const o = { label, phase: ph }
+  const o = { label: LANE ? `${LANE}:${label}` : label, phase: ph }
   if (EFF[effortKey]) o.effort = EFF[effortKey]
   if (schema) o.schema = schema
   return o
@@ -74,8 +83,10 @@ const NO_STASH = `Never run git stash (push, pop, apply or drop): every worktree
   `your scratch area (git add -N any new fix files first, then git diff --binary HEAD -- <fix paths> > <file>), ` +
   `git checkout HEAD -- <fix paths> and remove any new fix files, leaving the tests in place, run the test, ` +
   `then git apply <file>; or make a WIP commit on your own branch. `
+// A lane checkout may carry a CLAUDE.md (and Pipeline config) that the session's own checkout does not have yet.
 const WHERE = (DIR
-  ? `Work ONLY in the git checkout ${DIR} (cd there / use absolute paths); other workflows may be using other checkouts. `
+  ? `Work ONLY in the git checkout ${DIR} (cd there / use absolute paths); other workflows may be using other checkouts. ` +
+    `Read CLAUDE.md, including its Pipeline config, from that checkout's root: it is authoritative over CLAUDE.md text from any other checkout. `
   : '') + NO_STASH
 // A denied action must stay denied: an agent that is refused an edit must not redo it through another tool.
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route ` +
@@ -108,9 +119,9 @@ const WORK = GUARD + WHERE + GATES
 // <main> branch, so a review against a stale local <main> takes every commit main gained since as part of this
 // change, and the fixer then "fixes" them. A stacked branch's HEAD carries its bases' commits, so it is reviewed
 // against its last base (`bases` are ordered so the last one contains the others).
-const REVIEW_BASE = BASES.length ? `origin/${BASES[BASES.length - 1]}` : `origin/${MAIN}`
+const REVIEW_BASE = A.review_base || (BASES.length ? `origin/${BASES[BASES.length - 1]}` : `origin/${MAIN}`)
 const REVIEW_SCOPE = `all:${REVIEW_BASE}`
-const SCOPE_NOTE = BASES.length ? ` If ${REVIEW_BASE} does not resolve (merged and deleted), use args "all:origin/${MAIN}" instead. ` : ' '
+const SCOPE_NOTE = BASES.length && !A.review_base ? ` If ${REVIEW_BASE} does not resolve (merged and deleted), use args "all:origin/${MAIN}" instead. ` : ' '
 
 // Nobody answers questions inside a workflow, so a stage whose skill would stop or ask must say so in its
 // result (completed=false with a stop_reason, or an unresolved question) instead of guessing or going quiet.
@@ -248,7 +259,7 @@ let openQuestions = []
 const done = (status, extra) => ({ branch: BRANCH, plan: plan && plan.plan, impl, review_clean: reviewClean, polish_clean: clean, open_questions: openQuestions, status, ...extra })
 if (MONITOR_ONLY) {
   pr = { pr_number: A.pr, url: `PR #${A.pr}` }
-  log(`Monitor-only mode for PR #${A.pr} (${BRANCH})`)
+  say(`Monitor-only mode for PR #${A.pr} (${BRANCH})`)
 } else {
   if (!SHIP_ONLY) {
     // ---- Plan (the worktree is set up before the skill runs)
@@ -257,7 +268,9 @@ if (MONITOR_ONLY) {
     // Otherwise the planner runs first and the branch is cut afterwards.
     const tokenRule = `Rewrite any --prefixed token inside the concern text (e.g. "--json" -> "the json flag") so the skill never reads it as one of its own flags. `
     const setup = BRANCH
-      ? `First use branch ${BRANCH}${DIR ? ` in ${DIR}` : ''}: if that checkout does not exist, git fetch and create it as a worktree on that branch from origin/${BASES[BASES.length - 1] || MAIN}; if it exists, keep and build on any work already there. ` + STACK
+      ? `First use branch ${BRANCH}${DIR ? ` in ${DIR}` : ''}: if that checkout does not exist, git fetch and create it as a worktree` +
+        (REPO ? ` of the repository at ${REPO} (git -C ${REPO} fetch origin, then git -C ${REPO} worktree add …)` : '') +
+        ` on that branch from origin/${BASES[BASES.length - 1] || MAIN}; if it exists, keep and build on any work already there. ` + STACK
       : ''
     const proposalNote = A.proposal ? `The concern implements part of the proposal ${A.proposal}: read it first and plan exactly the scope below as one increment, whatever the proposal's next step would be by default. ` : ''
     // /plan's own flags: --no-switch keeps it on a given branch; --proposal plans a proposal lane as an increment of
@@ -297,16 +310,16 @@ if (MONITOR_ONLY) {
     )
     if (!plan || plan.completed === false || !String(plan.plan || '').trim()) {
       const why = (plan && plan.stop_reason) || (plan ? 'the planner returned no plan' : 'the planning stage failed to report')
-      log(`Planning stopped: ${why}`)
+      say(`Planning stopped: ${why}`)
       return done('failed_at_plan', { stop_reason: why })
     }
     // A plan that left the checkout on the integration branch is never built on.
     if (!String(plan.branch || '').trim() || plan.branch.trim() === MAIN) {
-      log(`Planning left the checkout on ${plan.branch || '(no branch)'} — refusing to build on ${MAIN}`)
+      say(`Planning left the checkout on ${plan.branch || '(no branch)'} — refusing to build on ${MAIN}`)
       return done('failed_at_plan', { stop_reason: `the checkout is on ${plan.branch || '(no branch)'}, not a feature branch` })
     }
     BRANCH = plan.branch.trim()
-    log(`Plan ready on branch ${BRANCH}`)
+    say(`Plan ready on branch ${BRANCH}`)
     const AUTHORITATIVE = `The plan below is authoritative for this branch; ignore any other plan file in the plans directory.\n\n${plan.plan}\n\n`
 
     // ---- Implement
@@ -321,10 +334,10 @@ if (MONITOR_ONLY) {
     )
     if (!impl || impl.completed === false) {
       const why = (impl && impl.stop_reason) || 'the implement stage failed to report'
-      log(`Implementation stopped: ${why}`)
+      say(`Implementation stopped: ${why}`)
       return done('failed_at_impl', { stop_reason: why })
     }
-    log(`Implemented: ${impl.files_changed.join(', ')} (gates ${impl.gates_green ? 'green' : 'RED'})`)
+    say(`Implemented: ${impl.files_changed.join(', ')} (gates ${impl.gates_green ? 'green' : 'RED'})`)
 
     // ---- Review until no defect remains: every fix is re-reviewed; a defect left at the cap blocks the PR.
     phase('Review')
@@ -344,7 +357,7 @@ if (MONITOR_ONLY) {
       reviewed = true
       findings = review.findings
       const defects = blocking(findings)
-      log(`Review round ${round}: ${findings.length} findings, ${defects.length} blocking`)
+      say(`Review round ${round}: ${findings.length} findings, ${defects.length} blocking`)
       if (!defects.length && (!findings.length || fixes >= 1 || fixes >= MAX_REVIEW)) { reviewClean = true; break }
       if (fixes >= MAX_REVIEW) break
       const fix = await agent(
@@ -357,11 +370,11 @@ if (MONITOR_ONLY) {
       history.push({ round, findings, fixed: fix.summary, declined: fix.declined })
     }
     if (!reviewed) {
-      log('A review or fix stage failed to report — stopping before any push or PR')
+      say('A review or fix stage failed to report — stopping before any push or PR')
       return done('review_failed', { review_findings: findings })
     }
     if (!reviewClean) {
-      log(`${blocking(findings).length} blocking finding(s) left after ${fixes} fix round(s) — stopping before any push or PR`)
+      say(`${blocking(findings).length} blocking finding(s) left after ${fixes} fix round(s) — stopping before any push or PR`)
       return done('blocked_at_review', { review_findings: findings })
     }
 
@@ -377,13 +390,13 @@ if (MONITOR_ONLY) {
       )
       if (!p) continue
       openQuestions = (p.unresolved_questions || []).filter(q => q && q.trim())
-      log(`Polish round ${i}: fixed ${p.issues_found_and_fixed}, gates ${p.gates_green ? 'green' : 'RED'}${openQuestions.length ? `, ${openQuestions.length} question(s) for a human` : ''}`)
+      say(`Polish round ${i}: fixed ${p.issues_found_and_fixed}, gates ${p.gates_green ? 'green' : 'RED'}${openQuestions.length ? `, ${openQuestions.length} question(s) for a human` : ''}`)
       clean = p.issues_found_and_fixed === 0 && p.gates_green && !openQuestions.length
       // Only questions remain: another round cannot answer them.
       if (!clean && p.issues_found_and_fixed === 0 && p.gates_green) break
     }
     if (!clean) {
-      log(openQuestions.length
+      say(openQuestions.length
         ? `Polish stopped with ${openQuestions.length} question(s) only a human can answer — reported in the result${BUILD_ONLY ? '' : ' and the PR body'}`
         : `Polish did not reach a clean round within ${MAX_POLISH} rounds — proceeding anyway; flag in final report`)
     }
@@ -405,19 +418,19 @@ if (MONITOR_ONLY) {
   )
   if (!mc) return done('failed_at_merge_check')
   if (mc.blocked) {
-    log(`Not shipped: ${mc.blocked_reason || 'a predecessor is not merged'}`)
+    say(`Not shipped: ${mc.blocked_reason || 'a predecessor is not merged'}`)
     return done('blocked_at_predecessors', { merge_check: mc })
   }
   if (!mc.gates_green) {
-    log('Merge check did not finish green — stopping before any PR')
+    say('Merge check did not finish green — stopping before any PR')
     return done('blocked_at_merge_check', { merge_check: mc })
   }
   if (BUILD_ONLY) {
     if (!mc.pushed || !mc.pushed_sha) {
-      log('Build finished but the branch was not confirmed pushed')
+      say('Build finished but the branch was not confirmed pushed')
       return done('failed_at_push', { merge_check: mc })
     }
-    log(`Built and pushed ${BRANCH} @${mc.pushed_sha.slice(0, 9)}; no PR opened (build-only)`)
+    say(`Built and pushed ${BRANCH} @${mc.pushed_sha.slice(0, 9)}; no PR opened (build-only)`)
     return done('pushed', { merge_check: mc })
   }
   const opened = await agent(
@@ -437,12 +450,12 @@ if (MONITOR_ONLY) {
     opts(A.existing_pr ? 'ready-pr' : 'create-pr', 'PR', 'pr', SHIP_PR_SCHEMA),
   )
   if (!opened || opened.blocked || !opened.pr_number) {
-    log(`PR not opened: ${(opened && opened.blocked_reason) || 'stage failed'}`)
+    say(`PR not opened: ${(opened && opened.blocked_reason) || 'stage failed'}`)
     return done('blocked_at_pr', { pr_stage: opened })
   }
   pr = { pr_number: opened.pr_number, url: opened.url }
   BRANCH = opened.head_branch || BRANCH
-  log(`PR #${pr.pr_number} open: ${pr.url}`)
+  say(`PR #${pr.pr_number} open: ${pr.url}`)
 }
 
 // ---- Monitor
@@ -474,12 +487,12 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     opts(`observe-${r}`, 'Monitor', 'monitor', OBSERVE_SCHEMA),
   )
   if (!obs) {
-    if (r === MAX_ROUNDS) log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
+    if (r === MAX_ROUNDS) say(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
     continue
   }
   const prev = last
   last = obs
-  log(`Round ${r}: ${last.pr_state} @${last.head_sha.slice(0, 9)}, CI ${last.ci_state}, review ${last.ai_review_done_on_head ? 'done' : 'pending'}, actionable ${last.actionable_comments}, conflicts ${last.has_conflicts}, behind ${last.behind_main}`)
+  say(`Round ${r}: ${last.pr_state} @${last.head_sha.slice(0, 9)}, CI ${last.ci_state}, review ${last.ai_review_done_on_head ? 'done' : 'pending'}, actionable ${last.actionable_comments}, conflicts ${last.has_conflicts}, behind ${last.behind_main}`)
   if (last.pr_state !== 'OPEN') break
 
   // 'none' right after a push usually means checks have not registered yet, so on its own it never counts as
@@ -489,7 +502,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     (last.ci_configured === false || (!!prev && prev.ci_state === 'none' && prev.head_sha === last.head_sha))
   if (noCi && last.ci_configured !== false && silentHead !== last.head_sha) {
     silentHead = last.head_sha
-    log(`No CI reported on ${last.head_sha.slice(0, 9)} in two observations — counting CI as absent for this head`)
+    say(`No CI reported on ${last.head_sha.slice(0, 9)} in two observations — counting CI as absent for this head`)
   }
   const settled = (last.ai_review_done_on_head || (noCi && !AI_CHECK)) && (last.ci_state === 'green' || noCi)
   // A red CI this PR did not cause may be a since-fixed main; merging main can cure it.
@@ -519,7 +532,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     if (c) {
       actions.push({ round: r, step: 'process-comments', ...c })
       pushed = pushed || c.pushed
-      if (c.remaining > 0) log(`process-comments left ${c.remaining} item(s) without a reply — will retry next round`)
+      if (c.remaining > 0) say(`process-comments left ${c.remaining} item(s) without a reply — will retry next round`)
     }
   }
   if (last.ci_state === 'red' && last.ci_red_caused_by_pr && !pushed) {
@@ -534,18 +547,18 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   // Red CI this PR did not cause (flake, broken main) with nothing else to do: no step can change it.
   if (!pushed && last.ci_state === 'red' && !last.ci_red_caused_by_pr && last.ai_review_done_on_head &&
       last.actionable_comments === 0 && !last.has_conflicts && !behindMergeDue) {
-    log('CI is red for a reason outside this PR and nothing else is actionable — handing to human (re-run or fix main)')
+    say('CI is red for a reason outside this PR and nothing else is actionable — handing to human (re-run or fix main)')
     break
   }
   // BEHIND alone does not block settling once its capped merges are spent; "Update branch" at merge time covers it.
   const idle = !pushed && !last.has_conflicts && !behindMergeDue && last.actionable_comments === 0 && settled
   quiet = idle ? quiet + 1 : 0
   if (quiet >= 2) {
-    log('PR settled with nothing actionable for 2 consecutive rounds — handing to human for merge' +
+    say('PR settled with nothing actionable for 2 consecutive rounds — handing to human for merge' +
       (last.behind_main ? ' (still behind main: use "Update branch" when merging)' : ''))
     break
   }
-  if (r === MAX_ROUNDS) log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
+  if (r === MAX_ROUNDS) say(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
 }
 
 return done(last ? last.pr_state : 'monitor_failed', { pr, monitor_actions: actions, final_state: last })

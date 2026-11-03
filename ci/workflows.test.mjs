@@ -43,11 +43,12 @@ const PR = {
   quiet: { pr_state: 'OPEN', head_sha: 'feedface00', has_conflicts: false, behind_main: false, ai_review_done_on_head: true, ci_state: 'green', ci_configured: true, ci_red_caused_by_pr: false, actionable_comments: 0, notes: '' },
   action: { pushed: true, handled: 1, remaining: 0, summary: 'done' },
 }
-// A run where every stage succeeds first time; entries passed in take precedence.
+// A run where every stage succeeds first time; entries passed in take precedence. Patterns accept a lane
+// prefix ("a:plan"), which plan-to-merged-pr adds to its labels when it runs with args.lane.
 const fullRun = (...overrides) => stubs(
   ...overrides,
-  [/^plan$/, PR.plan], [/^setup$/, PR.plan], [/^impl$/, PR.impl], [/^review-changes-/, PR.clean], [/^apply-review-fixes-/, PR.fix],
-  [/^polish-/, PR.polish], [/^merge-check$/, PR.merge], [/^(create|ready)-pr$/, PR.opened], [/^observe-/, PR.quiet],
+  [/(^|:)plan$/, PR.plan], [/(^|:)setup$/, PR.plan], [/(^|:)impl$/, PR.impl], [/(^|:)review-changes-/, PR.clean], [/(^|:)apply-review-fixes-/, PR.fix],
+  [/(^|:)polish-/, PR.polish], [/(^|:)merge-check$/, PR.merge], [/(^|:)(create|ready)-pr$/, PR.opened], [/(^|:)observe-/, PR.quiet],
 )
 
 test('plan-to-merged-pr: one concern goes from plan to a PR that settles', async () => {
@@ -194,6 +195,19 @@ test('plan-to-merged-pr: a fix polish would have asked about is surfaced to the 
   assert.match(promptOf(t, /^create-pr$/), /Questions for the reviewer[\s\S]*stale price/)
 })
 
+test('plan-to-merged-pr: review_base, repo and lane steer a lane built from another repository', async () => {
+  const t = await run('plan-to-merged-pr', {
+    concern: 'Step 1: walking skeleton', dir: '/wt/inception-app', branch: 'inception/app', repo: '/repos/app', review_base: '0a1b2c3d', lane: 'skeleton', ship: false,
+  }, { agent: fullRun([/(^|:)plan$/, { ...PR.plan, branch: 'inception/app' }], [/(^|:)merge-check$/, PR.pushed]) })
+  assert.equal(t.result.status, 'pushed')
+  assert.match(promptOf(t, /review-changes-1$/), /with args "all:0a1b2c3d"/)
+  assert.match(promptOf(t, /:plan$/), /worktree of the repository at \/repos\/app \(git -C \/repos\/app fetch origin/)
+  assert.match(promptOf(t, /:impl$/), /Read CLAUDE\.md, including its Pipeline config, from that checkout's root/)
+  assert.ok(labels(t).every(l => l.startsWith('skeleton:')))
+  assert.ok(t.logs.every(l => l.startsWith('[skeleton] ')))
+  await assert.rejects(run('plan-to-merged-pr', { concern: 'x', review_base: 'main; rm -rf' }), /review_base must be a git ref/)
+})
+
 test('plan-to-merged-pr: an already-written plan skips the planner but must find its branch', async () => {
   const given = { plan_text: '# Plan: fix it', dir: '/wt/fix', branch: 'bugfix/a-1-x' }
   const ok = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { completed: true, branch: 'bugfix/a-1-x', plan: 'given' }]) })
@@ -233,14 +247,16 @@ test('proposal-build-chain: lanes build in order and the chain stops at the firs
   assert.deepEqual(t.result.map(r => [r.lane, r.status]), [['a', 'pushed'], ['b', 'blocked_at_review']])
   assert.ok(seen.every(a => a.name === 'plan-to-merged-pr' && a.ship === false && a.gate === './g.sh' && a.efforts.review === 'xhigh'))
   assert.deepEqual(seen[1].bases, ['feat/events-a'])
+  assert.deepEqual(seen.map(a => a.lane), ['a', 'b'])
 })
 
 test('proposal-build-chain: each lane runs the real plan-to-merged-pr one level down', async () => {
   const t = await run('proposal-build-chain', { lanes: chainLanes.slice(0, 2) }, {
-    agent: fullRun([/^plan$/, call => ({ ...PR.plan, branch: /events-b/.test(call.prompt) ? 'feat/events-b' : 'feat/events-a' })], [/^merge-check$/, PR.pushed]),
+    agent: fullRun([/(^|:)plan$/, call => ({ ...PR.plan, branch: /events-b/.test(call.prompt) ? 'feat/events-b' : 'feat/events-a' })], [/(^|:)merge-check$/, PR.pushed]),
     workflow: (name, a, ctx) => ctx.run(name, a),
   })
   assert.deepEqual(t.result.map(r => r.status), ['pushed', 'pushed'])
+  assert.deepEqual(labels(t).filter(l => /:plan$/.test(l)), ['a:plan', 'b:plan'])
 })
 
 // ---- bug-fix-backlog
@@ -273,6 +289,7 @@ test('bug-fix-backlog: a reproduced bug ships with Fixes #N and a refuted-by-nob
   assert.equal(shipped.length, 1)
   assert.equal(shipped[0].pr_note, 'Fixes #212')
   assert.equal(shipped[0].branch, branch)
+  assert.equal(shipped[0].lane, 'tz')
   assert.match(shipped[0].plan_text, /Regression tests already written[\s\S]*test\/tz.test.ts::parses offsets/)
   assert.equal(labels(t).filter(l => l === 'refute-close:tz').length, 2)
 })

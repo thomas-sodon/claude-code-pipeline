@@ -130,7 +130,13 @@ export async function run(name, args, opts = {}) {
     if (depth > 0) throw new HarnessError(`${name}: workflow("${child}") inside a child workflow — nesting is one level only`)
     trace.children.push({ name: child, args: childArgs })
     if (!opts.workflow) throw new HarnessError(`${name}: unexpected workflow("${child}")`)
-    return opts.workflow(child, childArgs, { run: (n, a) => run(n, a, { ...opts, depth: depth + 1 }).then(t => t.result) })
+    // A real child's agent calls and log lines join this trace (each call keeps its `workflow` name).
+    const runChild = (n, a) => run(n, a, { ...opts, depth: depth + 1 }).then(t => {
+      trace.calls.push(...t.calls)
+      trace.logs.push(...t.logs)
+      return t.result
+    })
+    return opts.workflow(child, childArgs, { run: runChild })
   }
   const phase = title => { listed(title, 'phase()'); current = title; trace.phases.push(title) }
   const log = message => { trace.logs.push(String(message)) }

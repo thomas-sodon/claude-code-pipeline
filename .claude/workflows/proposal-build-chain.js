@@ -28,6 +28,7 @@ for (const l of A.lanes) {
     r = await workflow('plan-to-merged-pr', {
       ...SHARED,
       ...(l.planner_args ? { planner_args: l.planner_args } : {}),
+      lane: l.key,
       concern: l.concern,
       proposal: l.proposal,
       dir: l.dir,
