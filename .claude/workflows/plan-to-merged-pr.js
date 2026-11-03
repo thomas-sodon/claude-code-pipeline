@@ -250,12 +250,20 @@ if (MONITOR_ONLY) {
       ? `First use branch ${BRANCH}${DIR ? ` in ${DIR}` : ''}: if that checkout does not exist, git fetch and create it as a worktree on that branch from origin/${BASES[BASES.length - 1] || MAIN}; if it exists, keep and build on any work already there. ` + STACK
       : ''
     const proposalNote = A.proposal ? `The concern implements part of the proposal ${A.proposal}: read it first and plan exactly the scope below as one increment, whatever the proposal's next step would be by default. ` : ''
+    // /plan's own flags: --no-switch keeps it on a given branch; --proposal plans a proposal lane as an increment of
+    // its doc (without it, /plan's routing stops at "a proposal already covers it" and plans nothing).
+    const planFlags = [
+      BRANCH && ['--no-switch', 'it stops the skill switching off this branch'],
+      A.proposal && [`--proposal=${A.proposal}`, 'it plans this scope as an increment of the proposal instead of routing to it'],
+    ].filter(Boolean)
     const skillCall = PLANNER !== 'plan'
       ? `${BRANCH ? 'Then i' : 'I'}nvoke the Skill tool with skill "${PLANNER}" and args: ${JSON.stringify(A.planner_args || CONCERN)}. ${proposalNote}Plan exactly this scope as one increment: ${CONCERN}\n` +
         (BRANCH ? `Stay on branch ${BRANCH}: skip any switch-to-${MAIN} step the skill has. ` : '')
-      : BRANCH
-        ? `Then invoke the Skill tool with skill "plan" with args "--no-switch " followed by the concern below (keep that leading --no-switch flag; it stops the skill switching off this branch). ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
-        : `Invoke the Skill tool with skill "plan" with the concern below as args. ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
+      : `${BRANCH ? 'Then i' : 'I'}nvoke the Skill tool with skill "plan" with ` +
+        (planFlags.length
+          ? `args "${planFlags.map(f => f[0]).join(' ')} " followed by the concern below (keep the leading flags: ${planFlags.map(([f, why]) => `${f.split('=')[0]}, because ${why}`).join('; ')}). `
+          : 'the concern below as args. ') +
+        `${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
     const branchAfter = BRANCH
       ? ''
       : `The planning skill creates no branch; AFTER it finishes, as a separate step, create and check out a feature branch off an up-to-date ${MAIN} (descriptive name, dated). Verify it with git rev-parse --abbrev-ref HEAD (never ${MAIN}). `

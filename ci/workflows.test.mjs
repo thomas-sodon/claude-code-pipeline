@@ -1,7 +1,12 @@
 // Control-flow tests for the workflow scripts, run with stubbed agents (see harness.mjs): `node --test ci/`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { run } from './harness.mjs'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // Answers agent calls by label: the first [pattern, reply] whose pattern matches the label wins. A function
 // reply gets the call and how many times its pattern matched before; null stands for an agent that died.
@@ -120,6 +125,21 @@ test("plan-to-merged-pr: every later stage that consults a plan gets this branch
   assert.match(promptOf(await monitor(), /^process-comments-1$/), /never fall back to the newest plan file/)
   // ...unless the caller hands one over.
   assert.match(promptOf(await monitor({ plan_text: '# Plan: Given' }), /^process-comments-1$/), /# Plan: Given/)
+})
+
+test('plan-to-merged-pr: a proposal lane is planned with /plan --proposal, so its routing does not bounce it back to the doc', async () => {
+  const full = await run('plan-to-merged-pr', { concern: 'Step 2: the reader', proposal: 'docs/design/events.md' }, { agent: fullRun() })
+  assert.match(promptOf(full, /^plan$/), /with args "--proposal=docs\/design\/events\.md " followed by the concern/)
+  const lane = await run('plan-to-merged-pr', { concern: 'x', proposal: 'docs/design/events.md', dir: '/wt/b', branch: 'feat/b', ship: false }, {
+    agent: fullRun([/^plan$/, { ...PR.plan, branch: 'feat/b' }], [/^merge-check$/, PR.pushed]),
+  })
+  assert.match(promptOf(lane, /^plan$/), /with args "--no-switch --proposal=docs\/design\/events\.md " followed by the concern/)
+  assert.doesNotMatch(promptOf(await run('plan-to-merged-pr', { concern: 'x' }, { agent: fullRun() }), /^plan$/), /--proposal/)
+  // /plan stops on a flag it does not know, so every flag passed to it must be one it documents.
+  const planDoc = readFileSync(join(ROOT, '.claude/commands/plan.md'), 'utf8')
+  for (const flag of promptOf(lane, /^plan$/).match(/args "([^"]*)"/)[1].trim().split(/\s+/)) {
+    assert.match(planDoc, new RegExp('^- `' + flag.split('=')[0], 'm'), `/plan does not document ${flag}`)
+  }
 })
 
 test('plan-to-merged-pr: an already-written plan skips the planner but must find its branch', async () => {

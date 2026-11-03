@@ -22,10 +22,13 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 - `--dry-run` — print the plan body to stdout; write nothing (no plan file, no pointer update) and change no git state.
 - `--slug=<slug>` — force the output slug. Must be kebab-case and ≤60 chars, else `error=invalid_argument`. A leading `plan-` is stripped, so `--slug=plan-foo` and `--slug=foo` both write `plan-foo.md`.
 - `--no-switch` — skip the switch to `$MAIN_BRANCH` (and its refresh) and plan against the branch currently checked out. Use it when the concern is about work in flight on this branch.
+- `--proposal=<path>` — the concern is one increment of this proposal / design doc (a workflow's proposal lane, or a step the doc's author named). Read the doc in full before reading the concern: its text for this increment and its `Acceptance:` criteria bind the plan. The routing checks are skipped (the doc already decided where this work belongs), and the increment is the one named: plan all of it rather than cutting a smaller slice; if it cannot land as one focused PR, stop with `error=step_too_large` and name the split it needs. A path that does not resolve (relative to the checkout root, or absolute) → `error=proposal_not_found`.
 
 An unrecognized `--`-prefixed token is never swallowed into the concern: stop with `error=invalid_argument`, naming the token and the recognized forms (a typo'd `--dryrun` or a space-separated `--slug foo` must not turn a write-nothing run into a real write). No concern text → stop with `error=missing_concern` and an example (`/plan the status endpoint recomputes the full report on every poll and should cache it per request`).
 
 ## Route the concern elsewhere first
+
+Skip this whole section under `--proposal` (announce it): the doc already decided where the concern belongs, and "a proposal already covers it" would send its own increment back to it.
 
 Run this text-only check **before** any git operation, so a routed-away run never moves the user off their branch:
 
@@ -91,7 +94,7 @@ Use the **Explore** subagent for discovery only: usage patterns, prior implement
 
 1. State the **core**: the one change without which the concern is not addressed.
 2. Keep only what the core needs to be safe and testable; move tempting adjacent improvements to `## Out of scope`.
-3. If the core is still too big for one focused PR, plan its first slice. More than ~7 implementation steps signals the increment was not cut.
+3. If the core is still too big for one focused PR, plan its first slice. More than ~7 implementation steps signals the increment was not cut. Under `--proposal` the doc fixed the increment: never cut it — stop with `error=step_too_large` instead.
 4. Order steps so an interrupted run leaves the tree working. Put risky behavior changes behind a flag defaulting to today's behavior when the project has such a convention.
 
 ### Forbidden remedies
@@ -118,7 +121,7 @@ When the stated remedy matches one of these, the plan carries a clean replacemen
 The plan reads as **freshly authored**: it does not quote the request, does not mention this command, and has no drift/comparison section.
 
 1. **`# Plan: <Title>`**
-2. **`## Context`** — what is wrong or missing, why it matters, the intended end state. Cite the target file and symbol once. No pasted concern text or log excerpts.
+2. **`## Context`** — what is wrong or missing, why it matters, the intended end state. Cite the target file and symbol once. No pasted concern text or log excerpts. Under `--proposal`, open with the doc and the increment of it this plan implements (e.g. `Implements step 3 of docs/design/events.md`).
 3. **`## Implementation steps`** — numbered, one increment only. Each step: a short title, the file(s) and symbol(s) touched, and a 1–3 sentence description. Ordering by shape:
    - **bug** — step 1 adds the regression test (file, test name, triggering inputs); step 2 applies the root-cause fix; optionally a step that makes the defect fail loudly and earlier. The test lands in the same commit as the fix — never a failing test alone.
    - **feature** — smallest working surface, then its tests, then wiring into its caller.
