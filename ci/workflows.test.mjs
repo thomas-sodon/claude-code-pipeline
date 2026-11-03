@@ -104,6 +104,24 @@ test('plan-to-merged-pr: the review is measured from origin, never from a possib
   assert.match(promptOf(trunk, /^review-changes-1$/), /with args "all:origin\/trunk"/)
 })
 
+test("plan-to-merged-pr: every later stage that consults a plan gets this branch's plan", async () => {
+  const comments = { ...PR.quiet, actionable_comments: 1 }
+  const t = await run('plan-to-merged-pr', { concern: 'x', proposal: 'docs/design/p.md' }, {
+    agent: fullRun([/^observe-1$/, { ...comments, has_conflicts: true }], [/^(merge-main|process-comments)-/, PR.action]),
+  })
+  for (const re of [/^polish-1$/, /^merge-check$/, /^merge-main-1$/, /^process-comments-1$/]) {
+    assert.match(promptOf(t, re), /This branch implements the plan below, part of the proposal docs\/design\/p\.md/)
+    assert.match(promptOf(t, re), /# Plan: Cache the price table/)
+  }
+  // Monitor-only has no plan of its own: the folder pointer only if it matches, never the newest plan file...
+  const monitor = (extra = {}) => run('plan-to-merged-pr', { pr: 42, branch: 'feat/x', ...extra }, {
+    agent: stubs([/^observe-1$/, comments], [/^observe-/, PR.quiet], [/^process-comments-1$/, PR.action]),
+  })
+  assert.match(promptOf(await monitor(), /^process-comments-1$/), /never fall back to the newest plan file/)
+  // ...unless the caller hands one over.
+  assert.match(promptOf(await monitor({ plan_text: '# Plan: Given' }), /^process-comments-1$/), /# Plan: Given/)
+})
+
 test('plan-to-merged-pr: an already-written plan skips the planner but must find its branch', async () => {
   const given = { plan_text: '# Plan: fix it', dir: '/wt/fix', branch: 'bugfix/a-1-x' }
   const ok = await run('plan-to-merged-pr', { concern: 'Fix #1', ...given }, { agent: fullRun([/^setup$/, { branch: 'bugfix/a-1-x', plan: 'given' }]) })

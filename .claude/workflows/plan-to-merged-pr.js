@@ -18,7 +18,8 @@ export const meta = {
 //   planner_args?: string      args for a custom planner (default: the concern)
 //   proposal?: string          proposal / design doc path; handed to the planner and frames the review alongside the plan
 //   context?: string           scouting hints for the planner
-//   plan_text?: string         an already-written plan (e.g. from bug-fix-backlog's triage); skips the planning skill, needs `branch`
+//   plan_text?: string         an already-written plan (e.g. from bug-fix-backlog's triage); skips the planning skill, needs `branch`.
+//                              In ship-only and monitor-only runs it is only the plan handed to the merge and comment steps
 //   dir?: string               checkout / worktree to work in (created from the last base when `branch` is given and it is absent)
 //   branch?: string            use this branch instead of letting the planner create one
 //   bases?: string[]           branches this work is stacked on (merged before planning and at the merge check)
@@ -223,6 +224,17 @@ const blocking = list => list.filter(f => f.severity === 'bug' || f.severity ===
 
 let plan = null, impl = null, pr = null, findings = [], clean = false, reviewClean = SHIP_ONLY ? null : false
 let BRANCH = A.branch || null
+// The plan this branch implements, for every later stage that consults a plan (polish, the merge steps,
+// process-comments). Left to themselves those skills find it through the per-folder plan pointer or the newest
+// plan file, which another lane or a later /plan may have replaced. Ship-only and monitor-only runs have no plan
+// of their own unless the caller passes plan_text.
+const planContext = () => {
+  const text = (plan && plan.plan) || A.plan_text || ''
+  const doc = A.proposal ? `, part of the proposal ${A.proposal}` : ''
+  return text
+    ? `This branch implements the plan below${doc}: use it wherever the skill consults a plan (implementation plan, originating plan, plan context). It is authoritative: ignore the plan pointer and every other plan file.\n\n${text}\n\n`
+    : `No plan was handed to this run${doc}: use the folder plan pointer's plan only if it cites files this branch changes, and never fall back to the newest plan file in the plans directory. `
+}
 const done = (status, extra) => ({ branch: BRANCH, plan: plan && plan.plan, impl, review_clean: reviewClean, polish_clean: clean, status, ...extra })
 if (MONITOR_ONLY) {
   pr = { pr_number: A.pr, url: `PR #${A.pr}` }
@@ -323,7 +335,7 @@ if (MONITOR_ONLY) {
     const MAX_POLISH = A.max_polish ?? 6
     for (let i = 1; i <= MAX_POLISH && !clean; i++) {
       const p = await agent(
-        WORK + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". Fix every bug found and run the quality gates. ` +
+        WORK + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". ` + planContext() + `Fix every bug found and run the quality gates. ` +
         `Report how many issues you found and fixed this round (0 if the diff was already clean) and whether gates are green.`,
         opts(`polish-${i}`, 'Polish', 'polish', POLISH_SCHEMA),
       )
@@ -337,7 +349,7 @@ if (MONITOR_ONLY) {
   // ---- Commit, then merge check; push here only in build-only mode
   phase('PR')
   const mc = await agent(
-    WORK + AUTH + (SHIP_ONLY ? PREDS_CHECK : '') + `On branch ${BRANCH}:\n` +
+    WORK + AUTH + (SHIP_ONLY ? PREDS_CHECK : '') + planContext() + `On branch ${BRANCH}:\n` +
     `1. Commit any uncommitted work first (git status must be clean before merging): stage the change's files explicitly, with a message that explains why, ending with:\n${TRAILERS}\n` +
     `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` + STACK + `\n` +
     (SHIP_ONLY || !clean
@@ -431,7 +443,8 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   let pushed = false
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
-      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
+      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". ` + planContext() +
+      `Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
@@ -440,7 +453,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   }
   if (last.actionable_comments > 0) {
     const c = await agent(
-      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH}, invoke the Skill tool with skill "process-comments" with args "${PRN}". ` +
+      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH}, invoke the Skill tool with skill "process-comments" with args "${PRN}". ` + planContext() +
       `Address EVERY actionable item (AI bug/suggestion/nit threads incl. outdated ones, overflow findings, human comments): fix with tests or decline/answer with reasons, ` +
       `run the gates once, push, then post the terminal-marker replies and verify every item carries one. ` +
       (last.has_conflicts || behindMergeDue ? `A merge-main step just ran; pull the branch first. ` : '') +
