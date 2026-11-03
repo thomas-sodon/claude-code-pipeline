@@ -40,7 +40,7 @@ const PR = {
   merge: { blocked: false, merge_check: 'merged 2 commits from origin/main; gates green', gates_green: true, pushed: false },
   pushed: { blocked: false, merge_check: 'merged; gates green', gates_green: true, pushed: true, pushed_sha: '0123456789abcdef' },
   opened: { blocked: false, pr_number: 42, url: 'https://github.com/o/r/pull/42', head_branch: 'feat/cache-price-table-20261016' },
-  quiet: { pr_state: 'OPEN', head_sha: 'feedface00', has_conflicts: false, behind_main: false, ai_review_done_on_head: true, ci_state: 'green', ci_red_caused_by_pr: false, actionable_comments: 0, notes: '' },
+  quiet: { pr_state: 'OPEN', head_sha: 'feedface00', has_conflicts: false, behind_main: false, ai_review_done_on_head: true, ci_state: 'green', ci_configured: true, ci_red_caused_by_pr: false, actionable_comments: 0, notes: '' },
   action: { pushed: true, handled: 1, remaining: 0, summary: 'done' },
 }
 // A run where every stage succeeds first time; entries passed in take precedence.
@@ -81,6 +81,27 @@ test('plan-to-merged-pr: the monitor runs only the steps an observation calls fo
   assert.deepEqual(labels(t), ['observe-1', 'merge-main-1', 'process-comments-1', 'observe-2', 'observe-3'])
   assert.match(promptOf(t, /^process-comments-1$/), /A merge-main step just ran; pull the branch first/)
   assert.equal(t.result.status, 'OPEN')
+})
+
+test('plan-to-merged-pr: a PR on a repository without CI settles instead of waiting out every monitor round', async () => {
+  const noCi = { ...PR.quiet, ci_state: 'none', ci_configured: false, ai_review_done_on_head: false }
+  const t = await run('plan-to-merged-pr', { pr: 42, branch: 'feat/x' }, { agent: stubs([/^observe-/, noCi]) })
+  assert.deepEqual(labels(t), ['observe-1', 'observe-2'])
+  assert.equal(t.result.status, 'OPEN')
+  assert.match(promptOf(t, /^observe-1$/), /runs no CI on pull requests[^.]*do not wait/)
+  // CI that exists but never reports on this head (path filters, a run awaiting approval) counts as absent
+  // once two observations of the same head saw nothing.
+  const silent = { ...noCi, ci_configured: true }
+  const s = await run('plan-to-merged-pr', { pr: 42, branch: 'feat/x' }, { agent: stubs([/^observe-/, silent]) })
+  assert.deepEqual(labels(s), ['observe-1', 'observe-2', 'observe-3'])
+  assert.equal(s.logs.filter(l => /No CI reported on feedface0/.test(l)).length, 1)
+  // 'none' on a new head (just pushed) still waits for checks to register.
+  const heads = ['a1', 'b2', 'c3', 'd4']
+  const moving = await run('plan-to-merged-pr', { pr: 42, branch: 'feat/x', max_monitor_rounds: 4 }, {
+    agent: stubs([/^observe-/, (call, n) => ({ ...silent, head_sha: heads[n] })]),
+  })
+  assert.equal(labels(moving).length, 4)
+  assert.ok(moving.logs.some(l => /4-round cap without settling/.test(l)))
 })
 
 test('plan-to-merged-pr: red CI caused by the PR gets a fix step', async () => {

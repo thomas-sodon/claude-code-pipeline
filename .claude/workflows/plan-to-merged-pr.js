@@ -173,11 +173,12 @@ const OBSERVE_SCHEMA = {
     behind_main: { type: 'boolean', description: 'true if the PR is conflict-free but out of date with its base (mergeStateStatus BEHIND)' },
     ai_review_done_on_head: { type: 'boolean', description: AI_CHECK ? `true once the "${AI_CHECK}" check run for head_sha has completed (any conclusion); a missing check means not registered yet, not done` : 'no AI review check is configured: true once CI on head_sha has completed' },
     ci_state: { type: 'string', enum: ['green', 'red', 'pending', 'none'], description: AI_CHECK ? `Quality-gate CI on head_sha, ignoring the "${AI_CHECK}" check (it may fail just by posting findings)` : 'Quality-gate CI on head_sha' },
+    ci_configured: { type: 'boolean', description: 'false only when no CI runs on this PR at all: no check run or commit status has reported on any of its heads, and no CI configuration would run on a pull request (no .github/workflows file with a pull_request or pull_request_target trigger, nor another CI service\'s config)' },
     ci_red_caused_by_pr: { type: 'boolean', description: 'true only if ci_state is red and the failure is attributable to this PR\'s diff' },
     actionable_comments: { type: 'integer', description: 'unresolved review threads (incl. outdated) with NO terminal reply (Fixed locally / Could not prove this defect / Declined with / Answered with / Tracked in #) and NO out-of-scope reply (Surfaced for human review — out of scope for automated remediation.; those wait on a human), plus unacknowledged overflow findings and unanswered top-level human comments' },
     notes: { type: 'string' },
   },
-  required: ['pr_state', 'head_sha', 'has_conflicts', 'behind_main', 'ai_review_done_on_head', 'ci_state', 'ci_red_caused_by_pr', 'actionable_comments', 'notes'],
+  required: ['pr_state', 'head_sha', 'has_conflicts', 'behind_main', 'ai_review_done_on_head', 'ci_state', 'ci_configured', 'ci_red_caused_by_pr', 'actionable_comments', 'notes'],
 }
 const ACTION_SCHEMA = {
   type: 'object',
@@ -456,6 +457,7 @@ const MAX_BEHIND_MERGES = 2
 let behindMerges = 0
 let quiet = 0
 let last = null
+let silentHead = null
 const actions = []
 for (let r = 1; r <= MAX_ROUNDS; r++) {
   const obs = await agent(
@@ -463,7 +465,8 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     `1. Read the head SHA (gh pr view ${PRN} --json headRefOid,state,mergeable,mergeStateStatus). If MERGED/CLOSED, report and stop. If mergeable is CONFLICTING or mergeStateStatus is DIRTY, CI cannot run: skip step 2, report has_conflicts=true, ci_state=none, ai_review_done_on_head=false.\n` +
     `2. Wait for CI${AI_CHECK ? ` and the "${AI_CHECK}" check` : ''} on that head to complete, WITHOUT foreground sleep, capped at ~20 minutes. ` +
     `Try \`gh pr checks ${PRN} --watch --interval 30\`; if it errors (e.g. 403 on check-runs), poll \`gh run list --branch ${BRANCH} --json name,status,conclusion,headSha\` ` +
-    `(or gh pr view --json statusCheckRollup) with the Monitor tool until-loop instead.${AI_CHECK ? ` Review comments land when the "${AI_CHECK}" run completes, so do not count comments before it has.` : ''}\n` +
+    `(or gh pr view --json statusCheckRollup) with the Monitor tool until-loop instead.${AI_CHECK ? ` Review comments land when the "${AI_CHECK}" run completes, so do not count comments before it has.` : ''} ` +
+    `If the repository runs no CI on pull requests (see ci_configured), do not wait: report ci_state=none and ci_configured=false.\n` +
     `3. Count actionable comments per the actionable_comments definition: GraphQL reviewThreads (isResolved, isOutdated, comments with author.login and body), ` +
     `findings an AI reviewer listed in its review body instead of as threads vs a <!-- pipeline:overflow-ack --> comment, and top-level human PR comments vs <!-- pipeline:human-ack -->. ` +
     `An unresolved thread whose latest reply is a terminal marker is NOT actionable — those stay unresolved for the human.\n` +
@@ -474,12 +477,21 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     if (r === MAX_ROUNDS) log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
     continue
   }
+  const prev = last
   last = obs
   log(`Round ${r}: ${last.pr_state} @${last.head_sha.slice(0, 9)}, CI ${last.ci_state}, review ${last.ai_review_done_on_head ? 'done' : 'pending'}, actionable ${last.actionable_comments}, conflicts ${last.has_conflicts}, behind ${last.behind_main}`)
   if (last.pr_state !== 'OPEN') break
 
-  // 'none' right after a push usually means checks have not registered yet, so it never counts as settled.
-  const settled = last.ai_review_done_on_head && last.ci_state === 'green'
+  // 'none' right after a push usually means checks have not registered yet, so on its own it never counts as
+  // settled. It does when no CI runs on pull requests at all, or when an unchanged head showed none twice (CI
+  // that path filters skip, a run awaiting approval); otherwise such a PR waits out every round.
+  const noCi = last.ci_state === 'none' && !last.has_conflicts &&
+    (last.ci_configured === false || (!!prev && prev.ci_state === 'none' && prev.head_sha === last.head_sha))
+  if (noCi && last.ci_configured !== false && silentHead !== last.head_sha) {
+    silentHead = last.head_sha
+    log(`No CI reported on ${last.head_sha.slice(0, 9)} in two observations — counting CI as absent for this head`)
+  }
+  const settled = (last.ai_review_done_on_head || (noCi && !AI_CHECK)) && (last.ci_state === 'green' || noCi)
   // A red CI this PR did not cause may be a since-fixed main; merging main can cure it.
   const redNotOurs = last.ci_state === 'red' && !last.ci_red_caused_by_pr && last.ai_review_done_on_head
   const behindMergeDue = last.behind_main && !last.has_conflicts && (settled || redNotOurs) &&
