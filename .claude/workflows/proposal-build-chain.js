@@ -28,7 +28,9 @@ export const meta = {
 //   The proposal must already be on origin/<main>: every lane worktree is cut from origin and reads it there.
 //   A lane that does not push stops only its own chain. A lane already pushed by an earlier run (its branch exists on
 //   origin) is not rebuilt; later lanes stack on it. Lanes waiting on a human-gated step, on an unfinished step of
-//   another doc or on an unfinished roadmap milestone are reported as blocked, never built.
+//   another doc, on an unfinished roadmap milestone, on the proposal's acceptance (a draft: proposal_not_accepted),
+//   on a Source: roadmap milestone that does not resolve (milestone_unresolved) or on a blocked lane before them are
+//   reported as blocked, never built (the blocking reasons in docs/PROPOSALS.md).
 const A = args || {}
 const DERIVE = !A.lanes && !!A.proposal
 if (!DERIVE && (!A.lanes || !A.lanes.length)) throw new Error('proposal-build-chain: pass args.lanes, or args.proposal (with dir and root) to derive the lanes from the proposal (see the pipeline README)')

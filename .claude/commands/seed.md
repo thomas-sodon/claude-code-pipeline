@@ -11,13 +11,13 @@ This command is the **first step for a new idea**: run it in the clean repositor
 - `--update` — also replace pipeline files in the target that differ from the source (upgrading an installed pipeline). Never touches `CLAUDE.md`.
 - `--dry-run` — print what would be copied, kept and written; write nothing.
 
-An unrecognized `--`-prefixed token or a second target → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: only *Write CLAUDE.md* runs.
+An unrecognized `--`-prefixed token or a second target → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: *Check the target* and *Write CLAUDE.md* still run; only *Copy the pipeline files* is skipped.
 
 ## Check the target
 
 1. `git -C <target> rev-parse --show-toplevel` must succeed → else `error=not_a_repo` (the pipeline assumes a clean repository is already set up; it never creates one). Work at that root.
 2. `git -C <target> remote get-url origin` must succeed → else `error=no_remote`.
-3. Tracked files with uncommitted changes (`git status --porcelain`, lines not starting `??`) → `error=dirty_tree`, listing them. Untracked files (a brief, notes, design docs) are fine.
+3. Tracked files outside the target's `.claude/` and `CLAUDE.md` with uncommitted changes (`git status --porcelain`, lines not starting `??`) → `error=dirty_tree`, listing them. Changes inside them are fine: this command only ever writes there, so they are an earlier run's, which a re-run sees again (`brief-to-proposals` seeds again an existing repository seeded a moment before). Untracked files (a brief, notes, design docs) are fine too.
 4. **Greenfield or existing**, exactly as `/roadmap` judges it (its *Greenfield vs existing* rule): the target is **existing** when `CLAUDE.md` has a `## Pipeline config` other than the one this command writes (marked `<!-- Pipeline config written by /seed -->`), or it holds source code, manifests or CI config outside `.git/`, `.claude/`, the design docs and the brief; otherwise it is **greenfield** (a host's initial `README`, `LICENSE` and `.gitignore` are fine, and so is everything this command writes, so a re-run never changes the verdict). The next step and the `QUALITY_GATES` candidate below depend on it.
 
 ## Copy the pipeline files
@@ -39,7 +39,7 @@ Never delete a target file, and copy nothing else (no `settings.local.json`, no 
 
   <!-- Written by /seed. /bootstrap completes the Pipeline config and adds Invariants and Testing from the accepted architecture. -->
 
-  This repository is designed and built with a Claude Code pipeline. The design lives in `docs/design/`: `architecture.md`, `roadmap.md` and one proposal per milestone. Changes reach `main` only through pull requests.
+  This repository is designed and built with a Claude Code pipeline. The design lives in `docs/design/`: `architecture.md`, `roadmap.md` and one proposal per code milestone. After the first commit, changes reach `main` only through pull requests.
 
   ## How work happens here
 
