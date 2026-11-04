@@ -30,18 +30,22 @@ Requirements, the full config keys and the example config are in
 
 ```sh
 git clone git@github.com:you/my-product.git && cd my-product   # a new, clean repository
-mkdir -p .claude docs
-cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scripts .claude/
-cp ~/my-brief.md docs/brief.md
-claude   # then: "Run the brief-to-proposals workflow with { brief: 'docs/brief.md', dir: '<absolute path here>' }"
+cp ~/my-brief.md brief.md
+claude   # then: "Run the workflow at /tmp/ccp/.claude/workflows/brief-to-proposals.js with
+         #        { brief: 'brief.md', dir: '<absolute path here>', pipeline: '/tmp/ccp' }"
 ```
 
 Start from a clean clone of the new repository (an empty one, or just the
 README and licence a host creates): the pipeline never creates a repository or a
-remote. It must hold the pipeline's `.claude` (the copy above) before
-`brief-to-proposals` runs, since its authors run `.claude/scripts/proposal-lint.py`
-there.
+remote.
 
+0. **Seed.** The workflow's first step, `/seed`, installs the pipeline into the
+   repository — its skills (`.claude/commands`), workflows and scripts — and writes
+   a base `CLAUDE.md` (how work happens here, and a Pipeline config `/bootstrap`
+   completes), so every later step and every session opened there runs from files
+   installed in the repo. They are committed with the bootstrap branch, before any
+   milestone builds. (`/seed <repo> --from=/tmp/ccp` does the same on its own, for
+   example to add the pipeline to an existing project.)
 1. **Design.** The workflow writes `docs/design/architecture.md`, `roadmap.md` and
    one proposal per code milestone, each reviewed until clean. No code, no commits.
 2. **Accept** (you). Read and edit the docs, then set `Status: accepted` on each one
@@ -134,7 +138,7 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
     brief-to-proposals.js     a brief to reviewed architecture, roadmap and proposals; no code
     proposal-build-chain.js   a proposal's lanes, derived from its steps, built as stacked chains
   commands/
-    roadmap.md  propose.md  review-proposal.md  bootstrap.md
+    seed.md  roadmap.md  propose.md  review-proposal.md  bootstrap.md
     plan.md  impl.md  review-changes.md  polish.md  create-pr.md
     process-comments.md  merge-main.md  quality-gates.md  bug-fix.md
   scripts/
@@ -149,6 +153,7 @@ examples/
 
 | Command | Does |
 |---|---|
+| `/seed <repo> [--from=<pipeline>]` | Installs the pipeline's skills, workflows and scripts into a repository and writes a base `CLAUDE.md` (working rules, a Pipeline config `/bootstrap` completes). Never overwrites, never commits. |
 | `/roadmap <brief>` | Turns a product brief (or free text) into draft `architecture.md` and `roadmap.md`: decisions with their options, milestones in validation order, every person-only step a human gate. |
 | `/propose <concern>` | Writes one draft proposal: design, security, rollout and a build-ordered list of one-PR steps and human gates. `--milestone=N` for a roadmap milestone; `--revise <doc>` applies review findings. |
 | `/review-proposal <doc>` | Read-only review of a design doc against its source, the tree and the architecture; findings as in `/review-changes`. |

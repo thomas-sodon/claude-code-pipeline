@@ -1,8 +1,9 @@
 export const meta = {
   name: 'brief-to-proposals',
-  description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: architecture panel, /roadmap, /propose per milestone, /review-proposal and revise until clean, cross-doc consistency, then lint and lanes. Writes docs only: no code, no commits',
+  description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: seed the repo with the pipeline and a base CLAUDE.md, architecture panel, /roadmap, /propose per milestone, /review-proposal and revise until clean, cross-doc consistency, then lint and lanes. Writes docs only: no code, no commits',
   whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README.',
   phases: [
+    { title: 'Seed', detail: '/seed installs the pipeline\'s skills, workflows and scripts and a base CLAUDE.md into the repo' },
     { title: 'Architecture', detail: 'independent sketches and a judge, then /roadmap writes architecture.md and roadmap.md, reviewed until clean' },
     { title: 'Proposals', detail: '/propose per roadmap milestone, then /review-proposal and /propose --revise until clean' },
     { title: 'Consistency', detail: 'one pass over every doc for cross-doc conflicts and coverage of the source' },
@@ -13,8 +14,9 @@ export const meta = {
 // args:
 //   brief?: string            path of a product brief (relative to dir, or absolute): brief mode
 //   concern?: string          one change too big for one PR, or a structural class: concern mode (one proposal, no roadmap)
-//   dir: string               absolute path of the project directory: an existing repo, or a fresh one that already holds the
-//                             pipeline's .claude/commands and .claude/scripts (the authors run .claude/scripts/proposal-lint.py there)
+//   dir: string               absolute path of the project's repository: a clean clone (the pipeline never creates one)
+//   pipeline?: string         absolute path of the pipeline source (a checkout of the pipeline): /seed copies its skills, workflows and
+//                             scripts into dir and writes a base CLAUDE.md first. Omit only when dir already holds the pipeline.
 //   out?: string              proposals directory relative to dir (default: PROPOSALS_DIR from the Pipeline config, else docs/design)
 //   context?: string          extra framing for every author (builder, budget, constraints the source does not state)
 //   panel?: number            independent architecture sketches before /roadmap (default 3; 0 = skip the panel)
@@ -51,6 +53,7 @@ const REVIEW_CTX = A.context ? `The authors were told to follow this framing fro
 const WORK = GUARD + WHERE + DOCS_ONLY
 const SOURCE = BRIEF_MODE ? `the product brief ${A.brief}` : `the concern ${JSON.stringify(A.concern)}`
 const LINT = `python3 .claude/scripts/proposal-lint.py`
+const PIPELINE = A.pipeline ? String(A.pipeline).replace(/\/+$/, '') : ''
 
 const FINDING = {
   type: 'object',
@@ -214,6 +217,34 @@ async function reviewLoop(docs, frame, label, ph) {
 let arch = null, judged = null, archReview = null
 const proposals = []
 
+// ---- Seed: the repo gets the pipeline's base files before any design work, so every author, reviewer and later session
+// runs from files installed there (they ship in the bootstrap PR on a new repo, or an ordinary PR on an existing one).
+phase('Seed')
+const SEED_SCHEMA = {
+  type: 'object',
+  properties: {
+    copied: { type: 'integer', description: 'pipeline files copied into the repo' },
+    differing_kept: { type: 'array', items: { type: 'string' }, description: 'repo files that differ from the source and were kept' },
+    claude_md: { type: 'string', enum: ['written', 'appended', 'unchanged'] },
+    stopped: { type: 'boolean', description: 'true if the command stopped with an error= (no_source, not_a_repo, no_remote, dirty_tree, ...)' },
+    stop_reason: { type: 'string' },
+  },
+  required: ['copied', 'differing_kept', 'claude_md', 'stopped'],
+}
+const seedCmd = `${PIPELINE || DIR}/.claude/commands/seed.md`
+const seeded = await agent(
+  GUARD + `Read the command file ${seedCmd} in full and follow it exactly, as an agent invoking that skill would, with the args ` +
+  `${JSON.stringify(`${DIR}${PIPELINE ? ` --from=${PIPELINE}` : ''}`)}. ` +
+  (PIPELINE ? '' : `No pipeline source was given: the repo must already hold the pipeline (the source is the repo itself); if ${seedCmd} does not exist, report stopped with error=no_source and say to pass args.pipeline. `) +
+  `Write only what that command writes. Return what it copied, kept and wrote.`,
+  opts('seed', 'Seed', 'lint', SEED_SCHEMA),
+)
+if (!seeded || seeded.stopped) {
+  log(`Seeding stopped: ${(seeded && seeded.stop_reason) || 'the stage failed to report'}`)
+  return { status: 'failed_at_seed', stop_reason: (seeded && seeded.stop_reason) || '' }
+}
+log(`Seeded ${DIR}: ${seeded.copied} pipeline file(s) copied, CLAUDE.md ${seeded.claude_md}${seeded.differing_kept.length ? `, ${seeded.differing_kept.length} differing file(s) kept` : ''}`)
+
 if (BRIEF_MODE) {
   // ---- Architecture: independent sketches, a judge, then /roadmap writes the docs
   phase('Architecture')
@@ -253,7 +284,7 @@ if (BRIEF_MODE) {
   )
   if (!arch || arch.stopped) {
     log(`/roadmap stopped: ${(arch && arch.stop_reason) || 'the stage failed to report'}`)
-    return { status: 'failed_at_roadmap', stop_reason: (arch && arch.stop_reason) || '', panel: judged }
+    return { status: 'failed_at_roadmap', stop_reason: (arch && arch.stop_reason) || '', seeded, panel: judged }
   }
   log(`Wrote ${arch.architecture} and ${arch.roadmap}: ${arch.milestones.length} milestones`)
   archReview = await reviewLoop(
@@ -380,6 +411,7 @@ const status = !lint ? 'lint_failed'
 log(`Status: ${status}`)
 return {
   status,
+  seeded,
   out_dir: arch ? arch.out_dir : null,
   architecture: arch ? arch.architecture : null,
   roadmap: arch ? arch.roadmap : null,
