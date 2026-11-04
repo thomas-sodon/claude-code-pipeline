@@ -1,14 +1,14 @@
 export const meta = {
   name: 'plan-to-merged-pr',
-  whenToUse: 'Take one concern — or one proposal lane — from plan to an open, review-clean PR, then babysit it. Also: build-only (stacked lanes, no PR), ship-only (open/ready a built branch once its predecessors merged) and monitor-only modes. See the pipeline README.',
-  description: 'Plan → impl → review/fix until clean → polish-until-clean → PR → monitor comments/conflicts, for one concern or proposal lane',
+  whenToUse: 'Take one concern — or one proposal lane — from plan to an open, review-clean PR, then babysit it. Also: build-only (stacked lanes, no PR), ship-only (open/ready a built branch — a stacked lane once its predecessors merged, or the bootstrap/<date> branch from /bootstrap) and monitor-only modes. See the pipeline README.',
+  description: 'Plan → impl → review/fix until clean → polish-until-clean → PR → monitor CI, comments and conflicts, for one concern or proposal lane',
   phases: [
     { title: 'Plan', detail: '/plan (or a project planning skill) at medium effort' },
     { title: 'Implement', detail: '/impl at low effort' },
     { title: 'Review', detail: '/review-changes at high effort, fixes at low, re-reviewed until clean' },
     { title: 'Polish', detail: '/polish at low effort until a clean round' },
     { title: 'PR', detail: 'commit + merge check, then /create-pr (or push only, in build-only mode)' },
-    { title: 'Monitor', detail: 'process comments, merge main, until settled' },
+    { title: 'Monitor', detail: 'merge main, process comments, fix CI this PR broke, until settled' },
   ],
 }
 
