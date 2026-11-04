@@ -18,6 +18,17 @@ jobs:
           node-version: 22
       - name: Syntax-check workflow scripts
         run: node ci/check-workflows.mjs .claude/workflows
+      - name: Workflows invoke existing skills with documented flags
+        run: node ci/check-skill-refs.mjs
+      - name: proposal-lint tests
+        run: python3 ci/test_proposal_lint.py
+      - name: Valid fixtures lint clean
+        run: |
+          for f in ci/fixtures/valid-*.md; do
+            python3 .claude/scripts/proposal-lint.py "$f" || { echo "expected $f to lint with exit 0"; exit 1; }
+          done
+      - name: Example design docs in the docs and commands lint clean
+        run: python3 ci/lint-doc-examples.py
       - name: shellcheck
         run: shellcheck .claude/scripts/*.sh
       - name: gate-slot smoke test
@@ -30,7 +41,7 @@ jobs:
           test "$rc" -eq 125 || { echo "expected 125 with no command, got $rc"; exit 1; }
       - name: Commands are present and project-agnostic
         run: |
-          for c in plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates; do
+          for c in seed roadmap propose review-proposal bootstrap plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates; do
             test -s ".claude/commands/$c.md" || { echo "missing .claude/commands/$c.md"; exit 1; }
           done
           if grep -rniE 'maestro|/home/|/opt/' .claude; then
