@@ -1,4 +1,4 @@
-Run the project's quality gates — plus any failure class the current PR's live CI is red on — fix failures at the root, then commit and push the fixes.
+Run the project's quality gates — plus any gate check the current PR's live CI is red on — fix failures at the root, then commit and push the fixes.
 
 ## Configuration
 

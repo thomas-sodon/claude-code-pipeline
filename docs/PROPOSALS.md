@@ -2,7 +2,7 @@
 
 The format of the design docs the pipeline writes, reviews and builds from: the
 **architecture** (what to build and how it runs), the **roadmap** (milestones in
-validation order) and **proposals** (one per milestone or large change, with a
+validation order) and **proposals** (one per code milestone or large change, with a
 build-ordered step list). Back to the [README](../README.md); the lint's command
 line is in [REFERENCE.md](REFERENCE.md#proposal-lintpy).
 
@@ -54,16 +54,19 @@ numbers. Examples and fixtures are synthetic or redacted.
 
 | Status | Set by | Builds |
 |---|---|---|
-| `draft` | `/roadmap` and `/propose`, on every write and every revise | nothing: `--lanes` blocks every lane (`proposal_not_accepted`), `/impl` stops (`doc_not_accepted`), `/bootstrap` stops (`not_accepted`) |
+| `draft` | `/roadmap` and `/propose`, on every write and every revise | nothing: `--lanes` blocks every lane (`proposal_not_accepted`), `/plan --proposal` and `/impl` stop (`doc_not_accepted`), `/bootstrap` stops (`not_accepted`) |
 | `accepted` | a person, after reading and review | lanes build; `/impl` takes the next step; `/bootstrap` runs |
 | `in-progress` | a person, once building has started | lanes build; `/propose` keeps every pending step's number ([protected](#ticking)) |
-| `done` | a person, when every step is ticked | nothing |
+| `done` | a person, when every step is ticked | nothing from `--lanes` (it blocks every lane) or `/plan --proposal` (`doc_not_accepted`); `/impl <doc>` checks only for `draft`, so tick every step before setting `done` |
 
 Only a person sets anything other than `draft`. A revise of an accepted doc resets
 it to `draft`, so a person re-accepts what changed. `proposal-build-chain` and
 `plan-to-merged-pr` take `allow_draft: true` (`/plan --proposal=<doc> --allow-draft`)
 to build a draft anyway; `/impl <doc>` never does. A doc with no `Status:` line is
-still planned, with a warning.
+still planned by `/plan --proposal` and `/impl <doc>`, with a warning; `--lanes`
+blocks every lane of it (`proposal_not_accepted`, `Status: missing`) unless
+`--allow-draft`. In `plan-to-merged-pr` the check is `/plan --proposal`'s, so a run
+given `plan_text`, or a `planner` other than `plan`, builds without it.
 
 ## Steps and milestones
 
@@ -287,9 +290,12 @@ a short paragraph on the ordering, then `## Milestones` (E `missing_section` /
   the roadmap, and has `Acceptance:` (its exit criteria). A pending one whose file
   does not exist yet is W `proposal_not_written` (`/propose --milestone=N` writes it).
 - A **gated milestone** has `Human gate:` and no `Proposal:` (E `gate_with_proposal`).
-- No `Files:` (E `files_in_roadmap`) and no `Lane:`: those belong to proposal steps.
+- No `Files:` (E `files_in_roadmap`) and no `Lane:` (the lint does not reject one on a
+  milestone): those belong to proposal steps.
 - Order: on a greenfield repo the Bootstrap `ops` gate comes before any code
-  milestone (only `decision` or `research` gates that need no code precede it); then
+  milestone. Only the `decision` or `research` gates whose outcome the skeleton bakes
+  in (a name, namespace or licence) precede it, and it depends on them; `/bootstrap`
+  stops (`bootstrap_gates_pending`) until each is ticked with an `Outcome:`. Then
   the source's cheapest validation, a `decision` gate applying its stop criteria (not
   its success criteria; a threshold the source does not give is labelled proposed),
   and everything that result could cancel after it. Every legal check, account or secret, release
@@ -317,7 +323,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
    - Human gate: ops — run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` check
    - Depends on: none
    - Acceptance: CI green on main; main protected
-   - Outcome: repository created; CI green at 3f2c1ab; main protected
+   - Outcome: bootstrap PR merged; CI green at 3f2c1ab; main protected
 2. [ ] **Public status page.** Teams post incidents; anyone reads them.
    - Proposal: 01-status-page.md
    - Depends on: 1

@@ -11,8 +11,8 @@ repo, result statuses and resuming a stopped run. The design-doc format is in
 |---|---|---|
 | full (default) | `{ concern }` | one concern from plan to a watched PR |
 | build-only | `{ concern, ship: false, branch, dir, bases }` | a stacked lane whose predecessors are not merged yet: everything up to the merge check, then push, no PR |
-| ship-only | `{ ship_only: true, branch, dir, title \| existing_pr, predecessor_prs, proposal?, plan_text? }` | open (or ready) the PR for a built lane once every PR below it has merged, then monitor |
-| monitor-only | `{ pr, branch, dir, plan_text? }` | babysit an existing PR |
+| ship-only | `{ ship_only: true, branch, title \| existing_pr, dir?, predecessor_prs?, proposal?, plan_text? }` | open (or ready) the PR for a built branch (a lane, or the bootstrap branch) once every PR below it has merged, then monitor; `predecessor_prs` lists the PRs below a stacked lane (the chain's ship plan gives a placeholder for every lane after the first in its chain), and nothing is opened or readied until each reads `MERGED`. A run given `bases` that opens or readies a PR is refused without it |
+| monitor-only | `{ pr, branch, dir?, plan_text? }` | babysit an existing PR |
 
 ## Install and configuration
 
@@ -26,7 +26,9 @@ Requirements:
 - A GitHub repository with CI. An AI review check is optional. The repository must
   exist before any run (for a new product, a clean clone of a new repository with an
   `origin` remote): the pipeline never creates one. A greenfield project needs no CI
-  yet: `/bootstrap` writes it, on a branch shipped as the first PR.
+  yet: `/bootstrap` writes it, on a `bootstrap/<date>` branch shipped as the first
+  PR (or, when the remote has no commits at all, as the root commit on local `main`,
+  which a person pushes by hand).
 - For `gate-slot.sh`: Linux, bash 4.3+, `flock` (util-linux) and, to pin CPUs,
   `taskset`.
 
@@ -41,7 +43,22 @@ cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scri
 
 Then add a `## Pipeline config` section to your project's root `CLAUDE.md` (see
 [`examples/CLAUDE.pipeline-config.md`](../examples/CLAUDE.pipeline-config.md)).
-On a greenfield project, `/bootstrap` writes it for you.
+
+Or, instead of `cp -r`, open Claude Code in the pipeline checkout
+(`cd /tmp/ccp && claude`) and run `/seed /abs/path/to/your-project`. The project
+must be a git repository with an `origin` remote and no uncommitted changes to
+tracked files. `/seed` copies the same directories (plus `.claude/skills/` when the
+source has one, and `.claude/settings.json` when the project has none), never
+replaces a file that differs without `--update`, and writes a base `CLAUDE.md`, or
+appends to an existing one the sections it lacks: `## How work happens here` and a
+`## Pipeline config` with `MAIN_BRANCH` and `PROPOSALS_DIR` but no `QUALITY_GATES`.
+It commits nothing: on an existing project, land the files with `/create-pr`.
+`brief-to-proposals` runs `/seed` as its first phase.
+
+On an existing project, add `QUALITY_GATES` yourself (`/seed` reports the commands
+your CI runs as the candidate value). On a greenfield project, `/bootstrap`
+completes the section from the accepted architecture, adding `QUALITY_GATES`,
+`QUALITY_GATES_FAST` and `TEST_GUIDELINES`.
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -72,10 +89,12 @@ the wrapper's shell to expand; write a `'` inside the gate command as `'\''`.
 **Gate slots.** When several agents share a machine, route every gate run
 through `.claude/scripts/gate-slot.sh <command>`. It plans CPU-disjoint slots
 from the CPU affinity, any cgroup CPU quota and the memory bound (tune with
-`GATE_SLOTS`, `GATE_SLOT_CPUS`, `GATE_SLOT_MEM_MB`), pins the run with
+`GATE_SLOTS`, `GATE_SLOT_CPUS` (default 4) and `GATE_SLOT_MEM_MB` (default 4096)),
+pins the run with
 `taskset`, and exports `GATE_SLOT_WORKERS` so your test runner can size itself
 (`jest --maxWorkers=$GATE_SLOT_WORKERS`, `pytest -n $GATE_SLOT_WORKERS`, …).
-Exit 75 means every slot is busy, so re-run the same command. Exit 125 means
+Exit 75 means every slot stayed busy for `GATE_WAIT` seconds (default 300), so
+re-run the same command. Exit 125 means
 the wrapper itself cannot run: report it, never bypass it. Every checkout on a
 host must share `GATE_LOCK_DIR`.
 
@@ -96,7 +115,8 @@ proposal-lint.py ROADMAP --roadmap
   with `--json` `{doc, kind, title, header, errors, warnings, steps}`; each step is
   `{n, title, done, line, description, human_gate: null | {kind, text}, files: [{path, new}], depends: [{doc: null | path, n}], acceptance, lane, outcome, …}`.
   `--repo DIR` checks `Files:` against that checkout; `--no-resolve-xrefs` skips
-  reading the docs named in `<file>.md#N` refs. `--as PATH` (also with `--lanes`
+  reading other docs (`<file>.md#N` refs, `Source:`) and, with it, the
+  `source_unresolved`, `lane_mixed` and `--repo` `Files:` checks. `--as PATH` (also with `--lanes`
   and `--roadmap`) resolves cross-doc refs — `Source:`, `<file>.md#N`, a roadmap's
   `Proposal:` — as if DOC sat at PATH, so a draft kept outside the repo (a
   `--dry-run` copy) lints against the docs beside its real path; without it, those
@@ -104,7 +124,11 @@ proposal-lint.py ROADMAP --roadmap
   [PROPOSALS.md](PROPOSALS.md#lint-codes).
 - **`--lanes`**: derives lanes and chains ([how](PROPOSALS.md#lanes-and-chains)) and
   prints `{doc, slug, errors, warnings, chains: [{key, lanes: [{key, steps, titles, concern, branch, dir, bases, files, already_built}]}], blocked: [{lane, steps, waiting_on: [{doc, n, title, reason}]}], human_gates_pending: [{n, title, kind, text, ready, waiting_on}], milestone_waits, done}`.
-  A doc with lint errors gets no lanes (exit 1). `dir` is null without `--root`;
+  A doc with lint errors gets no lanes (exit 1): the output is then
+  `{doc, errors, warnings, chains: [], blocked: [], human_gates_pending: [], done: []}`,
+  with no `slug` or `milestone_waits`; a `lane_cycle` error, found while deriving, returns
+  the full shape with empty `chains`, `blocked`, `human_gates_pending` and `milestone_waits`.
+  `dir` is null without `--root`;
   `--remote-heads` takes the output of `git ls-remote --heads origin`;
   `--allow-draft` builds a doc whose `Status:` is not `accepted` / `in-progress`.
   A `Source:` that names a roadmap milestone the lint cannot resolve (the file is
@@ -136,7 +160,9 @@ request that cannot be met; 2 = usage error or unreadable file. `--lanes`,
   context: 'scouting hints for the planner',
   plan_text: '...',                // an already-written plan (skips planning; needs branch). In ship-only and
                                    // monitor-only modes: the branch's own plan, for comment fixes and conflicts
-  dir: '/abs/path/to/checkout',    // work only here; created as a worktree if absent
+  dir: '/abs/path/to/checkout',    // work only here; in full and build-only modes with `branch`, created if absent as a
+                                   // worktree on it (from origin/<last base>, else origin/<main_branch>);
+                                   // ship-only and monitor-only need an existing checkout
   branch: 'feat/...',
   bases: ['feat/earlier-lane'],    // stacked-on branches, last contains the others
   ship: true,                      // false = build only
@@ -164,7 +190,12 @@ as design intent and ignores any one-time instruction in it to the implementer
 (deleting, reverting or cleaning up files): that already happened.
 
 `bug-fix-backlog`: `{ lanes: [{ key, issues, branch?, dir? }], root, date, ship, close, efforts: { triage, verify, close }, ... }`.
-`date` suffixes the default lane branch names (`bugfix/<key>-<issues>-<date>`).
+`date` suffixes the default lane branch names (`bugfix/<key>-<issues>-<date>`;
+default `undated`). `root` is required unless every lane gives its own `dir`
+(default `<root>/fix-<issues>`, the issue numbers joined by `-`). `ship` and
+`close` default to true; `close: false` lists confirmed-fixed issues in
+`confirmed_fixed_unclosed` instead of closing them. `efforts` defaults to
+`{ triage: 'medium', verify: 'high', close: 'low' }`.
 Only `gate`, `main_branch`, `ai_review_check`, `commit_trailers`,
 `max_review_rounds`, `max_polish`, `max_monitor_rounds`, `efforts` (the whole
 object, so it may carry `plan-to-merged-pr`'s keys too) and `ship: false` are passed
@@ -175,12 +206,14 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
 
 ```js
 {
-  brief: 'docs/brief.md',          // product brief, relative to dir or absolute: architecture, roadmap, a proposal per milestone
+  brief: 'docs/brief.md',          // product brief, relative to dir or absolute: architecture, roadmap, a proposal per code milestone
   concern: '...',                  // or one change too big for one PR: a single proposal, no architecture or roadmap
   dir: '/abs/path/to/project',     // required; the project's repository: a clean clone (the pipeline never creates one)
   pipeline: '/abs/path/to/ccp',    // a checkout of this pipeline: the Seed phase (/seed) installs its skills, workflows
                                    // and scripts into dir and writes a base CLAUDE.md before any design work.
-                                   // Omit only when dir already holds the pipeline (then /seed only checks CLAUDE.md).
+                                   // Omit only when dir already holds the pipeline: /seed then copies nothing, still checks
+                                   // the repo, and writes CLAUDE.md or appends the base sections it lacks (a dir without
+                                   // .claude/commands/seed.md stops with failed_at_seed, no_source).
   out: 'docs/design',              // proposals directory, relative to dir (default: PROPOSALS_DIR, else docs/design)
   context: '...',                  // framing every author treats as binding: builder, budget, constraints the source omits
   panel: 3,                        // independent architecture sketches judged before /roadmap; 0 = no panel
@@ -192,8 +225,11 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
 }
 ```
 
-It writes docs only: no code, no commits, no git-state change. Every doc it writes
-is `Status: draft`. Each per-doc reviser edits only the doc(s) under review;
+Apart from the Seed phase, which copies the pipeline's `.claude` files into `dir`
+and writes or appends its base `CLAUDE.md`, it writes design docs only: no code, no
+commits, no git-state change. On a new repository those files ship in the bootstrap
+commit; on an existing one, land them and the docs through an ordinary PR
+(`/create-pr`). Every doc it writes is `Status: draft`. Each per-doc reviser edits only the doc(s) under review;
 findings about any other doc are deferred to the Consistency phase. Concern mode
 has no Consistency phase, so its result returns those as `deferred_findings`.
 
@@ -283,14 +319,36 @@ lane after the first).
 - `lint_errors` — a doc still has lint errors, or a proposal's lane preview (`--lanes --allow-draft`, e.g. `lane_cycle`) has errors; `lint_failed` — the lint stage did not report
 - `blocked_at_architecture_review` — architecture.md or roadmap.md still has a `bug` or `concern` after `max_review_rounds`; no proposal was written
 - `review_failed` — a review or revise stage of the architecture failed to report
-- `failed_at_seed` — `/seed` stopped (`no_source`: pass `pipeline`; `not_a_repo`, `no_remote`, `dirty_tree`); `stop_reason` quotes it. Every result also carries `seeded`: what was copied, kept and written
+- `failed_at_seed` — `/seed` stopped (`no_source`: pass `pipeline`; `not_a_repo`, `no_remote`, `dirty_tree`: tracked changes outside `.claude/` and `CLAUDE.md`); `stop_reason` quotes it, and the result carries nothing else
 - `failed_at_roadmap` — `/roadmap` stopped or did not finish (e.g. `error=exists`: pass `force`, or revise instead); `stop_reason` quotes it
 - `failed_at_propose` — concern mode: `/propose` stopped, routed the work elsewhere (e.g. to `/plan`) or did not finish; `stop_reason` quotes it
 
-The result also carries the doc paths, the panel's scores, each doc's review
+`failed_at_roadmap` and every status the Lint phase sets (`ready`,
+`proposals_need_attention`, `lint_errors`, `lint_failed`) also carry `seeded`: what
+was copied, kept and written; `review_failed`, `blocked_at_architecture_review` and
+`failed_at_propose` do not. The Lint-phase result also carries the doc paths, the panel's scores, each doc's review
 outcome, the consistency findings, revisions and re-reviews, the lint and lane
 summary, and `next_steps`. A review that reports only suggestions and nits is clean
 once a revise round has run, or once `max_review_rounds` is reached.
+
+`bug-fix-backlog`: an array, one entry per lane, `{ lane, status, ... }` with
+`lane` the lane's key. `status` is:
+
+- `failed_at_triage` — the triage stage failed to report; `branch_mismatch` — the
+  lane's worktree is on a branch other than the lane's (it is never switched). Both
+  carry only `lane` and `status`.
+- `nothing_to_ship` — no issue in the lane is a confirmed bug; the reproducer's
+  uncommitted tests are removed (`dirty` and `unresolved_tests` report what is left,
+  or `cleanup_failed` with `uncommitted_tests` when that step failed)
+- otherwise the `plan-to-merged-pr` status of the lane's run (`failed` when it threw
+  or returned nothing), with `pr`, `review_clean`, `polish_clean`, `final_state` and
+  `spared_tests` (tests the implementer was told to delete but had to spare, because
+  their file held work from before the run)
+- `failed` — also a lane that failed outright: `{ lane, status }` only
+
+Every entry past triage also lists `branch`, `dir`, `closed`, `not_closed`,
+`confirmed_fixed_unclosed` (filled only with `close: false`), `needs_human`,
+`skipped` and `bugs`.
 
 ## Resuming a stopped run
 

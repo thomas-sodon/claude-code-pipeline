@@ -1,11 +1,11 @@
 export const meta = {
   name: 'brief-to-proposals',
-  description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: seed the repo with the pipeline and a base CLAUDE.md, architecture panel, /roadmap, /propose per milestone, /review-proposal and revise until clean, cross-doc consistency, then lint and lanes. Writes docs only: no code, no commits',
+  description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: seed the repo with the pipeline and a base CLAUDE.md, architecture panel, /roadmap, /propose per code milestone, /review-proposal and revise until clean, cross-doc consistency, then lint and lanes. Writes only the seeded pipeline files, CLAUDE.md and design docs: no code, no commits',
   whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README.',
   phases: [
     { title: 'Seed', detail: '/seed installs the pipeline\'s skills, workflows and scripts and a base CLAUDE.md into the repo' },
     { title: 'Architecture', detail: 'independent sketches and a judge, then /roadmap writes architecture.md and roadmap.md, reviewed until clean' },
-    { title: 'Proposals', detail: '/propose per roadmap milestone, then /review-proposal and /propose --revise until clean' },
+    { title: 'Proposals', detail: '/propose per roadmap code milestone, then /review-proposal and /propose --revise until clean' },
     { title: 'Consistency', detail: 'one pass over every doc for cross-doc conflicts and coverage of the source' },
     { title: 'Lint', detail: 'proposal-lint.py on every doc, lanes per proposal, roadmap progress' },
   ],
@@ -424,8 +424,8 @@ return {
   next_steps: [
     'Read and edit the docs. They are drafts (Status: draft): set Status: accepted on each one you approve; nothing is built or bootstrapped from a draft.',
     'Do every research or decision gate the docs list that blocks design choices, record its Outcome, and run /propose --revise <doc> on the docs whose steps depend on it.',
-    arch ? `Greenfield: run /bootstrap ${arch.architecture} in the clean repository (one commit, holding the docs too, on a bootstrap/<date> branch), ship it with plan-to-merged-pr { ship_only: true, branch, title } and merge it, protect main and require the CI check; then tick the bootstrap milestone (${LINT} ${arch.roadmap} --tick <n>).` : null,
-    'Existing repo: land the docs through an ordinary docs PR (commit them on a branch, /create-pr, merge) — lanes are cut from origin and read the proposal there.',
+    arch ? `Greenfield: run /bootstrap ${arch.architecture} in the clean repository (one commit, holding the docs too, on a bootstrap/<date> branch), ship it with plan-to-merged-pr { ship_only: true, branch, title } and merge it (an empty remote gets the root commit on local main instead, which you push), protect main and require the CI check; once that PR has merged and CI is green on main, add the bootstrap milestone's Outcome (CI green at <sha>; main protected), tick it (${LINT} ${arch.roadmap} --tick <n>) and land that through a docs PR.` : null,
+    'Existing repo: land the seeded pipeline files, the CLAUDE.md changes and the accepted docs through an ordinary PR (commit them on a branch, /create-pr, merge) — lanes are cut from origin and read the proposal and the commands there.',
     `Build each proposal when its roadmap dependencies are done: proposal-build-chain { proposal: '<doc>', dir: '<checkout>', root: '<worktrees dir>', date: '<YYYYMMDD>' }.`,
     'Do every human-gated step yourself and tick it; lanes that depend on one stay blocked until it is ticked.',
   ].filter(Boolean),
