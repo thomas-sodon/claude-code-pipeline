@@ -23,8 +23,10 @@ Requirements:
 - `git` and an authenticated `gh` CLI, for the PR and issue stages.
 - `python3` (3.8+, standard library only), which `/review-changes` uses to read the
   session transcript and every design-doc command runs `proposal-lint.py` with.
-- A GitHub repository with CI. An AI review check is optional. A greenfield project
-  needs none yet: `/bootstrap` writes the CI and you create the repository.
+- A GitHub repository with CI. An AI review check is optional. The repository must
+  exist before any run (for a new product, a clean clone of a new repository with an
+  `origin` remote): the pipeline never creates one. A greenfield project needs no CI
+  yet: `/bootstrap` writes it, on a branch shipped as the first PR.
 - For `gate-slot.sh`: Linux, bash 4.3+, `flock` (util-linux) and, to pin CPUs,
   `taskset`.
 

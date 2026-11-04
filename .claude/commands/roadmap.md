@@ -128,7 +128,7 @@ Validate demand with a waitlist before building the product; everything after th
 ## Milestones
 
 1. [ ] **Bootstrap the repository.** Green skeleton, CLAUDE.md and CI from architecture.md.
-   - Human gate: ops — set architecture.md to Status: accepted, run /bootstrap architecture.md, review its commit, create the repository, push main, protect main and require the `gates` check
+   - Human gate: ops — set architecture.md to Status: accepted, run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` check
    - Depends on: none
    - Acceptance: CI green on main; main protected; the Outcome records the repository URL
 2. [ ] **Provision hosting.** Accounts the first deploy needs.

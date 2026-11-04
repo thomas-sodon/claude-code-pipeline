@@ -304,7 +304,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 ## Milestones
 
 1. [x] **Bootstrap the repository.** Green skeleton, CLAUDE.md and CI from architecture.md.
-   - Human gate: ops — run /bootstrap architecture.md, push main, protect it and require the `gates` check
+   - Human gate: ops — run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` check
    - Depends on: none
    - Acceptance: CI green on main; main protected
    - Outcome: repository created; CI green at 3f2c1ab; main protected

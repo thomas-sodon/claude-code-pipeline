@@ -392,7 +392,7 @@ return {
   next_steps: [
     'Read and edit the docs. They are drafts (Status: draft): set Status: accepted on each one you approve; nothing is built or bootstrapped from a draft.',
     'Do every research or decision gate the docs list that blocks design choices, record its Outcome, and run /propose --revise <doc> on the docs whose steps depend on it.',
-    arch ? `Greenfield: run /bootstrap ${arch.architecture} (one commit on local main that also holds the docs: the root commit in an empty repo), review it, push main yourself, protect it and require the CI check; then tick the bootstrap milestone (${LINT} ${arch.roadmap} --tick <n>).` : null,
+    arch ? `Greenfield: run /bootstrap ${arch.architecture} in the clean repository (one commit, holding the docs too, on a bootstrap/<date> branch), ship it with plan-to-merged-pr { ship_only: true, branch, title } and merge it, protect main and require the CI check; then tick the bootstrap milestone (${LINT} ${arch.roadmap} --tick <n>).` : null,
     'Existing repo: land the docs through an ordinary docs PR (commit them on a branch, /create-pr, merge) — lanes are cut from origin and read the proposal there.',
     `Build each proposal when its roadmap dependencies are done: proposal-build-chain { proposal: '<doc>', dir: '<checkout>', root: '<worktrees dir>', date: '<YYYYMMDD>' }.`,
     'Do every human-gated step yourself and tick it; lanes that depend on one stay blocked until it is ticked.',

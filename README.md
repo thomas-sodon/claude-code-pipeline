@@ -29,15 +29,18 @@ Requirements, the full config keys and the example config are in
 ### From a brief (greenfield)
 
 ```sh
-mkdir my-product && cd my-product && mkdir -p .claude docs
+git clone git@github.com:you/my-product.git && cd my-product   # a new, clean repository
+mkdir -p .claude docs
 cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scripts .claude/
 cp ~/my-brief.md docs/brief.md
 claude   # then: "Run the brief-to-proposals workflow with { brief: 'docs/brief.md', dir: '<absolute path here>' }"
 ```
 
-The directory must hold the pipeline's `.claude` (the copy above) before
-`brief-to-proposals` runs: its authors run `.claude/scripts/proposal-lint.py`
-there, so an empty directory is not enough.
+Start from a clean clone of the new repository (an empty one, or just the
+README and licence a host creates): the pipeline never creates a repository or a
+remote. It must hold the pipeline's `.claude` (the copy above) before
+`brief-to-proposals` runs, since its authors run `.claude/scripts/proposal-lint.py`
+there.
 
 1. **Design.** The workflow writes `docs/design/architecture.md`, `roadmap.md` and
    one proposal per code milestone, each reviewed until clean. No code, no commits.
@@ -45,11 +48,13 @@ there, so an empty directory is not enough.
    you approve. `/bootstrap` and the builders refuse a draft (see
    [How it works](#how-it-works)).
 3. **Bootstrap.** `/bootstrap docs/design/architecture.md` writes a skeleton whose
-   gates pass, `CLAUDE.md` with the Pipeline config, CI, and one commit on local
-   `main` that holds the docs too (the root commit in an empty repo).
-4. **Publish** (you). Create the GitHub repository, push `main`, protect it and
-   require the CI check, add the secrets by name, and tick the roadmap's bootstrap
-   milestone: `/bootstrap` prints the commands.
+   gates pass, `CLAUDE.md` with the Pipeline config, CI, and one commit on a
+   `bootstrap/<date>` branch that holds the docs too.
+4. **Ship it** (you merge). `plan-to-merged-pr` with `{ ship_only: true, branch,
+   title }` opens the bootstrap PR and babysits its CI; you merge it, protect `main`
+   and require the CI check, add the secrets by name, and tick the roadmap's
+   bootstrap milestone: `/bootstrap` prints the steps. (A repository with no commits
+   at all gets a root commit on `main` instead, which you push.)
 5. **Build, milestone by milestone.** You do the human gates the next milestone
    waits on; `proposal-build-chain` builds its proposal's lanes; you ship each lane
    in merge order and merge. `proposal-lint.py docs/design/roadmap.md --roadmap`
@@ -63,7 +68,7 @@ there, so an empty directory is not enough.
            architecture.md      --milestone=N: one     + /propose --revise   Status: accepted
            roadmap.md           proposal per           until no bug or
                                 milestone              concern
- new repo only:  /bootstrap architecture.md ──> green skeleton, CI, one commit ──> push main (human)
+ new repo only:  /bootstrap architecture.md ──> skeleton, CI on a bootstrap branch ──> PR ──> merge (human)
 
  Build: one concern, or each lane of an accepted proposal     (proposal-build-chain derives the lanes)
  concern ──> 1. Plan ──> 2. Implement ──> 3. Review loop ──> 4. Polish / PR ──> 5. Monitor ──> merge (human)
@@ -89,7 +94,7 @@ there, so an empty directory is not enough.
   direct `plan-to-merged-pr` runs with a `proposal` plan through `/plan --proposal`,
   so they refuse it too. A legacy doc with no `Status:` line is still planned, with a warning.
 - **A human keeps the judgment.** You choose the concern or write the brief. You
-  accept the design docs, push a new repository's bootstrap commit, do every human-gated
+  accept the design docs, merge the bootstrap PR, do every human-gated
   step (research, decisions, accounts and secrets, releases) and merge. Each
   production release is gated exactly once, in its proposal by default. The
   workflows never force-push, never push to main and never merge.
@@ -147,7 +152,7 @@ examples/
 | `/roadmap <brief>` | Turns a product brief (or free text) into draft `architecture.md` and `roadmap.md`: decisions with their options, milestones in validation order, every person-only step a human gate. |
 | `/propose <concern>` | Writes one draft proposal: design, security, rollout and a build-ordered list of one-PR steps and human gates. `--milestone=N` for a roadmap milestone; `--revise <doc>` applies review findings. |
 | `/review-proposal <doc>` | Read-only review of a design doc against its source, the tree and the architecture; findings as in `/review-changes`. |
-| `/bootstrap <architecture.md>` | Greenfield only (no code yet, docs-only history allowed): skeleton, `CLAUDE.md`, CI, gates green, one commit on local `main` (the root commit in an empty repo). Never pushes. |
+| `/bootstrap <architecture.md>` | Greenfield only, in a clean clone with `origin` (no code yet): skeleton, `CLAUDE.md`, CI, gates green, one commit on a `bootstrap/<date>` branch to ship as a PR. Never pushes. |
 | `/plan <concern>` | Grounds a free-text concern in today's tree and writes one increment's plan to the plans directory. `--proposal=<doc>` plans that doc's steps. Writes no code. |
 | `/impl [plan \| doc]` | Re-validates the plan (or a doc's next buildable step) against the tree, then implements it and runs the gates. Does not commit. |
 | `/review-changes [scope]` | Read-only review of the branch's changes; findings are `bug` / `concern` / `suggestion` / `nit`. |
