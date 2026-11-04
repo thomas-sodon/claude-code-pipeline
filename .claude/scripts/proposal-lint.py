@@ -7,7 +7,7 @@ A design doc is a proposal (`# Proposal: ...`, with a `## Steps` list), a roadma
 of claude-code-pipeline.
 
 Usage:
-  proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs]
+  proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs] [--as PATH]
   proposal-lint.py DOC --lanes [--root DIR] [--date YYYYMMDD] [--branch-prefix PREFIX]
                                [--remote-heads FILE] [--repo DIR] [--allow-draft]
   proposal-lint.py DOC --tick N[,N...]
@@ -59,6 +59,7 @@ MAX_SENTENCES = 7
 class Doc(object):
     def __init__(self, path):
         self.path = path
+        self.ref_dir = os.path.dirname(path)   # where <file>.md#N and Source: refs resolve from (--as moves it)
         self.kind = None
         self.title = ''
         self.header = {}
@@ -355,7 +356,7 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None):
         if repo:
             check_repo_files(doc, repo)
     if doc.kind == 'roadmap':
-        base = os.path.dirname(doc.path)
+        base = doc.ref_dir
         for s in doc.steps:
             if s['proposal'] and not os.path.isfile(os.path.join(base, s['proposal'])) and not s['done']:
                 doc.warn(s['line'], 'proposal_not_written', 'milestone %d: %s does not exist yet'
@@ -389,7 +390,7 @@ def check_repo_files(doc, repo):
 
 
 def load_ref(doc, rel, cache):
-    path = os.path.normpath(os.path.join(os.path.dirname(doc.path), rel))
+    path = os.path.normpath(os.path.join(doc.ref_dir, rel))
     if cache is not None and path in cache:
         return cache[path]
     try:
@@ -451,7 +452,7 @@ def milestone_wait(doc, cache):
     if state == 'unresolved':
         return [{'doc': None, 'n': 0, 'title': why, 'reason': 'milestone_unresolved'}]
     waits = []
-    rel = os.path.relpath(roadmap.path, os.path.dirname(doc.path))
+    rel = os.path.relpath(roadmap.path, doc.ref_dir)
     for d in ms['depends']:
         if d['doc'] is not None:
             continue
@@ -742,6 +743,8 @@ def main(argv=None):
     p.add_argument('--repo', help='checkout to check Files against')
     p.add_argument('--json', action='store_true')
     p.add_argument('--no-resolve-xrefs', action='store_true', help='skip reading docs named in <file>.md#N refs')
+    p.add_argument('--as', dest='as_path', metavar='PATH', help='resolve cross-doc refs (Source:, <file>.md#N, Proposal:) as if DOC were at PATH, '
+                   'e.g. to lint a draft kept outside the repo against the docs beside its real path')
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--lanes', action='store_true', help='derive build lanes and chains (JSON)')
     mode.add_argument('--tick', metavar='N[,N...]', help='tick these steps in place (JSON)')
@@ -770,6 +773,8 @@ def main(argv=None):
             return rc
         cache = {}
         doc = parse(a.doc)
+        if a.as_path:
+            doc.ref_dir = os.path.dirname(a.as_path)
         if a.remote_heads and not os.path.isfile(a.remote_heads):
             print('proposal-lint: cannot read %s' % a.remote_heads, file=sys.stderr)
             return 2
