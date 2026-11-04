@@ -18,6 +18,7 @@ export const meta = {
 //   context?: string          extra framing for every author (builder, budget, constraints the source does not state)
 //   panel?: number            independent architecture sketches before /roadmap (default 3; 0 = skip the panel)
 //   milestones?: number[]     propose only these roadmap milestones (default: every pending milestone that names a proposal)
+//   max_milestones?: number   propose at most the first N of those, in roadmap order (e.g. 1 to try the flow on one milestone)
 //   force?: boolean           let /roadmap overwrite an existing architecture.md / roadmap.md (default false)
 //   max_review_rounds?: number  revise rounds per doc (default 3)
 //   efforts?: { sketch, judge, roadmap, propose, review, revise, consistency, lint }
@@ -30,6 +31,7 @@ const OUT_FLAG = A.out ? ` --out=${A.out}` : ''
 const PANEL = Math.max(0, A.panel ?? 3)
 const MAX_REVIEW = A.max_review_rounds ?? 3
 const ONLY = Array.isArray(A.milestones) && A.milestones.length ? A.milestones.map(Number) : null
+const MAX_M = A.max_milestones ? Math.max(1, Number(A.max_milestones)) : null
 const EFF = { sketch: 'medium', judge: 'high', roadmap: 'high', propose: 'medium', review: 'high', revise: 'medium', consistency: 'high', lint: 'low', ...(A.efforts || {}) }
 const opts = (label, ph, effortKey, schema) => {
   const o = { label, phase: ph }
@@ -259,9 +261,10 @@ if (BRIEF_MODE) {
 
   // ---- Proposals: one per pending milestone that names a proposal, each reviewed until clean (no barrier between milestones)
   phase('Proposals')
-  const todo = arch.milestones.filter(m => !m.done && !m.human_gate && m.proposal && (!ONLY || ONLY.includes(m.n)))
-  const skipped = arch.milestones.filter(m => !m.done && !m.human_gate && m.proposal && ONLY && !ONLY.includes(m.n))
-  if (skipped.length) log(`Not proposing milestones ${skipped.map(m => m.n).join(', ')} (args.milestones)`)
+  const wanted = arch.milestones.filter(m => !m.done && !m.human_gate && m.proposal && (!ONLY || ONLY.includes(m.n)))
+  const todo = MAX_M ? wanted.slice(0, MAX_M) : wanted
+  const skipped = arch.milestones.filter(m => !m.done && !m.human_gate && m.proposal && !todo.includes(m))
+  if (skipped.length) log(`Not proposing milestones ${skipped.map(m => m.n).join(', ')} (${ONLY ? 'args.milestones' : ''}${ONLY && MAX_M ? ', ' : ''}${MAX_M ? 'args.max_milestones' : ''}); propose them later with /propose --milestone=N`)
   log(`Proposing ${todo.length} milestone(s): ${todo.map(m => `${m.n} ${m.title}`).join('; ')}`)
   const results = await pipeline(
     todo,

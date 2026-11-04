@@ -165,6 +165,7 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
   context: '...',                  // framing every author treats as binding: builder, budget, constraints the source omits
   panel: 3,                        // independent architecture sketches judged before /roadmap; 0 = no panel
   milestones: [2, 4],              // propose only these milestones (default: every pending code milestone)
+  max_milestones: 1,               // propose at most the first N of those, in roadmap order (try the flow on one)
   force: false,                    // let /roadmap overwrite architecture.md / roadmap.md (never once a milestone is ticked)
   max_review_rounds: 3,            // revise rounds per doc
   efforts: { sketch: 'medium', judge: 'high', roadmap: 'high', propose: 'medium', review: 'high', revise: 'medium', consistency: 'high', lint: 'low' },
