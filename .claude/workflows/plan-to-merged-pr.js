@@ -16,7 +16,8 @@ export const meta = {
 //   concern: string            the plan / concern text; for a custom planner that plans a proposal's steps, the steps in scope for this lane
 //   planner?: string           skill that writes the plan (default 'plan'); a custom planner gets `planner_args`
 //   planner_args?: string      args for a custom planner (default: the concern)
-//   proposal?: string          proposal / design doc path; handed to the planner and frames the review alongside the plan
+//   proposal?: string          proposal / design doc path; handed to the planner (as /plan --proposal=<path>) and frames the review alongside the plan
+//   proposal_steps?: number[]  the proposal's steps this run implements; ticked ([ ] -> [x]) in the proposal in the same commit (needs proposal)
 //   context?: string           scouting hints for the planner
 //   plan_text?: string         an already-written plan (e.g. from bug-fix-backlog's triage); skips the planning skill, needs `branch`
 //   dir?: string               checkout / worktree to work in (created from the last base when `branch` is given and it is absent)
@@ -46,6 +47,13 @@ if (SHIP_ONLY && BUILD_ONLY) throw new Error('ship_only and ship: false are mutu
 if (MONITOR_ONLY && (SHIP_ONLY || BUILD_ONLY)) throw new Error('args.pr (monitor-only) cannot be combined with ship_only or ship: false')
 if (SHIP_ONLY && !A.existing_pr && !A.title) throw new Error('ship-only mode needs args.title (or args.existing_pr)')
 if (A.plan_text && !A.branch) throw new Error('args.plan_text needs args.branch (the branch the plan is built on)')
+const STEPS = (A.proposal_steps || []).map(Number).filter(n => Number.isInteger(n) && n > 0)
+if (STEPS.length && !A.proposal) throw new Error('args.proposal_steps needs args.proposal (the design doc the steps belong to)')
+if (STEPS.length && SHIP_ONLY) throw new Error('args.proposal_steps is ticked when the work is built; ship-only mode builds nothing')
+// Every stage after planning keeps its changes consistent with the design doc, not only the review.
+const PROPOSAL_CTX = A.proposal
+  ? `This work implements ${A.proposal}${STEPS.length ? ` steps ${STEPS.join(', ')}` : ''}: keep every change consistent with that design doc's Decisions, Security and privacy, and Rollout sections. `
+  : ''
 const CONTEXT = A.context || ''
 const DIR = A.dir || ''
 const PLANNER = A.planner || 'plan'
@@ -105,18 +113,20 @@ const PREDS_CHECK = PREDS.length
 const WORK = GUARD + WHERE + GATES
 // Review scope: a stacked branch's HEAD carries its bases' commits, so review only this branch's own change.
 // `bases` are ordered so the last one contains the others.
-const REVIEW_SCOPE = BASES.length ? `all:origin/${BASES[BASES.length - 1]}` : ''
-const SCOPE_NOTE = REVIEW_SCOPE
-  ? ` If origin/${BASES[BASES.length - 1]} no longer resolves after a git fetch (merged and deleted), use args "all" instead. `
-  : ''
+const REVIEW_SCOPE = BASES.length ? `all:origin/${BASES[BASES.length - 1]}` : `all:origin/${MAIN}`
+const SCOPE_NOTE = BASES.length
+  ? ` If origin/${BASES[BASES.length - 1]} no longer resolves after a git fetch (merged and deleted), use args "all:origin/${MAIN}" instead. `
+  : ` Run git fetch origin ${MAIN} first so origin/${MAIN} is current. `
 
 const PLAN_SCHEMA = {
   type: 'object',
   properties: {
     branch: { type: 'string', description: 'feature branch created and checked out for this work' },
     plan: { type: 'string', description: 'full plan text: files, changes, tests, verification' },
+    stopped: { type: 'boolean', description: 'true if the planning skill stopped without writing a plan (a routing recommendation or an error= stop)' },
+    stop_reason: { type: 'string', description: 'when stopped: the skill\'s error code or recommendation, verbatim' },
   },
-  required: ['branch', 'plan'],
+  required: ['branch', 'plan', 'stopped'],
 }
 const STEP_SCHEMA = {
   type: 'object',
@@ -124,8 +134,10 @@ const STEP_SCHEMA = {
     summary: { type: 'string' },
     files_changed: { type: 'array', items: { type: 'string' } },
     gates_green: { type: 'boolean', description: 'the project quality gates all pass' },
+    stopped: { type: 'boolean', description: 'true if the skill stopped before implementing (a plan-review blocker, an error= stop, or a question it could not get answered)' },
+    stop_reason: { type: 'string', description: 'when stopped: the blocker or error, verbatim' },
   },
-  required: ['summary', 'files_changed', 'gates_green'],
+  required: ['summary', 'files_changed', 'gates_green', 'stopped'],
 }
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -165,10 +177,11 @@ const OBSERVE_SCHEMA = {
     ai_review_done_on_head: { type: 'boolean', description: AI_CHECK ? `true once the "${AI_CHECK}" check run for head_sha has completed (any conclusion); a missing check means not registered yet, not done` : 'no AI review check is configured: true once CI on head_sha has completed' },
     ci_state: { type: 'string', enum: ['green', 'red', 'pending', 'none'], description: AI_CHECK ? `Quality-gate CI on head_sha, ignoring the "${AI_CHECK}" check (it may fail just by posting findings)` : 'Quality-gate CI on head_sha' },
     ci_red_caused_by_pr: { type: 'boolean', description: 'true only if ci_state is red and the failure is attributable to this PR\'s diff' },
+    ci_configured: { type: 'boolean', description: 'true if the repository runs CI on pull requests (a .github/workflows file with a pull_request or push trigger, or check runs registered on this or a recent PR); false only when it has none' },
     actionable_comments: { type: 'integer', description: 'unresolved review threads (incl. outdated) with NO terminal reply (Fixed locally / Could not prove this defect / Declined with / Answered with / Tracked in #) and NO out-of-scope reply (Surfaced for human review — out of scope for automated remediation.; those wait on a human), plus unacknowledged overflow findings and unanswered top-level human comments' },
     notes: { type: 'string' },
   },
-  required: ['pr_state', 'head_sha', 'has_conflicts', 'behind_main', 'ai_review_done_on_head', 'ci_state', 'ci_red_caused_by_pr', 'actionable_comments', 'notes'],
+  required: ['pr_state', 'head_sha', 'has_conflicts', 'behind_main', 'ai_review_done_on_head', 'ci_state', 'ci_red_caused_by_pr', 'ci_configured', 'actionable_comments', 'notes'],
 }
 const ACTION_SCHEMA = {
   type: 'object',
@@ -236,13 +249,18 @@ if (MONITOR_ONLY) {
     const setup = BRANCH
       ? `First use branch ${BRANCH}${DIR ? ` in ${DIR}` : ''}: if that checkout does not exist, git fetch and create it as a worktree on that branch from origin/${BASES[BASES.length - 1] || MAIN}; if it exists, keep and build on any work already there. ` + STACK
       : ''
-    const proposalNote = A.proposal ? `The concern implements part of the proposal ${A.proposal}: read it first and plan exactly the scope below as one increment, whatever the proposal's next step would be by default. ` : ''
+    const STEP_NOTE = STEPS.length ? ` (step${STEPS.length > 1 ? 's' : ''} ${STEPS.join(', ')})` : ''
+    const proposalNote = A.proposal ? `The concern implements part of the proposal ${A.proposal}${STEP_NOTE}: read it first and plan exactly the scope below as one increment, whatever the proposal's next step would be by default. ` : ''
+    // /plan --proposal=<path> skips its "a proposal already covers it" routing, which would otherwise stop the run.
+    const proposalFlag = A.proposal ? `--proposal=${A.proposal} ` : ''
     const skillCall = PLANNER !== 'plan'
       ? `${BRANCH ? 'Then i' : 'I'}nvoke the Skill tool with skill "${PLANNER}" and args: ${JSON.stringify(A.planner_args || CONCERN)}. ${proposalNote}Plan exactly this scope as one increment: ${CONCERN}\n` +
         (BRANCH ? `Stay on branch ${BRANCH}: skip any switch-to-${MAIN} step the skill has. ` : '')
       : BRANCH
-        ? `Then invoke the Skill tool with skill "plan" with args "--no-switch " followed by the concern below (keep that leading --no-switch flag; it stops the skill switching off this branch). ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
-        : `Invoke the Skill tool with skill "plan" with the concern below as args. ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
+        ? `Then invoke the Skill tool with skill "plan" with args "--no-switch ${proposalFlag}" followed by the concern below (keep those leading flags; --no-switch stops the skill switching off this branch${A.proposal ? ', --proposal names the design doc this work implements' : ''}). ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
+        : A.proposal
+          ? `Invoke the Skill tool with skill "plan" with args "${proposalFlag}" followed by the concern below (keep that leading --proposal flag; it names the design doc this work implements). ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
+          : `Invoke the Skill tool with skill "plan" with the concern below as args. ${tokenRule}${proposalNote}\n${JSON.stringify(CONCERN)}\n`
     const branchAfter = BRANCH
       ? ''
       : `The planning skill creates no branch; AFTER it finishes, as a separate step, create and check out a feature branch off an up-to-date ${MAIN} (descriptive name, dated). Verify it with git rev-parse --abbrev-ref HEAD (never ${MAIN}). `
@@ -263,6 +281,7 @@ if (MONITOR_ONLY) {
       `The plan must list each acceptance criterion with its current status, the ordered per-file edits, the tests, and the gate commands. Return the branch and the full plan.`,
       opts('plan', 'Plan', 'plan', PLAN_SCHEMA),
     )
+    if (plan && plan.stopped) { log(`Planner stopped: ${plan.stop_reason || 'no reason given'}`); return done('failed_at_plan', { stop_reason: plan.stop_reason || '' }) }
     if (!plan) return done('failed_at_plan')
     BRANCH = plan.branch
     log(`Plan ready on branch ${BRANCH}`)
@@ -276,12 +295,17 @@ if (MONITOR_ONLY) {
       opts('impl', 'Implement', 'impl', STEP_SCHEMA),
     )
     if (!impl) return done('failed_at_impl')
+    if (impl.stopped || !impl.files_changed.length) {
+      log(`/impl ${impl.stopped ? `stopped: ${impl.stop_reason || 'no reason given'}` : 'changed no files'} — stopping before review`)
+      return done('failed_at_impl', { stop_reason: impl.stop_reason || (impl.stopped ? '' : 'no files changed') })
+    }
     log(`Implemented: ${impl.files_changed.join(', ')} (gates ${impl.gates_green ? 'green' : 'RED'})`)
 
     // ---- Review until no defect remains: every fix is re-reviewed; a defect left at the cap blocks the PR.
     phase('Review')
     const frame = `The intent of the change: ${CONCERN}.` +
-      (A.proposal ? ` Judge it against the proposal ${A.proposal} (its steps' text and acceptance criteria) and the plan. ` : ' Judge it against the plan. ') + AUTHORITATIVE
+      (A.proposal ? ` Judge it against the proposal ${A.proposal} (${STEPS.length ? `steps ${STEPS.join(', ')}: their` : 'its steps\''} text, Files and acceptance criteria, and its Decisions, Security and privacy, and Rollout sections) and the plan.` +
+        (STEPS.length ? ` The workflow ticks those steps' checkboxes in the proposal when it commits, so do not report them unticked.` : '') + ' ' : ' Judge it against the plan. ') + AUTHORITATIVE
     const history = []
     let fixes = 0, reviewed = false
     for (let round = 1; ; round++) {
@@ -300,7 +324,7 @@ if (MONITOR_ONLY) {
       if (!defects.length && (!findings.length || fixes >= 1 || fixes >= MAX_REVIEW)) { reviewClean = true; break }
       if (fixes >= MAX_REVIEW) break
       const fix = await agent(
-        WORK + `On branch ${BRANCH}, validate and fix these review findings; decline any you can verify is wrong and give the reason:\n` +
+        WORK + PROPOSAL_CTX + `On branch ${BRANCH}, validate and fix these review findings; decline any you can verify is wrong and give the reason:\n` +
         JSON.stringify(findings, null, 2) + `\nRe-run the relevant quality gates. Do not commit.`,
         opts(`apply-review-fixes-${round}`, 'Review', 'fix', FIX_SCHEMA),
       )
@@ -322,7 +346,7 @@ if (MONITOR_ONLY) {
     const MAX_POLISH = A.max_polish ?? 6
     for (let i = 1; i <= MAX_POLISH && !clean; i++) {
       const p = await agent(
-        WORK + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". Fix every bug found and run the quality gates. ` +
+        WORK + PROPOSAL_CTX + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". Fix every bug found and run the quality gates. ` +
         `Report how many issues you found and fixed this round (0 if the diff was already clean) and whether gates are green.`,
         opts(`polish-${i}`, 'Polish', 'polish', POLISH_SCHEMA),
       )
@@ -336,7 +360,10 @@ if (MONITOR_ONLY) {
   // ---- Commit, then merge check; push here only in build-only mode
   phase('PR')
   const mc = await agent(
-    WORK + AUTH + (SHIP_ONLY ? PREDS_CHECK : '') + `On branch ${BRANCH}:\n` +
+    WORK + AUTH + PROPOSAL_CTX + (SHIP_ONLY ? PREDS_CHECK : '') + `On branch ${BRANCH}:\n` +
+    (STEPS.length
+      ? `0. Mark the proposal steps this change implements as landed: run python3 .claude/scripts/proposal-lint.py ${A.proposal} --tick ${STEPS.join(',')} (if that script is missing, change only "[ ]" to "[x]" on the lines of steps ${STEPS.join(', ')} under "## Steps" in ${A.proposal}, nothing else). Stage ${A.proposal} with the change.\n`
+      : '') +
     `1. Commit any uncommitted work first (git status must be clean before merging): stage the change's files explicitly, with a message that explains why, ending with:\n${TRAILERS}\n` +
     `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` + STACK + `\n` +
     (SHIP_ONLY || !clean
@@ -393,6 +420,12 @@ if (MONITOR_ONLY) {
 phase('Monitor')
 const PRN = pr.pr_number
 const MAX_ROUNDS = A.max_monitor_rounds ?? A.max_rounds ?? 10
+// Comment fixes and conflict resolution read "the plan" from the plans directory by default, which by the time a stacked
+// lane ships is usually a later lane's plan. Hand them this branch's own plan (this run's, or args.plan_text) and proposal.
+const PLAN_FOR_PR = (plan && plan.plan && plan.plan !== 'given') ? plan.plan : (A.plan_text || '')
+const MONITOR_CTX = PROPOSAL_CTX + (PLAN_FOR_PR
+  ? `The plan this branch was built from is authoritative for it; use it instead of any plan file in the plans directory:\n${PLAN_FOR_PR.length > 8000 ? PLAN_FOR_PR.slice(0, 8000) + '\n[plan truncated]' : PLAN_FOR_PR}\n`
+  : '')
 // A conflict-free BEHIND merge restarts CI + AI review (~20 min); on a busy main the PR falls behind
 // again meanwhile, so these merges are capped and only taken once nothing else is pending.
 const MAX_BEHIND_MERGES = 2
@@ -404,7 +437,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   const obs = await agent(
     GUARD + WHERE + AUTH + `Observe PR #${PRN} (branch ${BRANCH}), round ${r}. Read-only: change no files, push nothing, post nothing.\n` +
     `1. Read the head SHA (gh pr view ${PRN} --json headRefOid,state,mergeable,mergeStateStatus). If MERGED/CLOSED, report and stop. If mergeable is CONFLICTING or mergeStateStatus is DIRTY, CI cannot run: skip step 2, report has_conflicts=true, ci_state=none, ai_review_done_on_head=false.\n` +
-    `2. Wait for CI${AI_CHECK ? ` and the "${AI_CHECK}" check` : ''} on that head to complete, WITHOUT foreground sleep, capped at ~20 minutes. ` +
+    `2. Check whether the repository runs CI on pull requests at all (ci_configured); if it has none${AI_CHECK ? ' and no check has registered' : ''}, do not wait: report ci_state=none. Otherwise wait for CI${AI_CHECK ? ` and the "${AI_CHECK}" check` : ''} on that head to complete, WITHOUT foreground sleep, capped at ~20 minutes. ` +
     `Try \`gh pr checks ${PRN} --watch --interval 30\`; if it errors (e.g. 403 on check-runs), poll \`gh run list --branch ${BRANCH} --json name,status,conclusion,headSha\` ` +
     `(or gh pr view --json statusCheckRollup) with the Monitor tool until-loop instead.${AI_CHECK ? ` Review comments land when the "${AI_CHECK}" run completes, so do not count comments before it has.` : ''}\n` +
     `3. Count actionable comments per the actionable_comments definition: GraphQL reviewThreads (isResolved, isOutdated, comments with author.login and body), ` +
@@ -421,8 +454,11 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   log(`Round ${r}: ${last.pr_state} @${last.head_sha.slice(0, 9)}, CI ${last.ci_state}, review ${last.ai_review_done_on_head ? 'done' : 'pending'}, actionable ${last.actionable_comments}, conflicts ${last.has_conflicts}, behind ${last.behind_main}`)
   if (last.pr_state !== 'OPEN') break
 
-  // 'none' right after a push usually means checks have not registered yet, so it never counts as settled.
-  const settled = last.ai_review_done_on_head && last.ci_state === 'green'
+  // 'none' right after a push usually means checks have not registered yet, so it never counts as settled —
+  // unless the repository has no CI at all, when the gates the run already ran green are all there is.
+  const noCi = last.ci_configured === false && !AI_CHECK && last.ci_state === 'none'
+  if (noCi && r === 1) log('No CI runs on this repository\'s PRs: settling on the local gates; add a CI workflow that runs QUALITY_GATES')
+  const settled = noCi || (last.ai_review_done_on_head && last.ci_state === 'green')
   // A red CI this PR did not cause may be a since-fixed main; merging main can cure it.
   const redNotOurs = last.ci_state === 'red' && !last.ci_red_caused_by_pr && last.ai_review_done_on_head
   const behindMergeDue = last.behind_main && !last.has_conflicts && (settled || redNotOurs) &&
@@ -430,7 +466,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   let pushed = false
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
-      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
@@ -439,7 +475,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   }
   if (last.actionable_comments > 0) {
     const c = await agent(
-      GUARD + WHERE + GATES + AUTH + `On branch ${BRANCH}, invoke the Skill tool with skill "process-comments" with args "${PRN}". ` +
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `On branch ${BRANCH}, invoke the Skill tool with skill "process-comments" with args "${PRN}". ` +
       `Address EVERY actionable item (AI bug/suggestion/nit threads incl. outdated ones, overflow findings, human comments): fix with tests or decline/answer with reasons, ` +
       `run the gates once, push, then post the terminal-marker replies and verify every item carries one. ` +
       (last.has_conflicts || behindMergeDue ? `A merge-main step just ran; pull the branch first. ` : '') +
@@ -454,7 +490,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   }
   if (last.ci_state === 'red' && last.ci_red_caused_by_pr && !pushed) {
     const f = await agent(
-      GUARD + WHERE + GATES + AUTH + `CI quality gates are red on PR #${PRN} (branch ${BRANCH}, head ${last.head_sha}) because of this PR. ` +
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `CI quality gates are red on PR #${PRN} (branch ${BRANCH}, head ${last.head_sha}) because of this PR. ` +
       `Read the failing run log, fix the root cause (no lint/type-check suppression comments, test skips or lowered thresholds), run the gates locally, commit and push to the PR branch.`,
       opts(`fix-ci-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
