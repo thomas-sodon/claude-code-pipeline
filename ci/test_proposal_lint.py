@@ -4,7 +4,7 @@
 Run from the repo root: python3 ci/test_proposal_lint.py
 
 The tests check the documented format (docs/PROPOSALS.md) and CLI, not the
-implementation: every error and warning code, --repo, --tick, --lanes and
+implementation: every error and warning code, --repo, --as, --tick, --lanes and
 --roadmap. The script is always run as a subprocess, in temp directories.
 It also checks ci/lint-doc-examples.py finds the examples it must lint.
 Fixtures: ci/fixtures/valid-*.md lint clean; ci/fixtures/invalid/<code>[--variant].md
@@ -490,6 +490,31 @@ class TestCrossDoc(Base):
         rc, out = self.lint(doc)
         self.assertEqual((rc, out['errors']), (0, []))
         self.assertIn('xref_unreadable', codes(out['warnings']))
+
+    def test_as_resolves_refs_from_the_given_path(self):
+        # a draft kept outside the repo resolves Source: and <file>.md#N beside its real path under --as
+        self.write('repo/docs/design/roadmap.md', roadmap(milestone(1, gate_kind='ops', done=True),
+                                                           milestone(2, 'draft.md', deps='1')))
+        self.write('repo/docs/design/other.md', proposal(step(1, done=True), step(2, done=True)))
+        real = os.path.join(self.tmp, 'repo', 'docs', 'design', 'draft.md')
+        text = proposal(step(1, deps='other.md#2'), step(2, deps='1'), source='roadmap.md#2')
+        draft = self.write('outside/draft.md', text)
+        rc, out = self.lint(draft)
+        self.assertEqual((rc, out['errors']), (0, []))
+        self.assertIn('source_unresolved', codes(out['warnings']))
+        self.assertIn('xref_unreadable', codes(out['warnings']))
+        for as_path, cwd in ((real, None), (os.path.join('repo', 'docs', 'design', 'draft.md'), self.tmp)):
+            with self.subTest(as_path=as_path):
+                rc, out = self.lint(draft, '--as', as_path, cwd=cwd)
+                self.assertEqual((rc, out['errors'], out['warnings']), (0, [], []))
+                code, stdout, err = run(draft, '--lanes', '--as', as_path, cwd=cwd)
+                self.assertEqual(code, 0, stdout + err)
+                self.assertEqual(chain_keys(json.loads(stdout)), [['s1', 's2']])
+        # the refs are really read there: a step the other doc lacks is an error
+        draft = self.write('outside/bad.md', proposal(step(1, deps='other.md#3'), source='roadmap.md#2'))
+        rc, out = self.lint(draft, '--as', real)
+        self.assertEqual(rc, 1)
+        self.assertIn('xref_missing_step', codes(out['errors']))
 
 
 # ---- roadmap and architecture lint -------------------------------------------------------------

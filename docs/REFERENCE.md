@@ -85,7 +85,7 @@ host must share `GATE_LOCK_DIR`.
 reads only the files it is given: no git, no network.
 
 ```
-proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs]
+proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs] [--as PATH]
 proposal-lint.py DOC --lanes [--root DIR] [--date YYYYMMDD] [--branch-prefix feat/]
                              [--remote-heads FILE] [--repo DIR] [--allow-draft]
 proposal-lint.py DOC --tick N[,N...]
@@ -96,7 +96,11 @@ proposal-lint.py ROADMAP --roadmap
   with `--json` `{doc, kind, title, header, errors, warnings, steps}`; each step is
   `{n, title, done, line, description, human_gate: null | {kind, text}, files: [{path, new}], depends: [{doc: null | path, n}], acceptance, lane, outcome, …}`.
   `--repo DIR` checks `Files:` against that checkout; `--no-resolve-xrefs` skips
-  reading the docs named in `<file>.md#N` refs. The codes are listed in
+  reading the docs named in `<file>.md#N` refs. `--as PATH` (also with `--lanes`
+  and `--roadmap`) resolves cross-doc refs — `Source:`, `<file>.md#N`, a roadmap's
+  `Proposal:` — as if DOC sat at PATH, so a draft kept outside the repo (a
+  `--dry-run` copy) lints against the docs beside its real path; without it, those
+  refs warn `source_unresolved` / `xref_unreadable`. The codes are listed in
   [PROPOSALS.md](PROPOSALS.md#lint-codes).
 - **`--lanes`**: derives lanes and chains ([how](PROPOSALS.md#lanes-and-chains)) and
   prints `{doc, slug, errors, warnings, chains: [{key, lanes: [{key, steps, titles, concern, branch, dir, bases, files, already_built}]}], blocked: [{lane, steps, waiting_on: [{doc, n, title, reason}]}], human_gates_pending: [{n, title, kind, text, ready, waiting_on}], milestone_waits, done}`.
@@ -173,8 +177,10 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
 {
   brief: 'docs/brief.md',          // product brief, relative to dir or absolute: architecture, roadmap, a proposal per milestone
   concern: '...',                  // or one change too big for one PR: a single proposal, no architecture or roadmap
-  dir: '/abs/path/to/project',     // required; an existing repo, or a fresh directory that already holds the pipeline's
-                                   // .claude/commands and .claude/scripts (an empty directory is not enough)
+  dir: '/abs/path/to/project',     // required; the project's repository: a clean clone (the pipeline never creates one)
+  pipeline: '/abs/path/to/ccp',    // a checkout of this pipeline: the Seed phase (/seed) installs its skills, workflows
+                                   // and scripts into dir and writes a base CLAUDE.md before any design work.
+                                   // Omit only when dir already holds the pipeline (then /seed only checks CLAUDE.md).
   out: 'docs/design',              // proposals directory, relative to dir (default: PROPOSALS_DIR, else docs/design)
   context: '...',                  // framing every author treats as binding: builder, budget, constraints the source omits
   panel: 3,                        // independent architecture sketches judged before /roadmap; 0 = no panel
@@ -277,6 +283,7 @@ lane after the first).
 - `lint_errors` — a doc still has lint errors, or a proposal's lane preview (`--lanes --allow-draft`, e.g. `lane_cycle`) has errors; `lint_failed` — the lint stage did not report
 - `blocked_at_architecture_review` — architecture.md or roadmap.md still has a `bug` or `concern` after `max_review_rounds`; no proposal was written
 - `review_failed` — a review or revise stage of the architecture failed to report
+- `failed_at_seed` — `/seed` stopped (`no_source`: pass `pipeline`; `not_a_repo`, `no_remote`, `dirty_tree`); `stop_reason` quotes it. Every result also carries `seeded`: what was copied, kept and written
 - `failed_at_roadmap` — `/roadmap` stopped or did not finish (e.g. `error=exists`: pass `force`, or revise instead); `stop_reason` quotes it
 - `failed_at_propose` — concern mode: `/propose` stopped, routed the work elsewhere (e.g. to `/plan`) or did not finish; `stop_reason` quotes it
 

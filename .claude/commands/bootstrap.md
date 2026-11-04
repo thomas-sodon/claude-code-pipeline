@@ -4,15 +4,15 @@ This command turns `architecture.md` (written by `/roadmap`, accepted by a perso
 
 ## Configuration
 
-A greenfield directory has no `## Pipeline config` yet: this command **writes** it, from the architecture. Values it uses:
+A greenfield repository has at most the base `## Pipeline config` that `/seed` wrote (`MAIN_BRANCH`, `PROPOSALS_DIR`, marked `<!-- Pipeline config written by /seed -->`): this command **completes** it from the architecture, or writes it when absent. Values it uses:
 
 - `QUALITY_GATES` / `QUALITY_GATES_FAST` / CI job name — from the architecture's `## Quality gates` lines (``- QUALITY_GATES: `<command>` ``, ``- QUALITY_GATES_FAST: `<command>` ``, ``- CI job: `<name>` ``; job name default `gates`).
-- Required checks — the optional fourth line ``- Required checks: `<check>`, `<check>` `` (default: none): CI checks beyond the gates job that must be green to merge, such as a mobile build on a macOS runner. The skeleton still writes only the gates job; proposal steps add these jobs, and the next steps say when to require them.
+- Required checks — the optional fourth line ``- Required checks: `<check>`, `<check>` `` (default: none): CI checks beyond the gates job that must be green to merge, such as a mobile build on a macOS runner or a cross-OS matrix. The skeleton still writes only the gates job; proposal steps add these jobs, and the next steps say when to require them.
 - `MAIN_BRANCH` — always `main`.
 - `PROPOSALS_DIR` — the directory holding the architecture doc, relative to the repo root.
 - `TEST_GUIDELINES` — `CLAUDE.md#testing`.
 
-`LINT` below is `python3 .claude/scripts/proposal-lint.py`, run from the repo root. If it is missing, stop with `error=lint_missing` and ask the user to copy the pipeline's `.claude/scripts` into the project.
+`LINT` below is `python3 .claude/scripts/proposal-lint.py`, run from the repo root. If it is missing, stop with `error=lint_missing`: the repository has not been seeded — run `/seed` first (the `brief-to-proposals` workflow does).
 
 ## Arguments
 
@@ -25,10 +25,10 @@ An unrecognized `--`-prefixed token, or a second path → `error=invalid_argumen
 
 ## Check the architecture
 
-1. **Read it in full**, and `roadmap.md` beside it when present (for the Bootstrap gate's milestone number).
+1. **Read it in full**, and `roadmap.md` beside it when present (for the Bootstrap gate's milestone number). Every milestone the Bootstrap gate depends on — the decision or research gates whose outcome the skeleton bakes in (a name, a licence, a namespace) — must be ticked, with its `Outcome:` → else `error=bootstrap_gates_pending`, naming them; the skeleton follows their outcomes.
 2. **Lint.** `$LINT <architecture.md> --json`. Not an architecture doc (`kind` ≠ `architecture`) → `error=not_architecture`. Any error → `error=doc_malformed`, quoting the lines; the fix is `/propose --revise <doc>`.
 3. **Accepted.** The `Status:` header must be `accepted`; anything else (including `draft`, or `in-progress` after a bootstrap) → `error=not_accepted`, quoting it. Only a person sets `accepted`: never edit it.
-4. **Enough to scaffold.** Extract the `QUALITY_GATES` and `QUALITY_GATES_FAST` commands, the CI job name, any `Required checks`, the packages and their manifests from `## Repository layout`, the language, framework and runtime versions from the Decisions, the CI provider, environments and every secret and env var NAME from `## Environments and deployment`, the test frameworks from `## Testing`, and the licence. A missing `QUALITY_GATES` command or an empty repository layout → `error=architecture_incomplete`, naming the gap. No licence decision → write no `LICENSE` and say so in the report.
+4. **Enough to scaffold.** Extract the `QUALITY_GATES` and `QUALITY_GATES_FAST` commands, the CI job name, any `Required checks`, the packages with the manifest and entry files `## Repository layout` names (skipping every entry marked `(from milestone N)`: that milestone's proposal adds it), the language and framework from the Decisions, the pinned version of each runtime those packages need and any CI matrix (supported versions / OSes) from `## Quality gates`, the CI provider, environments and every secret and env var NAME from `## Environments and deployment`, the test frameworks from `## Testing`, and the licence. A missing `QUALITY_GATES` command or an empty repository layout → `error=architecture_incomplete`, naming the gap. No licence decision → write no `LICENSE` and say so in the report.
 
 ## Check the repository is greenfield
 
@@ -38,12 +38,12 @@ The pipeline assumes a clean repository is set up before this runs. Before any w
 2. **Mode.** `origin/main` exists → **branch mode**: the commit goes on a new branch `bootstrap/<YYYYMMDD>` cut from `origin/main`. The remote has no commits at all (`git ls-remote --heads origin` is empty) → **root mode**: the commit is the root commit on local `main`, and pushing it is the one push a person does by hand. `origin` has branches but no `main` → `error=no_main`, naming them.
 3. **Greenfield, by files** (as `/roadmap` judges it). Every path in `origin/main`'s tree (`git ls-tree -r --name-only origin/main`; root mode: none) is a doc, brief or note, a `README`, `LICENSE` or `.gitignore` (what a hosting service puts in a new repository), or one of the pipeline's `.claude` files — no source code, manifest, tool config or CI workflow. Anything else → `error=not_greenfield`, naming the first such path: this is an existing project — use `/roadmap` and `/propose` there.
 4. **Already bootstrapped.** A commit carrying the trailer `Bootstrapped-by: /bootstrap` on `origin/main`, or a `bootstrap/*` branch locally or on `origin` (`git branch -a --list '*bootstrap/*'`) → change nothing; report it (merged, or the branch still waiting for its PR) and print the next steps again.
-5. **Working tree.** `git status --porcelain` may show only untracked design docs, the brief, notes and the pipeline's `.claude` files (the files `brief-to-proposals` and a person put there). A modified tracked file or anything else → `error=dirty_tree`, listing it. **Resume:** an untracked root `CLAUDE.md` whose `## Pipeline config` carries this command's marker (`<!-- Pipeline config written by /bootstrap -->`) is an earlier run that stopped before committing — keep the files it wrote and check them against the architecture as if just written.
+5. **Working tree.** `git status --porcelain` may show only untracked design docs, the brief, notes, the pipeline's `.claude` files and the `CLAUDE.md` `/seed` wrote (the files `/seed`, `brief-to-proposals` and a person put there). A modified tracked file or anything else → `error=dirty_tree`, listing it. **Resume:** an untracked root `CLAUDE.md` whose `## Pipeline config` carries this command's marker (`<!-- Pipeline config written by /bootstrap -->`) is an earlier run that stopped before committing — keep the files it wrote and check them against the architecture as if just written.
 6. **Collisions.** Outside resume, a file at a path the skeleton creates — a manifest, tool config, source file or CI workflow — → `error=not_greenfield`, naming it. An existing `README.md`, `LICENSE`, `.gitignore` or `CLAUDE.md` (for example the ones a new repository starts with) is kept (see *Write the skeleton*).
 7. **Git identity.** `git config user.name` and `git config user.email` must be set (in this repository or globally) → else `error=git_identity_missing`. Never set them yourself.
-8. **Toolchain.** Every runtime and package manager the architecture pins must be on `PATH` at the pinned major version → else `error=toolchain_missing`, naming the tool and version. Never install a toolchain globally or with `sudo`.
+8. **Toolchain.** Every runtime and package manager the scaffolded packages pin must be on `PATH` at the pinned major version (a matrix's other versions run only in CI) → else `error=toolchain_missing`, naming the tool and version. Never install a toolchain globally or with `sudo`.
 
-Under `--dry-run`, stop here and print the plan: the mode, each file to create with a one-line purpose, the full `CLAUDE.md` and CI workflow, the licence source, the install and gate commands, the files to stage, and the next steps.
+Under `--dry-run`, stop here and print the plan: the mode, each file to create with a one-line purpose, each layout entry skipped as `(from milestone N)`, the full `CLAUDE.md` and CI workflow, the licence source, the install and gate commands, the files to stage, and the next steps.
 
 ## Create the bootstrap branch
 
@@ -53,10 +53,10 @@ Branch mode: `git switch -c bootstrap/<YYYYMMDD> origin/main` (the untracked doc
 
 Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory only when a file goes in it.
 
-1. **Manifests and lockfiles.** One manifest per package in `## Repository layout`, per the stack the Decisions chose, with the runtime version pinned (an engines field, `.nvmrc`, `.python-version`, toolchain file) and the licence's SPDX id in the licence field. Take dependency versions from the registry (`npm view <pkg> version`, `pip index versions <pkg>`, …), never from memory; the lockfile comes from the install.
+1. **Manifests and lockfiles.** Exactly the manifest each package in `## Repository layout` names (none for an entry marked `(from milestone N)`), per the stack the Decisions chose, with each runtime's version pinned (an engines field, `.nvmrc`, `.python-version`, toolchain file) and the licence's SPDX id in the licence field. Take dependency versions from the registry (`npm view <pkg> version`, `pip index versions <pkg>`, …), never from memory; the lockfile comes from the install.
 2. **Gate tooling.** Config for every tool the gate commands call (linter, formatter, type checker, test runner, coverage threshold from `## Testing`), and every script name they invoke (`npm run lint` needs a `lint` script). Rules strict from the start: no disabled rules, no thresholds of zero.
-3. **One smoke test per package.** A minimal entry module (no feature code) and a test that imports it and asserts real behaviour (its exported name or version, a health function's result) — never `assert true`. Follow the architecture's `## Testing`.
-4. **CI workflow.** For GitHub Actions, `.github/workflows/ci.yml` (another provider named in the architecture → its equivalent file). A Node stack is shown; other stacks use their own setup action and lockfile install:
+3. **One smoke test per package.** The entry file the layout names, minimal (no feature code), and a test that imports it and asserts real behaviour (its exported name or version, a health function's result) — never `assert true`. Follow the architecture's `## Testing`.
+4. **CI workflow.** For GitHub Actions, `.github/workflows/ci.yml` (another provider named in the architecture → its equivalent file). A Node stack is shown; other stacks use their own setup action and lockfile install, and the one gates job sets up every runtime the layout's packages need, each from its pin file. A gate the architecture runs across a matrix goes in a matrix job under another name, and the job named as the CI job aggregates it (`needs:` the matrix job, `if: always()`, a step that fails unless its result is `success`), so branch protection requires one name:
 
    ```yaml
    name: ci
@@ -81,7 +81,7 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
 
    Pin every action to a full commit SHA with its release tag in a comment: take the latest release tag from `git ls-remote --tags https://github.com/<owner>/<action>` and use its peeled (`^{}`) SHA when present. No network → pin the exact release tag you know (`@v4.2.2`, never `@v4` or `@main`) and say so in the report; never invent a SHA. Install from the lockfile; the gates job reads no secrets.
 5. **`.env.example`** — every env var and secret NAME from `## Environments and deployment`, with an empty value and a comment naming its environments and where the real value lives. Never a value. Deploy workflows, infrastructure and hosting config are not part of the skeleton: proposals build them.
-6. **`CLAUDE.md`** — existing file: keep its content and append the sections below; new file: a `# <Product>` title and one paragraph from the architecture's `## Context` first. Then:
+6. **`CLAUDE.md`** — the file `/seed` wrote (the usual case): keep its content, replace its `## Pipeline config` section with the one below (same keys plus the gates; the `/bootstrap` marker replaces `/seed`'s), and append `## Invariants` and `## Testing`; another existing file: keep its content and append the sections below; no file: a `# <Product>` title and one paragraph from the architecture's `## Context` first. Then:
 
    ```md
    ## Pipeline config
@@ -104,7 +104,7 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
 
    Copy the two bodies byte for byte, then add one line under `## Invariants`: they come from `<PROPOSALS_DIR>/architecture.md` and change in both places together.
 7. **`LICENSE`** — the licence the architecture names. Fetch the canonical text from an authoritative source: the SPDX list (`https://raw.githubusercontent.com/spdx/license-list-data/main/text/<SPDX-ID>.txt`), `gh api licenses/<key> --jq .body`, or the licence steward's site. Fill only its placeholders (year, copyright holder from the architecture or brief; holder unknown → leave the placeholder and say so). Never paraphrase or retype a licence from memory. Cannot fetch → write a `LICENSE` holding only `SPDX-License-Identifier: <id>` and tell the person to replace it with the canonical text. An existing `LICENSE` is kept; report it when it differs from the architecture's choice.
-8. **`.gitignore`** — the stack's standard entries (dependency directories, build output, coverage, caches, OS and editor files), plus `.env`, `.env.*`, `!.env.example`, `.claude/settings.local.json`, and signing keys and keystores when there is a mobile app. An existing `.gitignore` is kept, with the missing entries appended.
+8. **`.gitignore`** — the stack's standard entries (dependency directories, build output, coverage, caches, OS and editor files), plus `.env`, `.env.*`, `!.env.example`, `.claude/settings.local.json`, and signing keys and keystores when anything is signed for release. An existing `.gitignore` is kept, with the missing entries appended.
 9. **`README.md`** — what the product is (from `## Context`), its status (pre-release), prerequisites (runtime versions), setup (install; copy `.env.example` to `.env`), how to run the gates, the repository layout in brief, links to the design docs, and the licence. An existing README is kept.
 
 ## Install and run the gates
@@ -118,7 +118,7 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
 Only when the final full `QUALITY_GATES` run is green.
 
 1. **Stage by explicit name** — never `git add -A` or `git add .`:
-   - every file this command created, and the lockfiles;
+   - every file this command created, and the lockfiles, and `CLAUDE.md`;
    - the design docs in `$PROPOSALS_DIR` (never the brief the architecture's `Source:` names: briefs often hold business detail the person may not want in a public repository — list it as left out, and say how to add it in a later PR if they want it);
    - the pipeline's `.claude/commands/`, `.claude/workflows/`, `.claude/scripts/`, and `.claude/settings.json` when present.
 
@@ -133,9 +133,9 @@ Only when the final full `QUALITY_GATES` run is green.
 
 Then:
 
-- **Skeleton** — files created, grouped (manifests and lockfiles, gate config, smoke tests, CI, `CLAUDE.md`, `LICENSE`, `.gitignore`, `.env.example`, README); files kept or merged instead.
+- **Skeleton** — files created, grouped (manifests and lockfiles, gate config, smoke tests, CI, `CLAUDE.md`, `LICENSE`, `.gitignore`, `.env.example`, README); files kept or merged instead; each layout entry skipped as `(from milestone N)`, with the milestone whose proposal adds it.
 - **Quality gates** — each stage `PASS`, and how many fix rounds were needed.
-- **CI** — workflow path, the check name (`<job name>`), and each action's pin (SHA or tag only, with why); each `Required checks` name the architecture lists, as not yet created (a proposal step adds its job).
+- **CI** — workflow path, the check name (`<job name>`; with a matrix, the job aggregating it), and each action's pin (SHA or tag only, with why); each `Required checks` name the architecture lists, as not yet created (a proposal step adds its job).
 - **Licence** — SPDX id and where the text came from, or `SPDX id only: replace with the canonical text`.
 - **Committed / left out** — design docs and `.claude` files committed; pre-existing files left unstaged.
 

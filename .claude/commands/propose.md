@@ -4,12 +4,12 @@ This command is the **design entry point for multi-PR work**. It writes one prop
 
 ## Configuration
 
-Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: value` lines). With no `CLAUDE.md` (a greenfield directory), use the defaults and say so. This command uses:
+Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: value` lines). With no `CLAUDE.md` (a greenfield directory, or a repo that never adopted the pipeline), use the defaults and fallbacks below and say so. This command uses:
 
 - `PROPOSALS_DIR` — where design docs live (default `docs/design`, relative to the working directory; announce the default when used). This command writes there.
 - `MAIN_BRANCH` — integration branch (default `main`).
-- `QUALITY_GATES` — named in Acceptance where a step's check is the gate run.
-- `TEST_GUIDELINES` — the project's testing rules (default: the project's `CLAUDE.md`).
+- `QUALITY_GATES` — what proves a code step's Acceptance. Unset → the architecture's `## Quality gates`, else the checks the repo already runs (CI workflow jobs, Makefile or package-manager scripts, the test runners found while grounding); `## Current state` names which it used.
+- `TEST_GUIDELINES` — the project's testing rules (default: the project's `CLAUDE.md`, else `CONTRIBUTING` or a test README, else the conventions of the existing tests).
 
 The lint is `python3 .claude/scripts/proposal-lint.py`, run from the working directory. If the script is missing, check the format by hand against the rules below and say so in the report.
 
@@ -35,7 +35,7 @@ Concern mode only. Recommendations, never delegations: do not invoke another com
 
 - **An issue reference** (`#NNN` or an `.../issues/NNN` URL) → recommend `/bug-fix NNN` and stop, before reading any code.
 - **Greenfield.** The tree has no code and `$PROPOSALS_DIR` has no `architecture.md` → this is a product, not a change: recommend `/roadmap <brief or concern>` and stop with `error=greenfield`.
-- **It fits one focused PR.** Once grounding step 1 has mapped the implicated code: if the core is one coherent change of ≤ ~7 implementation steps with no person-only step and no structural class behind it, recommend `/plan <concern>` and stop. Size is judged from the code, not the wording.
+- **It fits one focused PR.** Once grounding step 1 has mapped the implicated code: `/propose` only when the work needs more than one independently mergeable PR, a person-only step, or a structural class (a rule that must hold across many files, with a check that enforces it); otherwise recommend `/plan <concern>` and stop. Size is judged from the code, not the wording.
 
 ## Read the source
 
@@ -57,7 +57,7 @@ The proposal must rest on code you read first-hand. Do not delegate this to suba
 
 1. **Map nouns to code.** Grep each noun across source, tests, docs and config. Read the implicated functions in full, plus their direct callers.
 2. **Confirm the observable** (concern mode). Not reproducible today → `error=concern_not_reproducible`, citing the current code and the commit that changed it (`git log -S<symbol> --oneline -5`).
-3. **Project rules.** Read the `CLAUDE.md` sections and structural tests covering the area. A design that needs to break an invariant is not written around it: find the compliant route, or report the collision.
+3. **Project rules.** Read the invariants covering the area: `CLAUDE.md`, else the architecture's, else the rules the repo already enforces (structural tests, CI checks, lint configs, contributing docs). A design that needs to break an invariant is not written around it: find the compliant route, or report the collision.
 4. **Tests and config.** Read the nearest tests (contract, fixtures to reuse) and look for existing settings before adding any.
 5. **Greenfield** (milestone mode, no code yet): `## Current state` says `No code yet` plus what the architecture fixes; every path comes from its Repository layout or an earlier milestone's proposal.
 
@@ -66,7 +66,7 @@ Every path and symbol in the doc comes from this step, cited by file path and sy
 ## Research what the tree cannot tell you
 
 - **Explore** subagent for discovery only (usage patterns, prior implementations, other call sites): one call by default, up to 3 in parallel across layers, each with one specific question. It never substitutes for the reading above.
-- **Desk research.** Settle every assumption a public source can settle — official docs, API limits, pricing pages, store and provider guidelines, regulators' FAQs — with WebSearch / WebFetch, and cite the link and the date checked in the Decision that rests on it. Only what needs data or action a person must provide becomes a `Human gate: research` step. Web tools unavailable → list the question, with the source to check, under `## Risks and open questions`; never state it as fact.
+- **Desk research.** Settle every assumption a source can settle — official docs, API limits, pricing pages, store and provider guidelines, regulators' FAQs (WebSearch / WebFetch), or a local source (a repo path and symbol, an installed tool's docs) — and cite it in the Decision that rests on it: a link with the date checked, a path and symbol, or the tool's name and version. Only what needs data or action a person must provide becomes a `Human gate: research` step. Web tools unavailable → list the question, with the source to check, under `## Risks and open questions`; never state it as fact.
 
 ## Write the proposal
 
@@ -80,8 +80,9 @@ The doc reads as freshly authored: no quoted request, no mention of this command
 4. `## Current state` — grounded, cited by path and symbol.
 5. `## Design` — components, interfaces, data model, data flow, trust boundaries; for conditional work, each alternative.
 6. `## Decisions` — `### D1: <decision>` with Options (≥2 for a real choice), Choice, Why (links for desk research), Consequences, Revisit if. Never silently contradict an architecture decision: a departure names the decision it supersedes, and the report asks for `/propose --revise <architecture doc>`.
-7. `## Security and privacy` — data classes handled; where sensitive and personal data lives and for how long; encryption in transit and at rest; third-party processors and what they receive; secrets by NAME; invariants to add to `CLAUDE.md`. Nothing sensitive → `none: <why>`.
-8. `## Rollout and operations` — environments; config and secret NAMES per environment; migrations (forward and backward compatible, apply order); flags and their defaults; deploy mechanism; monitoring and alerts; rollback; launch gates. Nothing deployed → `none: <why>`.
+7. `## Security and privacy` — what this change could let go wrong: data exposure, weakened safety or permission rules, supply-chain or release-integrity risk, untrusted input; invariants to add to `CLAUDE.md`, or to the repo's enforced checks when it has none. Nothing at risk → `none: <why>`.
+   - For data it handles: data classes; where sensitive and personal data lives and for how long; encryption in transit and at rest; third-party processors and what they receive; secrets by NAME.
+8. `## Rollout and operations` — how the change reaches its users (deploy a service, publish a package or tagged version, submit to a store, users copy or upgrade files) and compatibility for already-installed or downstream copies; as they apply, environments, config and secret NAMES per environment, migrations (forward and backward compatible, apply order), flags and defaults, monitoring and alerts, rollback, launch gates. Nothing reaches anyone → `none: <why>`.
 9. `## Risks and open questions` — each with its mitigation and the step that retires it.
 10. `## Steps` — below.
 11. `## Out of scope` — later milestones, adjacent improvements, constraints ruled out.
@@ -91,12 +92,12 @@ The doc reads as freshly authored: no quoted request, no mention of this command
 Grammar (the lint enforces it): `N. [ ] **Title.** One to three sentences.` at column 0, numbered 1, 2, 3 in build order, then sub-bullets indented three spaces (four from step 10 on, so they nest under the wider number):
 
 - `Depends on:` on **every** step — `none`, same-doc numbers (always lower), `<file>.md#N` for a step of another proposal that exists now, or `<roadmap file>.md#N` for a roadmap gate milestone this step must wait for (a legal or privacy sign-off before a release, an `ops` milestone that provisions the accounts it uses); the lint resolves a roadmap milestone like any cross-doc ref and treats it as satisfied once ticked. That is the one exception: other ordering between milestones is the roadmap's job; do not restate it with cross-doc refs.
-- `Files:` (code steps) — backticked repo-relative paths; existing files by current path, created ones suffixed ` (new)`; ≤8 per step.
-- `Acceptance:` — testable: a test, a command, an observable state; never "works well". Name new tests. A code step's Acceptance must be provable by `QUALITY_GATES` or by a CI check the architecture names (its `CI job` or `Required checks`): the agent's Linux host cannot build an iOS or Android app, observe device behaviour or run a macOS-only tool. Verification only a device can give becomes a human gate (`research` or `release`) right after the code step, or a CI job named in the architecture's `Required checks` (the step that adds that job is planned too).
+- `Files:` (code steps) — backticked repo-relative paths; existing files by current path, created ones suffixed ` (new)`; ≤8 per step. A file the architecture's Repository layout names counts as created by the Bootstrap milestone (no `(new)`), unless its entry says `(from milestone N)`: that milestone's proposal creates it.
+- `Acceptance:` — testable: a test, a command, an observable state; never "works well". Name new tests. A code step's Acceptance must be provable by the gates (`QUALITY_GATES` or its fallback) or a named CI check (the architecture's `CI job` or `Required checks`, or a job the repo's CI already runs): the agent's Linux host cannot build an iOS or Android app, observe device behaviour or run a macOS-only tool. Verification only a device can give becomes a human gate (`research` or `release`) right after the code step, or a CI job named in the architecture's `Required checks` (the step that adds that job is planned too).
 - `Lane: <key>` — only for code steps that cannot merge apart (each would leave the tree broken alone); they ship as one PR. Prefer splitting.
 - `Human gate: <kind> — <what a person does>` instead of `Files:` for person-only work.
 
-Each code step is one focused, independently mergeable PR that leaves the tree working: tests in the same step as the behavior, a risky change behind a flag defaulting to today's behavior, a migration expand-then-contract across steps. A step that uses what another creates (module, table, endpoint, secret) depends on it — otherwise the lane builder builds them in parallel.
+Each code step is one focused, independently mergeable PR that leaves the tree working: tests in the same step as the behavior, a risky change behind a flag defaulting to today's behavior, a migration expand-then-contract across steps, a new check or rule non-enforcing at first (warn, or only on files already migrated) with the migration steps after it and the last step enforcing it. A content step (a privacy policy, store listing copy, a docs page) has the docs as `Files:`, a named check in the gates (link or spell check) as Acceptance, and a `decision` gate right after it in which a person approves the text. A step that uses what another creates (module, table, endpoint, secret) depends on it — otherwise the lane builder builds them in parallel.
 
 ### Human gates
 
@@ -105,15 +106,15 @@ Everything a person must do is its own step with `Acceptance:` stating the evide
 - `research` — data a person gathers (real samples, user interviews, measurements); fixtures they produce are redacted.
 - `decision` — go/no-go, legal or compliance sign-off, a choice the person owns.
 - `ops` — accounts, secrets (by NAME), DNS, provider and billing setup.
-- `release` — production deploy, store submission, flag flip, observation window.
+- `release` — production deploy, publishing a package or tagged version, store submission, flag flip, observation window.
 
 Place each right after the code steps it follows (a release gate right after the step that ships the deployable change); every step that needs a gate's result carries it in `Depends on:` so it stays blocked until a person ticks it.
 
-**Release ownership.** Each production release, app-store submission or launch is gated exactly **once**. By default it is a `release` gate in the proposal whose code it ships, right after that code. It is a roadmap `release` milestone instead only when one launch ships several milestones' work together — then this proposal has no gate for it, and `## Rollout and operations` names the milestone that releases it. Never both. A release gate depends on every roadmap gate milestone it needs (the legal or privacy sign-off, the `ops` milestone that provisions the host or store accounts) as `<roadmap file>.md#N`.
+**Release ownership.** Each production release, package or tagged-version publish, app-store submission or launch is gated exactly **once**. By default it is a `release` gate in the proposal whose code it ships, right after that code. It is a roadmap `release` milestone instead only when one launch ships several milestones' work together — then this proposal has no gate for it, and `## Rollout and operations` names the milestone that releases it. Never both. A release gate depends on every roadmap gate milestone it needs (the legal or privacy sign-off, the `ops` milestone that provisions the host or store accounts) as `<roadmap file>.md#N`.
 
 **Conditional work.** When the next steps depend on a gate's finding, `## Design` describes each alternative and the steps that would differ `Depend on` the gate, written for the alternative the evidence currently favours and saying so. After a person records the gate's `Outcome:` and ticks it, `/propose --revise` rewrites them to the chosen alternative. No conditional syntax.
 
-### Example
+### Examples
 
 ```md
 # Proposal: Nightly usage export
@@ -146,6 +147,38 @@ Architecture: architecture.md
    - Acceptance: seven consecutive successful nightly runs, no alert fired
 ```
 
+Not every proposal deploys something. A refactor in a repo with no `CLAUDE.md`, proved by the commands its CI already runs, with no human gate:
+
+```md
+# Proposal: One config loader for every command
+
+Status: draft
+Source: concern
+
+## Current state
+
+Each command in `src/cli/` parses the config file itself. No `CLAUDE.md`; gates: `make lint test`, as the `test` job in `.github/workflows/ci.yml` runs them.
+
+## Security and privacy
+
+none: the same local file is read as today; no new input, data or permission.
+
+## Rollout and operations
+
+none: behaviour is unchanged; it reaches users in the next regular release, which this proposal does not gate.
+
+## Steps
+
+1. [ ] **Add the shared loader and a warn-only check.** `load_config()` plus a script listing commands that still parse the file themselves.
+   - Files: `src/config.py` (new), `tests/test_config.py` (new), `tools/check_config_reads.py` (new), `Makefile`
+   - Depends on: none
+   - Acceptance: `make lint test` passes; `make lint` prints the check's list and still exits 0
+2. [ ] **Move every command to the loader and enforce the check.** The check now fails on any direct read.
+   - Files: `src/cli/build.py`, `src/cli/serve.py`, `tests/test_cli.py`, `Makefile`
+   - Depends on: 1
+   - Acceptance: `make lint test` passes with the check enforcing; the list is empty
+```
+
 ## Updating an existing doc
 
 Applies to a milestone proposal that exists, a superseded concern proposal, and revise mode.
@@ -170,9 +203,9 @@ Applies to a milestone proposal that exists, a superseded concern proposal, and 
 
 ## Write and lint
 
-1. Under `--dry-run`, print the doc and stop. To lint it, write a temporary copy outside the repo, lint that, and delete it; nothing else is written.
+1. Under `--dry-run`, print the doc and stop. To lint it, write a temporary copy outside the repo, lint that with `--as <its real path>` (so `Source:` and cross-doc refs resolve), and delete it; nothing else is written.
 2. **Write atomically:** `<path>.tmp.<pid>` in the same directory, then rename into place. Create the proposals directory if needed.
-3. Run `python3 .claude/scripts/proposal-lint.py <path> --repo .` and fix every error; re-run until it exits 0. Fix the warnings that are real (`missing_section`, `step_too_big`, `new_file_exists`, `missing_acceptance` on a gate, a mistyped path behind `file_not_found`); a `file_not_found` for a file an earlier milestone's proposal creates stays, and the report names that proposal.
+3. Run `python3 .claude/scripts/proposal-lint.py <path> --repo .` and fix every error; re-run until it exits 0. Fix the warnings that are real (`missing_section`, `step_too_big`, `new_file_exists`, `missing_acceptance` on a gate, a mistyped path behind `file_not_found`); a `file_not_found` for a file Bootstrap or an earlier milestone's proposal creates stays, and the report names which.
 4. More than ~15 steps → the milestone or concern is too big: say so in the report and propose the split.
 
 ## Report
@@ -184,7 +217,7 @@ Print the resolved path as the final message:
 (revise mode: `Revised: <path>`, then each applied finding in one line and each declined one with its reason). Add bullet addenda only when they apply:
 
 - Routed or stopped — the recommendation or `error=` and the next action, instead of a path.
-- `PROPOSALS_DIR` defaulted, or no `CLAUDE.md` was found.
+- `PROPOSALS_DIR` defaulted, or no `CLAUDE.md` was found — and which gates, test rules and invariants stood in.
 - Updated in place or superseded — the path, and that every `[x]` step was kept.
 - Status reset to `draft` from `accepted` / `in-progress` / `done` — a person must re-accept it.
 - Steps, human gates (by kind) and lanes in the doc; lint warnings left and why.

@@ -37,6 +37,12 @@ proposal (W `no_kind`).
   gates.
 - `Architecture:` — the architecture doc, relative to this doc (proposals and roadmaps).
 
+Cross-doc refs (`Source:`, `<file>.md#N`, `Proposal:`) resolve from the doc's
+directory; lint a draft kept outside the repo with `--as <its real path>`.
+
+**Sections that do not apply** stay, with `none: <why>` or `n/a: <why>` as their
+body, so a reader sees the question was asked.
+
 **Code fences** (```` ``` ```` or `~~~`) are skipped, so a doc can quote steps
 without the lint counting them.
 
@@ -115,7 +121,9 @@ the two in parallel.
 A step with no `Human gate:` is a code step: one independently mergeable PR that
 leaves the tree working, with its tests in the same step. A risky change goes behind
 a flag that defaults to today's behaviour; a migration expands and contracts across
-steps. With `--repo DIR`, the lint checks `Files:` against the tree: a modified file
+steps; a new check starts non-enforcing and the last migration step enforces it. A
+file the architecture's Repository layout names is cited without `(new)` (Bootstrap
+creates it) unless its entry says `(from milestone N)`. With `--repo DIR`, the lint checks `Files:` against the tree: a modified file
 that does not exist and no earlier step creates is W `file_not_found` (an earlier
 proposal may create it); a `(new)` file that already exists is W `new_file_exists`.
 
@@ -134,14 +142,14 @@ A step only a person can do is a gate: `Human gate: <kind> — <text>` instead o
 | `research` | data a person gathers: interviews, real samples, measurements, a provider's written answer. What public sources can settle is desk research in a Decision instead, with links and the date checked. |
 | `decision` | go / no-go, legal or compliance sign-off, a choice the person owns |
 | `ops` | accounts, domains, DNS, provider and billing setup, secrets (by NAME, per environment), bootstrapping the repository |
-| `release` | production deploys, store submissions, flag flips, observation windows |
+| `release` | production deploys, publishing a package or tagged version, store submissions, flag flips, observation windows |
 
 A gate sits right after the code it follows; its `Acceptance:` names the evidence
 that closes it. The pipeline never does a gate: lanes that depend on one stay
 blocked until a person ticks it.
 
-**Release ownership.** Each production release, store submission or launch is
-gated exactly once. By default it is a `release` gate in the proposal whose code it
+**Release ownership.** Each production release, package or tag publish, store
+submission or launch is gated exactly once. By default it is a `release` gate in the proposal whose code it
 ships, right after that code; it is a roadmap `release` milestone instead only when
 one launch ships several milestones' work together, and then the proposals have no
 gate for it. Never both. A release gate depends on each roadmap gate milestone it
@@ -174,8 +182,8 @@ There is no conditional syntax. When later steps depend on what a gate finds:
 | `## Current state` | today's tree, cited by path and symbol; greenfield: `No code yet` |
 | `## Design` | components, interfaces, data model, data flow, trust boundaries; each alternative for conditional work |
 | `## Decisions` | `### D1: <decision>` with Options (two or more), Choice, Why, Consequences, Revisit if |
-| `## Security and privacy` | data classes, where personal data lives and for how long, encryption, third parties and what they receive, secrets by NAME; or `none: <why>` |
-| `## Rollout and operations` | environments, config and secret NAMES, migrations, flags and defaults, deploy, monitoring, rollback, launch gates; or `none: <why>` |
+| `## Security and privacy` | what the change could let go wrong (data exposure, weakened safety or permission rules, supply-chain or release integrity, untrusted input); data classes, where personal data lives and for how long, encryption, third parties and what they receive, secrets by NAME; or `none: <why>` |
+| `## Rollout and operations` | how the change reaches its users (deploy, package or tag publish, store submission, users copying or upgrading files) and compatibility for installed copies; environments, config and secret NAMES, migrations, flags, monitoring, rollback, launch gates; or `none: <why>` when nothing reaches anyone |
 | `## Risks and open questions` | each with its mitigation and the step that retires it |
 | `## Steps` | the step list |
 | `## Out of scope` | later milestones, adjacent work |
@@ -280,9 +288,11 @@ a short paragraph on the ordering, then `## Milestones` (E `missing_section` /
   does not exist yet is W `proposal_not_written` (`/propose --milestone=N` writes it).
 - A **gated milestone** has `Human gate:` and no `Proposal:` (E `gate_with_proposal`).
 - No `Files:` (E `files_in_roadmap`) and no `Lane:`: those belong to proposal steps.
-- Order: on a greenfield repo the Bootstrap `ops` gate comes first; then the source's
-  cheapest validation, a `decision` gate applying its stop criteria, and everything
-  that result could cancel after it. Every legal check, account or secret, release
+- Order: on a greenfield repo the Bootstrap `ops` gate comes before any code
+  milestone (only `decision` or `research` gates that need no code precede it); then
+  the source's cheapest validation, a `decision` gate applying its stop criteria (not
+  its success criteria; a threshold the source does not give is labelled proposed),
+  and everything that result could cancel after it. Every legal check, account or secret, release
   and store submission is a gate; a release is a roadmap milestone only when one
   launch ships several milestones' work (see *Release ownership*).
 
@@ -325,7 +335,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 ## Architecture
 
 `# Architecture: <product>`, `Status:` and `Source:`, then twelve required sections
-(each missing one is E `missing_section`), and no step list (W `unexpected_steps`):
+(each missing one is E `missing_section`; one that does not apply says `n/a: <why>`), and no step list (W `unexpected_steps`):
 
 | Section | Holds |
 |---|---|
@@ -336,7 +346,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 | `## Decisions` | D-records, each weighing two or more options |
 | `## Security and privacy` | data classes, encryption, auth, secrets, third parties, retention, threats, compliance items and the milestone that clears each |
 | `## Invariants` | bullets, each an enforceable rule; `/bootstrap` copies them verbatim into `CLAUDE.md` |
-| `## Repository layout` | the directory tree `/bootstrap` scaffolds |
+| `## Repository layout` | the directory tree `/bootstrap` scaffolds; an entry marked `(from milestone N)` is left to that milestone |
 | `## Quality gates` | the three lines below, which `/bootstrap` parses |
 | `## Environments and deployment` | environments, CI/CD, secrets and env vars by NAME, migrations, monitoring, backups, rollback, release process |
 | `## Testing` | layers, frameworks, mocking, coverage, fixture policy; copied verbatim into `CLAUDE.md` |
@@ -352,8 +362,9 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 ```
 
 The fourth line is optional: the CI checks beyond the gates job that must also be
-green to merge (what the agent's Linux host cannot run, such as a mobile build on a
-macOS runner). Pass the same names as `required_checks`; each check's job is added
+green to merge — what the agent's Linux host cannot run (a build or test on another
+OS, a device, browser or hardware target). A matrix job reports one check per
+entry: name one aggregating job that needs them all. Pass the same names as `required_checks`; each check's job is added
 by a proposal step the roadmap plans.
 
 ````md
