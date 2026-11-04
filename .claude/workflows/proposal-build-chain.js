@@ -17,12 +17,14 @@ export const meta = {
 //   concern  — the steps in scope for this lane, planned as one increment
 //   bases    — branches this lane stacks on (the earlier lanes' branches, still unmerged)
 //   steps    — the proposal's step numbers this lane implements; ticked in the proposal in the lane's own commit
-// Derive mode: { proposal, dir, root, date?, branch_prefix?, parallel_chains?, ...the shared keys }
+// Derive mode: { proposal, dir, root, date?, branch_prefix?, parallel_chains?, allow_draft?, ...the shared keys }
 //   proposal — the proposal's path relative to the repo root (its step list is the source of the lanes)
 //   dir      — an existing checkout of the repo, used only to read the proposal and the remote's branches
 //   root     — directory for the lane worktrees (<root>/<doc-slug>-<lane>)
 //   date     — suffix of the lane branch names (feat/<doc-slug>-<lane>-<date>), e.g. '20261104' (default 'undated')
 //   parallel_chains — default true: independent chains build at the same time; false = one chain after another
+//   allow_draft — build even when the proposal's Status is not accepted / in-progress (default false: a person accepts it first)
+//   The proposal must already be on origin/<main>: every lane worktree is cut from origin and reads it there.
 //   A lane that does not push stops only its own chain. A lane already pushed by an earlier run (its branch exists on
 //   origin) is not rebuilt; later lanes stack on it. Lanes waiting on a human-gated step, on an unfinished step of
 //   another doc or on an unfinished roadmap milestone are reported as blocked, never built.
@@ -94,7 +96,7 @@ const derived = await agent(
   `git archive origin/${MAIN} -- "$(dirname ${A.proposal})" | tar -x -C <scratch>. If ${A.proposal} is not on origin/${MAIN}, copy that directory from the working copy instead and report source=working_copy.\n` +
   `2. git ls-remote --heads origin > <scratch>/heads.txt\n` +
   `3. From <scratch> (so the doc path stays repo-relative), run: python3 ${A.dir}/.claude/scripts/proposal-lint.py ${A.proposal} --lanes --repo ${A.dir} --root ${A.root} --date ${A.date || 'undated'}` +
-  (A.branch_prefix ? ` --branch-prefix ${A.branch_prefix}` : '') + ` --remote-heads <scratch>/heads.txt\n` +
+  (A.branch_prefix ? ` --branch-prefix ${A.branch_prefix}` : '') + (A.allow_draft ? ' --allow-draft' : '') + ` --remote-heads <scratch>/heads.txt\n` +
   `Return its stdout verbatim as lanes_json (do not edit, summarise or reformat it) and its exit code.`,
   { label: 'derive-lanes', phase: 'Derive', effort: 'low', schema: DERIVE_SCHEMA },
 )
@@ -109,7 +111,10 @@ if (L.errors && L.errors.length) {
   log(`${A.proposal} has ${L.errors.length} lint error(s) — fix the doc (or run /review-proposal) before building`)
   return { status: 'proposal_lint_errors', errors: L.errors, warnings: L.warnings || [] }
 }
-if (derived.source === 'working_copy') log(`${A.proposal} is not on origin/${MAIN} yet: lanes come from the working copy; merge the doc first so every lane's worktree has it`)
+if (derived.source === 'working_copy') {
+  log(`${A.proposal} is not on origin/${MAIN} yet. Land it first (commit it on a branch, /create-pr, merge): every lane worktree is cut from origin/${MAIN} and must read it there`)
+  return { status: 'proposal_not_on_main', proposal: A.proposal, preview: L }
+}
 const nLanes = L.chains.reduce((n, c) => n + c.lanes.length, 0)
 log(`${A.proposal}: ${L.chains.length} chain(s), ${nLanes} lane(s), ${(L.blocked || []).length} blocked, ${(L.human_gates_pending || []).length} human gate(s) pending`)
 for (const b of L.blocked || []) log(`Blocked lane ${b.lane} (steps ${b.steps.join(', ')}): waits on ${b.waiting_on.map(w => `${w.doc ? w.doc + '#' : 'step '}${w.n} (${w.reason})`).join(', ')}`)

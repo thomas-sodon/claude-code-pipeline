@@ -9,7 +9,7 @@ of claude-code-pipeline.
 Usage:
   proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs]
   proposal-lint.py DOC --lanes [--root DIR] [--date YYYYMMDD] [--branch-prefix PREFIX]
-                               [--remote-heads FILE] [--repo DIR]
+                               [--remote-heads FILE] [--repo DIR] [--allow-draft]
   proposal-lint.py DOC --tick N[,N...]
   proposal-lint.py ROADMAP --roadmap
 
@@ -43,7 +43,9 @@ COMMENT_RE = re.compile(r'<!--.*?-->')
 
 GATE_KINDS = ('research', 'decision', 'ops', 'release')
 KEYS = {'files': 'files', 'depends on': 'depends', 'acceptance': 'acceptance',
-        'lane': 'lane', 'human gate': 'gate', 'proposal': 'proposal'}
+        'lane': 'lane', 'human gate': 'gate', 'proposal': 'proposal', 'outcome': 'outcome'}
+STATUSES = ('draft', 'accepted', 'in-progress', 'done')
+BUILDABLE_STATUSES = ('accepted', 'in-progress')
 PROPOSAL_SECTIONS = ('Context', 'Goals', 'Non-goals', 'Current state', 'Design', 'Decisions',
                      'Security and privacy', 'Rollout and operations', 'Risks and open questions',
                      'Steps', 'Out of scope')
@@ -131,7 +133,7 @@ def parse(path):
             cur = {'n': int(m.group(1)), 'done': m.group(2) != ' ', 'title': m.group(3).strip(),
                    'line': i, 'description': m.group(4).strip(), 'files': [], 'depends': [],
                    'acceptance': '', 'lane': None, 'human_gate': None, 'proposal': None,
-                   '_keys': {}}
+                   'outcome': '', 'has_depends': False, '_keys': {}}
             doc.steps.append(cur)
             last_key = None
             continue
@@ -152,7 +154,7 @@ def parse(path):
             continue
         if m and len(m.group(1).split()) <= 3 and not line.strip().startswith('- `'):
             doc.warn(i, 'unknown_key', 'step %d: unknown sub-bullet key "%s:" (known: Files, Depends on, '
-                     'Acceptance, Lane, Human gate%s)' % (cur['n'], m.group(1).strip(),
+                     'Acceptance, Lane, Human gate, Outcome%s)' % (cur['n'], m.group(1).strip(),
                                                          ', Proposal' if doc.kind == 'roadmap' else ''))
             last_key = None
             continue
@@ -185,9 +187,12 @@ def interpret_keys(doc, s):
         s['files'] = [{'path': p.strip()[2:] if p.strip().startswith('./') else p.strip(),
                        'new': bool(new)} for p, new in found]
         s['_files_line'] = line
+    if 'outcome' in keys:
+        s['outcome'] = keys['outcome'][1]
     if 'depends' in keys:
         line, value = keys['depends']
         s['_depends_line'] = line
+        s['has_depends'] = True
         v = COMMENT_RE.sub('', value).strip().rstrip('.')
         if v.lower() not in ('', 'none', 'nothing', '-'):
             for tok in [t.strip() for t in v.split(',') if t.strip()]:
@@ -237,6 +242,12 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None):
         doc.warn(1, 'no_kind', 'the first heading should be "# Proposal: <title>", "# Roadmap: <title>" or '
                  '"# Architecture: <title>"; treating this as a proposal')
         doc.kind = 'proposal'
+    status = doc.header.get('status', '')
+    if not status:
+        doc.warn(1, 'missing_status', 'add a "Status: draft|accepted|in-progress|done" line under the title '
+                 '(authors write draft; a person sets accepted)')
+    elif status.lower() not in STATUSES:
+        doc.err(1, 'bad_status', 'Status must be one of %s; got %r' % (', '.join(STATUSES), status))
     if doc.kind == 'architecture':
         for name in ARCH_SECTIONS:
             if not doc.has_section(name):
@@ -296,6 +307,15 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None):
             if sentences(s['description']) > MAX_SENTENCES:
                 doc.warn(s['line'], 'step_too_big', 'step %d has a long description; one step should fit '
                          'one focused PR' % n)
+        if not s['has_depends']:
+            doc.err(s['line'], 'missing_depends', '%s %d needs "Depends on:" (write "none" when it depends on '
+                    'nothing, so independence from every human gate is explicit)' % (what, n))
+        if s['outcome'] and not gate:
+            doc.warn(s['line'], 'outcome_on_code_step', '%s %d: "Outcome:" records what a human gate found; '
+                     'a code step has none' % (what, n))
+        if gate and s['done'] and not s['outcome'] and gate['kind'] in ('research', 'decision'):
+            doc.warn(s['line'], 'gate_without_outcome', '%s %d is a ticked %s gate with no "Outcome:"; record what '
+                     'it found or decided so the steps that depend on it can follow it' % (what, n, gate['kind']))
         if not s['acceptance']:
             if gate:
                 doc.warn(s['line'], 'missing_acceptance', '%s %d: say what evidence closes this gate in '
@@ -443,6 +463,10 @@ def derive_lanes(doc, args, cache):
         for n in lanes[key]['steps']:
             lane_of[n] = key
     gate_wait = milestone_wait(doc, cache)
+    status = doc.header.get('status', '').lower()
+    if status not in BUILDABLE_STATUSES and not args.allow_draft:
+        gate_wait = gate_wait + [{'doc': None, 'n': 0, 'title': 'Status: %s' % (status or 'missing'),
+                                  'reason': 'proposal_not_accepted'}]
     for key in order:
         lane = lanes[key]
         lane['waiting_on'].extend(gate_wait)
@@ -564,8 +588,23 @@ def derive_lanes(doc, args, cache):
                     seen_w.add(sig)
                     uniq.append(w)
             blocked_out.append({'lane': k, 'steps': lanes[k]['steps'], 'waiting_on': uniq})
-    gates = [{'n': s['n'], 'title': s['title'], 'kind': s['human_gate']['kind'], 'text': s['human_gate']['text']}
-             for s in doc.steps if s['human_gate'] and not s['done']]
+    gates = []
+    for s in doc.steps:
+        if not s['human_gate'] or s['done']:
+            continue
+        waits = []
+        for d in s['depends']:
+            if d['doc'] is None:
+                dep = by_n.get(d['n'])
+                if dep is not None and not dep['done']:
+                    waits.append({'doc': None, 'n': d['n']})
+            else:
+                other = load_ref(doc, d['doc'], cache)
+                dep = other.step(d['n']) if other else None
+                if dep is None or not dep['done']:
+                    waits.append({'doc': d['doc'], 'n': d['n']})
+        gates.append({'n': s['n'], 'title': s['title'], 'kind': s['human_gate']['kind'],
+                      'text': s['human_gate']['text'], 'ready': not waits, 'waiting_on': waits})
     return {'doc': doc.path, 'slug': slug, 'errors': errors, 'warnings': doc.warnings,
             'chains': chains, 'blocked': blocked_out, 'human_gates_pending': gates,
             'milestone_waits': gate_wait,
@@ -666,6 +705,7 @@ def main(argv=None):
     p.add_argument('--date', help='--lanes: branch name suffix, e.g. 20261104 (default "undated")')
     p.add_argument('--branch-prefix', default='feat/', help='--lanes: branch prefix (default feat/)')
     p.add_argument('--remote-heads', help='--lanes: output of `git ls-remote --heads origin`, to find lanes already built')
+    p.add_argument('--allow-draft', action='store_true', help='--lanes: derive lanes even when Status is not accepted / in-progress')
     a = p.parse_args(argv)
     if not os.path.isfile(a.doc):
         print('proposal-lint: cannot read %s' % a.doc, file=sys.stderr)

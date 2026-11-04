@@ -31,6 +31,8 @@ export const meta = {
 //   gate?: string              gate wrapper, e.g. ./.claude/scripts/gate-slot.sh (default '': the agents use GATE_WRAPPER from the Pipeline config when set)
 //   main_branch?: string       integration branch (default 'main')
 //   ai_review_check?: string   name of a CI check that posts AI review comments (default none)
+//   required_checks?: string[] CI checks outside the quality gates that must also be green to settle, e.g. a mobile build or a migration check;
+//                              one this PR turns red gets the CI-fix step (reproduced locally when possible, else fixed from its log)
 //   commit_trailers?: string[] lines the workflow's own commits end with (default ['Co-Authored-By: Claude <noreply@anthropic.com>'])
 //   max_review_rounds?: 5, max_polish?: 6, max_monitor_rounds?: 10 (max_rounds is accepted as an alias)
 //   efforts?: { plan, impl, review, fix, polish, merge_check, pr, monitor }  (pr unset = the session's effort, as /create-pr always ran)
@@ -59,6 +61,8 @@ const DIR = A.dir || ''
 const PLANNER = A.planner || 'plan'
 const MAIN = A.main_branch || 'main'
 const AI_CHECK = A.ai_review_check || ''
+const REQUIRED = (A.required_checks || []).filter(Boolean)
+const REQ_NOTE = REQUIRED.length ? ` plus the required checks ${REQUIRED.map(c => `"${c}"`).join(', ')}` : ''
 const BASES = (A.bases || []).filter(b => b && b !== MAIN)
 const PREDS = (A.predecessor_prs || []).map(Number)
 // A stacked branch carries unmerged base commits; a ready PR to main would let a merge bot merge them early.
@@ -175,7 +179,7 @@ const OBSERVE_SCHEMA = {
     has_conflicts: { type: 'boolean', description: 'true if the PR has merge conflicts with its base (mergeable CONFLICTING / mergeStateStatus DIRTY)' },
     behind_main: { type: 'boolean', description: 'true if the PR is conflict-free but out of date with its base (mergeStateStatus BEHIND)' },
     ai_review_done_on_head: { type: 'boolean', description: AI_CHECK ? `true once the "${AI_CHECK}" check run for head_sha has completed (any conclusion); a missing check means not registered yet, not done` : 'no AI review check is configured: true once CI on head_sha has completed' },
-    ci_state: { type: 'string', enum: ['green', 'red', 'pending', 'none'], description: AI_CHECK ? `Quality-gate CI on head_sha, ignoring the "${AI_CHECK}" check (it may fail just by posting findings)` : 'Quality-gate CI on head_sha' },
+    ci_state: { type: 'string', enum: ['green', 'red', 'pending', 'none'], description: (AI_CHECK ? `Quality-gate CI on head_sha${REQ_NOTE}, ignoring the "${AI_CHECK}" check (it may fail just by posting findings)` : `Quality-gate CI on head_sha${REQ_NOTE}`) + (REQUIRED.length ? '; a required check that has not registered yet counts as pending' : '') },
     ci_red_caused_by_pr: { type: 'boolean', description: 'true only if ci_state is red and the failure is attributable to this PR\'s diff' },
     ci_configured: { type: 'boolean', description: 'true if the repository runs CI on pull requests (a .github/workflows file with a pull_request or push trigger, or check runs registered on this or a recent PR); false only when it has none' },
     actionable_comments: { type: 'integer', description: 'unresolved review threads (incl. outdated) with NO terminal reply (Fixed locally / Could not prove this defect / Declined with / Answered with / Tracked in #) and NO out-of-scope reply (Surfaced for human review — out of scope for automated remediation.; those wait on a human), plus unacknowledged overflow findings and unanswered top-level human comments' },
@@ -213,6 +217,7 @@ const MERGE_CHECK_SCHEMA = {
     blocked: { type: 'boolean', description: 'true if a predecessor is not merged (nothing was changed)' },
     blocked_reason: { type: 'string' },
     merge_check: { type: 'string', description: 'what was committed, what the merge brought in, conflicts resolved, merge-tree result vs the base branch' },
+    conflicts_resolved: { type: 'boolean', description: 'true if the merge had conflicts that you resolved by editing files' },
     gates_green: { type: 'boolean' },
     pushed: { type: 'boolean', description: 'true only if the branch was pushed in this step' },
     pushed_sha: { type: 'string' },
@@ -383,6 +388,22 @@ if (MONITOR_ONLY) {
     log('Merge check did not finish green — stopping before any PR')
     return done('blocked_at_merge_check', { merge_check: mc })
   }
+  // Ship-only: the lane was reviewed against its predecessors' code as it was at build time. When merging their final,
+  // merged code needed hand-resolved conflicts, review the result once before any PR exists.
+  if (SHIP_ONLY && mc.conflicts_resolved) {
+    const rr = await agent(
+      WORK + PROPOSAL_CTX + `On branch ${BRANCH}, the merge of origin/${MAIN} needed conflicts resolved by hand. Run git fetch origin ${MAIN}, then invoke the Skill tool with skill "review-changes" with args "all:origin/${MAIN}" ` +
+      `and judge especially the conflict resolutions in the merge commit (git show --cc HEAD). Report every finding (bug/concern/suggestion/nit), verified against the code. Do not edit files and do not change git state. ` +
+      `Set completed=false if the skill stopped without reviewing.`,
+      opts('review-merge', 'PR', 'review', REVIEW_SCHEMA),
+    )
+    if (!rr || rr.completed === false) return done('review_failed', { merge_check: mc })
+    if (blocking(rr.findings).length) {
+      log(`Review of the conflicted merge found ${blocking(rr.findings).length} blocking finding(s) — stopping before any PR`)
+      return done('blocked_at_review', { merge_check: mc, review_findings: rr.findings })
+    }
+    log(`Conflicted merge reviewed: ${rr.findings.length} non-blocking finding(s)`)
+  }
   if (BUILD_ONLY) {
     if (!mc.pushed || !mc.pushed_sha) {
       log('Build finished but the branch was not confirmed pushed')
@@ -395,7 +416,7 @@ if (MONITOR_ONLY) {
     GUARD + WHERE + GATES + AUTH + PREDS_CHECK + (A.existing_pr
       ? `PR #${A.existing_pr} should exist for ${BRANCH}: confirm its head is ${BRANCH} and its base is ${MAIN} (else report blocked). Push any unpushed commits with git push -u origin ${BRANCH} (never force). ` +
         `Rewrite its body (gh pr edit --body-file) in the create-pr skill's body format, dropping any stacking/draft wording, and if it is a draft mark it ready (gh pr ready ${A.existing_pr}).`
-      : `On branch ${BRANCH}, invoke the Skill tool with skill "create-pr" to open a PR (not a draft) for: ${CONCERN || A.title}. The work is already committed. ` +
+      : `On branch ${BRANCH}, invoke the Skill tool with skill "create-pr" to open a PR (not a draft) for: ${CONCERN || A.title}. Its base branch is ${MAIN} (gh pr create --base ${MAIN}), whatever MAIN_BRANCH the Pipeline config names. The work is already committed. ` +
         (SHIP_ONLY
           ? `The branch already exists on the remote: push any unpushed commits yourself with git push -u origin ${BRANCH} (never force), then skip the skill's work check (its error=nothing_to_pr stop: the work is already pushed) and its commit and push steps; if its existing-PR check finds an open PR for the branch, mark it ready if it is a draft (gh pr ready) and return it. `
           : `Its commit step has nothing to commit; its push step is git push -u origin ${BRANCH} (never force), with GH_WRAPPER in front only when it works here. `) +
@@ -443,7 +464,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     `3. Count actionable comments per the actionable_comments definition: GraphQL reviewThreads (isResolved, isOutdated, comments with author.login and body), ` +
     `findings an AI reviewer listed in its review body instead of as threads vs a <!-- pipeline:overflow-ack --> comment, and top-level human PR comments vs <!-- pipeline:human-ack -->. ` +
     `An unresolved thread whose latest reply is a terminal marker is NOT actionable — those stay unresolved for the human.\n` +
-    `4. If quality-gate CI is red, read the failing log and judge whether this PR caused it.`,
+    `4. If quality-gate CI${REQ_NOTE} is red, read the failing log and judge whether this PR caused it.`,
     opts(`observe-${r}`, 'Monitor', 'monitor', OBSERVE_SCHEMA),
   )
   if (!obs) {
@@ -466,7 +487,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   let pushed = false
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
-      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". The branch to merge in is origin/${MAIN}, whatever MAIN_BRANCH the Pipeline config names. Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
@@ -491,7 +512,8 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   if (last.ci_state === 'red' && last.ci_red_caused_by_pr && !pushed) {
     const f = await agent(
       GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `CI quality gates are red on PR #${PRN} (branch ${BRANCH}, head ${last.head_sha}) because of this PR. ` +
-      `Read the failing run log, fix the root cause (no lint/type-check suppression comments, test skips or lowered thresholds), run the gates locally, commit and push to the PR branch.`,
+      `Read the failing run log, fix the root cause (no lint/type-check suppression comments, test skips or lowered thresholds), run the gates locally, commit and push to the PR branch.` +
+      (REQUIRED.length ? ` A failing required check (${REQUIRED.join(', ')}) may not be reproducible on this machine (e.g. a mobile build): reproduce it if you can; otherwise fix it from its log alone and say so in the summary.` : ''),
       opts(`fix-ci-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     if (f) { actions.push({ round: r, step: 'fix-ci', ...f }); pushed = pushed || f.pushed }
