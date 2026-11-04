@@ -29,7 +29,12 @@ proposal (W `no_kind`).
 - `Status:` — `draft`, `accepted`, `in-progress` or `done` (any other value E
   `bad_status`; missing W `missing_status`).
 - `Source:` — what the doc answers: a brief's path, `roadmap.md#N` (a proposal for
-  milestone N, path relative to the proposal), or `concern`.
+  milestone N, path relative to the proposal), or `concern`. A proposal's `Source:`
+  that names a roadmap milestone the lint cannot resolve (the file is unreadable or
+  not a roadmap, it has no milestone N, or the header says `roadmap.md, milestone 2`
+  instead of `roadmap.md#2`) is W `source_unresolved`, and `--lanes` blocks every
+  lane until it resolves (`milestone_unresolved`): a typo never skips the roadmap's
+  gates.
 - `Architecture:` — the architecture doc, relative to this doc (proposals and roadmaps).
 
 **Code fences** (```` ``` ```` or `~~~`) are skipped, so a doc can quote steps
@@ -45,12 +50,14 @@ numbers. Examples and fixtures are synthetic or redacted.
 |---|---|---|
 | `draft` | `/roadmap` and `/propose`, on every write and every revise | nothing: `--lanes` blocks every lane (`proposal_not_accepted`), `/impl` stops (`doc_not_accepted`), `/bootstrap` stops (`not_accepted`) |
 | `accepted` | a person, after reading and review | lanes build; `/impl` takes the next step; `/bootstrap` runs |
-| `in-progress` | a person, once building has started | lanes build; `/propose` keeps every pending step's number (each names a built branch) |
+| `in-progress` | a person, once building has started | lanes build; `/propose` keeps every pending step's number ([protected](#ticking)) |
 | `done` | a person, when every step is ticked | nothing |
 
 Only a person sets anything other than `draft`. A revise of an accepted doc resets
-it to `draft`, so a person re-accepts what changed. `proposal-build-chain` takes
-`allow_draft: true` to build a draft anyway.
+it to `draft`, so a person re-accepts what changed. `proposal-build-chain` and
+`plan-to-merged-pr` take `allow_draft: true` (`/plan --proposal=<doc> --allow-draft`)
+to build a draft anyway; `/impl <doc>` never does. A doc with no `Status:` line is
+still planned, with a warning.
 
 ## Steps and milestones
 
@@ -95,6 +102,9 @@ past a pending gate. Otherwise each ref is:
 - `<file>.md#N` — step `N` of another doc, path relative to this doc's directory.
   A doc that exists without step N is E `xref_missing_step`; a doc that cannot be
   read yet is W `xref_unreadable` (a later milestone's proposal may not be written).
+  A proposal step may depend on a roadmap gate milestone this way
+  (`roadmap.md#3`: the privacy sign-off its release needs); it is satisfied once
+  ticked.
 
 A step that needs a gate's result, or uses what another step creates (a module,
 table, endpoint or secret), must depend on it. Otherwise the lane builder may build
@@ -129,6 +139,14 @@ A step only a person can do is a gate: `Human gate: <kind> — <text>` instead o
 A gate sits right after the code it follows; its `Acceptance:` names the evidence
 that closes it. The pipeline never does a gate: lanes that depend on one stay
 blocked until a person ticks it.
+
+**Release ownership.** Each production release, store submission or launch is
+gated exactly once. By default it is a `release` gate in the proposal whose code it
+ships, right after that code; it is a roadmap `release` milestone instead only when
+one launch ships several milestones' work together, and then the proposals have no
+gate for it. Never both. A release gate depends on each roadmap gate milestone it
+needs (a legal sign-off, the `ops` milestone that provisions the accounts) as
+`<roadmap>.md#N`.
 
 ### Outcome and conditional work
 
@@ -243,7 +261,7 @@ Migrations `001` and `002` are additive. Secrets `DATABASE_URL` and `MAIL_API_KE
    - Acceptance: `notify.test.ts` sends one email per confirmed subscriber; a failed send raises the send-failure alert
 7. [ ] **Launch.** First production release.
    - Human gate: release — deploy to production and post a test incident
-   - Depends on: 3, 6
+   - Depends on: 3, 6, roadmap.md#3
    - Acceptance: the test incident is visible in production and was emailed to the team's own address
 
 ## Out of scope
@@ -265,7 +283,8 @@ a short paragraph on the ordering, then `## Milestones` (E `missing_section` /
 - Order: on a greenfield repo the Bootstrap `ops` gate comes first; then the source's
   cheapest validation, a `decision` gate applying its stop criteria, and everything
   that result could cancel after it. Every legal check, account or secret, release
-  and store submission is a gate.
+  and store submission is a gate; a release is a roadmap milestone only when one
+  launch ships several milestones' work (see *Release ownership*).
 
 A code milestone is **complete** when its proposal exists and every step in it is
 ticked. `--roadmap` reports each milestone's progress and the next actionable ones
@@ -329,7 +348,13 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 - QUALITY_GATES: `npm run lint && npm run typecheck && npm test`
 - QUALITY_GATES_FAST: `npm run lint && npm test`
 - CI job: `gates`
+- Required checks: `ios-build`, `android-build`
 ```
+
+The fourth line is optional: the CI checks beyond the gates job that must also be
+green to merge (what the agent's Linux host cannot run, such as a mobile build on a
+macOS runner). Pass the same names as `required_checks`; each check's job is added
+by a proposal step the roadmap plans.
 
 ````md
 # Architecture: Status page
@@ -417,7 +442,10 @@ what that returns. The derivation:
    one lane; every other step is its own lane, keyed `s<N>`. Gates and ticked steps
    are never in a lane.
 2. **Order.** Lane L comes after lane K when a step of L depends on a step of K, or
-   L shares a file with K and K's first step is earlier.
+   L shares a file with K and K's first step is earlier. A cycle in this order is E
+   `lane_cycle`, checked over every lane, blocked or not, so a draft's
+   `--lanes --allow-draft` preview, or a doc whose lanes all wait on a gate, reports
+   it before anyone builds.
 3. **Blocked.** A lane is blocked, and never built, while any reason below holds;
    blocking spreads to every lane that comes after a blocked one, until nothing
    changes. Ticked steps always satisfy a dependency.
@@ -440,7 +468,8 @@ what that returns. The derivation:
 
 The example proposal above gives two chains: `s1 → s2` (step 2 depends on step 1 and
 shares `incidents.ts`) and `s3` on its own. Lane `s6` is blocked on the ops gate 5;
-the release gate 7 is listed as pending, waiting on steps 3 and 6.
+the release gate 7, the milestone's one release, is listed as pending, waiting on
+steps 3 and 6 and the roadmap's privacy sign-off (`roadmap.md#3`).
 
 Lanes are derived afresh on every run: steps whose PRs merged are ticked on main and
 drop out, and a gate a person ticked unblocks its lanes.
@@ -453,10 +482,11 @@ Each blocked lane lists what it waits on (`waiting_on`), each with a reason:
 |---|---|
 | `proposal_not_accepted` | the doc's `Status:` is not `accepted` or `in-progress` (without `--allow-draft`); every lane gets it |
 | `human_gate` | a pending gate in this doc |
-| `pending_external` | a pending (or missing) step of another doc, via `<file>.md#N` |
+| `pending_external` | a pending (or missing) step of another doc, via `<file>.md#N` (a roadmap gate milestone included) |
 | `blocked_lane` | a lane it comes after, which is blocked |
 | `milestone_gate` | a pending gated milestone that its roadmap milestone (`Source: roadmap.md#N`) depends on |
 | `milestone_pending` | a code milestone its roadmap milestone depends on, whose proposal is not complete |
+| `milestone_unresolved` | nothing it can check: the doc's `Source:` names a roadmap milestone that cannot be resolved (W `source_unresolved`); fails closed, every lane gets it |
 
 The output also lists every pending gate (`human_gates_pending`), each with
 `ready` (every dependency is ticked: a person can do it now) and what it still
@@ -478,7 +508,17 @@ those checkboxes, byte for byte, and accepts gates and milestones too.
   milestone once its proposal is complete. A milestone counts as satisfied for its
   dependants when it is ticked or its proposal is complete.
 - **Ticked steps are frozen.** `/propose --revise` never changes a ticked step: its
-  number, title, description and sub-bullets stay byte-identical.
+  number, title, description and sub-bullets stay byte-identical. A pending step
+  whose lane branch is already built is frozen the same way; a change to its work
+  goes into a follow-up step after the last step.
+- **Protected step numbers** rest on facts, not on a status someone must remember
+  to set. Every pending step keeps its number when the doc has any ticked step, has
+  ever been accepted (its `Status:` now, or its git history), or is referenced by
+  another doc (`Depends on:` or `Source:`), and a step whose lane branch is built
+  keeps its number too; new steps then go after the last step.
+  To retire a pending step there, keep its number and turn it into
+  `Human gate: decision — superseded by step M; tick to retire`, with no `Files:`
+  or `Lane:`.
 
 ## Lint codes
 
@@ -499,13 +539,14 @@ those checkboxes, byte for byte, and accepts gates and milestones too.
 | `bad_status` | E | `Status:` is not one of the four values |
 | `missing_section`, `no_steps` | E / W | a required section, or the step list, is missing or empty (W for a proposal's other sections) |
 | `missing_proposal`, `gate_with_proposal`, `bad_proposal`, `files_in_roadmap` | E | roadmap milestone rules |
-| `lane_cycle` | E | `--lanes`: `Lane:` groups, dependencies and shared files form a cycle |
+| `lane_cycle` | E | `--lanes`: `Lane:` groups, dependencies and shared files form a cycle (over every lane, blocked or not) |
 | `not_a_proposal`, `not_a_roadmap` | E | `--lanes` on a non-proposal, `--roadmap` on a non-roadmap |
 | `no_kind`, `missing_status`, `unknown_key` | W | see *Common rules* and *Steps* |
 | `step_too_big` | W | more than 8 files or about 7 sentences |
 | `lane_mixed` | W | a lane mixes ticked and unticked steps |
 | `gate_without_outcome`, `outcome_on_code_step` | W | see *Outcome* |
 | `xref_unreadable` | W | a `<file>.md#N` doc cannot be read |
+| `source_unresolved` | W | a proposal's `Source:` names a roadmap milestone that cannot be resolved; `--lanes` blocks every lane (`milestone_unresolved`) |
 | `file_not_found`, `new_file_exists` | W | `--repo`: `Files:` disagree with the tree |
 | `proposal_in_steps`, `unexpected_steps` | W | a proposal step names a `Proposal:`; an architecture doc has steps |
 | `proposal_not_written`, `milestone_ticked_incomplete`, `milestone_complete_unticked` | W | roadmap progress |

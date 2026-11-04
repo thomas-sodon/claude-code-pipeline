@@ -47,7 +47,7 @@ On a greenfield project, `/bootstrap` writes it for you.
 | `QUALITY_GATES_FAST` | quicker subset for iterating | `QUALITY_GATES` |
 | `MAIN_BRANCH` | integration branch, read by the commands | `main` |
 | `PLANS_DIR` | where plans are written | `~/.claude/plans` |
-| `PROPOSALS_DIR` | design docs: where `/roadmap` and `/propose` write, and where `/impl` doc mode and `/plan` look | `docs/design` for `/roadmap`, `/propose` and `/review-proposal`; none for `/plan` and `/impl` (set it to use `/impl <doc>`) |
+| `PROPOSALS_DIR` | design docs: where `/roadmap` and `/propose` write, and where `/impl` doc mode and `/plan` look | `docs/design` for `/roadmap`, `/propose` and `/review-proposal`; none for `/plan` and `/impl` (`/impl` doc mode still applies to any `# Proposal:` doc passed by path) |
 | `GH_WRAPPER` | prefix for gh / git network commands (e.g. a script that loads a token) | none (ambient `gh auth`) |
 | `GATE_WRAPPER` | prefix for every gate run | none; use `./.claude/scripts/gate-slot.sh` when several agents share a host |
 | `TEST_GUIDELINES` | where your testing rules live | `CLAUDE.md` |
@@ -101,6 +101,11 @@ proposal-lint.py ROADMAP --roadmap
   A doc with lint errors gets no lanes (exit 1). `dir` is null without `--root`;
   `--remote-heads` takes the output of `git ls-remote --heads origin`;
   `--allow-draft` builds a doc whose `Status:` is not `accepted` / `in-progress`.
+  A `Source:` that names a roadmap milestone the lint cannot resolve (the file is
+  unreadable or not a roadmap, it has no milestone N, or the header is not in the
+  `<file>.md#N` form) blocks every lane with reason `milestone_unresolved` (fail
+  closed; the lint warns W `source_unresolved`). `lane_cycle` is checked over every
+  lane, blocked or not, so a draft's `--lanes --allow-draft` preview reports it.
 - **`--tick N,…`**: ticks those steps in place (atomic, no other byte changes, file
   mode kept) and prints `{ticked, already, missing}`; any missing number ticks
   nothing (exit 1).
@@ -121,6 +126,7 @@ request that cannot be met; 2 = usage error or unreadable file. `--lanes`,
   planner_args: '...',             // args for a custom planner (default: the concern)
   proposal: 'docs/design/x.md',    // design doc: /plan gets --proposal=<path>; frames review, polish and monitor
   proposal_steps: [3, 4],          // the proposal's steps this run builds: ticked in the same commit (needs proposal; not ship-only)
+  allow_draft: false,              // true = /plan gets --allow-draft after --proposal=<path>, to plan from a draft doc
   context: 'scouting hints for the planner',
   plan_text: '...',                // an already-written plan (skips planning; needs branch). In ship-only and
                                    // monitor-only modes: the branch's own plan, for comment fixes and conflicts
@@ -144,7 +150,12 @@ request that cannot be met; 2 = usage error or unreadable file. `--lanes`,
 
 The workflow passes its `main_branch` to `/create-pr` (as the PR base) and to
 `/merge-main` explicitly. In ship-only mode, a merge check that had to resolve
-conflicts gets one `/review-changes` round before the PR opens.
+conflicts gets one `/review-changes` round before the PR opens. When `/impl` finds
+the plan's end state already in the checkout (a re-run on a kept worktree whose
+earlier run built it), it reports `already_implemented` and the run reviews that
+work instead of stopping at `failed_at_impl`. The monitor treats the branch's plan
+as design intent and ignores any one-time instruction in it to the implementer
+(deleting, reverting or cleaning up files): that already happened.
 
 `bug-fix-backlog`: `{ lanes: [{ key, issues, branch?, dir? }], root, date, ship, close, efforts: { triage, verify, close }, ... }`.
 `date` suffixes the default lane branch names (`bugfix/<key>-<issues>-<date>`).
@@ -160,7 +171,8 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
 {
   brief: 'docs/brief.md',          // product brief, relative to dir or absolute: architecture, roadmap, a proposal per milestone
   concern: '...',                  // or one change too big for one PR: a single proposal, no architecture or roadmap
-  dir: '/abs/path/to/project',     // required; may be an empty directory
+  dir: '/abs/path/to/project',     // required; an existing repo, or a fresh directory that already holds the pipeline's
+                                   // .claude/commands and .claude/scripts (an empty directory is not enough)
   out: 'docs/design',              // proposals directory, relative to dir (default: PROPOSALS_DIR, else docs/design)
   context: '...',                  // framing every author treats as binding: builder, budget, constraints the source omits
   panel: 3,                        // independent architecture sketches judged before /roadmap; 0 = no panel
@@ -173,11 +185,15 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
 ```
 
 It writes docs only: no code, no commits, no git-state change. Every doc it writes
-is `Status: draft`.
+is `Status: draft`. Each per-doc reviser edits only the doc(s) under review;
+findings about any other doc are deferred to the Consistency phase. Concern mode
+has no Consistency phase, so its result returns those as `deferred_findings`.
 
 `proposal-build-chain` has two modes; `planner`, `gate`, `main_branch`,
-`commit_trailers`, `max_review_rounds`, `max_polish` and `efforts` pass through to
-every lane in both.
+`commit_trailers`, `max_review_rounds`, `max_polish`, `efforts` and `allow_draft`
+pass through to every lane in both. `ai_review_check` and `required_checks` are
+not used to build: derive mode copies them, with `main_branch`, `gate` and
+`commit_trailers`, into each `ship_plan` entry's args.
 
 Derive mode, the lanes computed from the proposal's step list:
 
@@ -194,11 +210,14 @@ Derive mode, the lanes computed from the proposal's step list:
 ```
 
 An agent fetches origin, copies the proposals directory as it is on `origin/<main>`
-into a scratch directory, lists the remote's branches, runs
+into a scratch directory (and the roadmap's directory too, when the proposal's
+`Source:` names a roadmap elsewhere), lists the remote's branches, runs
 `proposal-lint.py <proposal> --lanes --repo <dir> --root <root> --date <date> --remote-heads <file>`
 and returns its JSON verbatim. Preconditions: the doc lints clean, it is on
 `origin/<main>` (every lane worktree is cut from there and must read it), and its
-`Status:` is `accepted` or `in-progress` (else every lane is blocked). Chains then
+`Status:` is `accepted` or `in-progress` (else every lane is blocked, unless
+`allow_draft`), and its `Source:` milestone, if any, resolves (else every lane is
+blocked: `milestone_unresolved`). Chains then
 build concurrently, lanes within a chain in order, each with `proposal_steps` set to
 its steps. An `already_built` lane is skipped but stays a base; a lane that does not
 push stops only its own chain.
@@ -236,7 +255,7 @@ one per lane attempted, `status` being the lane's `plan-to-merged-pr` status (or
 
 - `pushed` — every lane is pushed or `already_built`
 - `partial` — some lane did not push; its chain stopped there (`not_built` lists the rest), other chains carried on
-- `all_blocked` — no lane can build: each waits on a gate, another doc, a milestone or acceptance (see `blocked`)
+- `all_blocked` — no lane can build: each waits on a gate, another doc, a milestone (or an unresolvable `Source:` milestone) or acceptance (see `blocked`)
 - `nothing_to_build` — no pending code step
 - `proposal_lint_errors` — the doc has lint errors (listed); fix it before building
 - `proposal_not_on_main` — the doc is only in the working copy; land it through a docs PR first (a `preview` of its lanes is included)
@@ -245,20 +264,24 @@ one per lane attempted, `status` being the lane's `plan-to-merged-pr` status (or
 Each chain lists its lanes with a per-lane status (a `plan-to-merged-pr` status,
 `already_built` or `failed`). `ship_plan` gives, per chain in merge order, the
 `ship_only` args for each built lane (`branch`, `dir`, `proposal`, its `plan_text`,
-and `predecessor_prs` placeholders for every lane after the first).
+the `main_branch`, `ai_review_check`, `required_checks`, `gate` and
+`commit_trailers` given to the chain, and `predecessor_prs` placeholders for every
+lane after the first).
 
 `brief-to-proposals`:
 
-- `ready` — every doc lints clean and every proposal's review came back clean
-- `proposals_need_attention` — a proposal was not written, its review did not finish, or it still has a `bug` or `concern` after `max_review_rounds` (`findings_remaining`)
-- `lint_errors` — a doc still has lint errors; `lint_failed` — the lint stage did not report
+- `ready` — every doc lints clean, every proposal's lane preview has no errors, every proposal's review came back clean, and the Consistency phase (brief mode) reported, revised every affected doc and got each revised doc back clean from its re-review
+- `proposals_need_attention` — a proposal was not written (listed `failed`, with its `stop_reason` when `/propose` stopped or routed the work elsewhere), its review did not finish, or it still has a `bug` or `concern` after `max_review_rounds` (`findings_remaining`); or the Consistency pass failed to report, a consistency revision failed, a revised doc did not come back clean from its re-review, or a finding named a doc this run did not write (`consistency.unrouted`)
+- `lint_errors` — a doc still has lint errors, or a proposal's lane preview (`--lanes --allow-draft`, e.g. `lane_cycle`) has errors; `lint_failed` — the lint stage did not report
 - `blocked_at_architecture_review` — architecture.md or roadmap.md still has a `bug` or `concern` after `max_review_rounds`; no proposal was written
 - `review_failed` — a review or revise stage of the architecture failed to report
-- `failed_at_roadmap` — `/roadmap` did not finish (e.g. `error=exists`: pass `force`, or revise instead)
-- `failed_at_propose` — concern mode: `/propose` did not finish
+- `failed_at_roadmap` — `/roadmap` stopped or did not finish (e.g. `error=exists`: pass `force`, or revise instead); `stop_reason` quotes it
+- `failed_at_propose` — concern mode: `/propose` stopped, routed the work elsewhere (e.g. to `/plan`) or did not finish; `stop_reason` quotes it
 
 The result also carries the doc paths, the panel's scores, each doc's review
-outcome, the consistency findings, the lint and lane summary, and `next_steps`.
+outcome, the consistency findings, revisions and re-reviews, the lint and lane
+summary, and `next_steps`. A review that reports only suggestions and nits is clean
+once a revise round has run, or once `max_review_rounds` is reached.
 
 ## Resuming a stopped run
 

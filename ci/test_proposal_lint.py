@@ -6,10 +6,12 @@ Run from the repo root: python3 ci/test_proposal_lint.py
 The tests check the documented format (docs/PROPOSALS.md) and CLI, not the
 implementation: every error and warning code, --repo, --tick, --lanes and
 --roadmap. The script is always run as a subprocess, in temp directories.
+It also checks ci/lint-doc-examples.py finds the examples it must lint.
 Fixtures: ci/fixtures/valid-*.md lint clean; ci/fixtures/invalid/<code>[--variant].md
 must fail with <code>; ci/fixtures/warn/<code>[--variant].md must pass with warning <code>.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -35,10 +37,11 @@ ERROR_CODES = {'malformed_step', 'duplicate_step', 'step_numbering', 'missing_fi
                'missing_acceptance', 'missing_depends', 'bad_dependency', 'self_dependency',
                'unknown_dependency', 'forward_dependency', 'done_before_dependency', 'xref_missing_step',
                'bad_gate', 'gate_with_files', 'bad_lane', 'gate_in_lane', 'duplicate_key', 'bad_status',
-               'no_steps', 'missing_section', 'missing_proposal', 'gate_with_proposal', 'files_in_roadmap'}
+               'no_steps', 'missing_section', 'missing_proposal', 'gate_with_proposal', 'files_in_roadmap',
+               'bad_proposal'}
 WARNING_CODES = {'unknown_key', 'missing_acceptance', 'lane_mixed', 'step_too_big', 'no_kind',
                  'missing_status', 'gate_without_outcome', 'outcome_on_code_step', 'proposal_not_written',
-                 'xref_unreadable'}
+                 'xref_unreadable', 'proposal_in_steps', 'source_unresolved'}
 INLINE_WARNINGS = {'file_not_found', 'new_file_exists', 'missing_section', 'unexpected_steps',
                    'milestone_ticked_incomplete', 'milestone_complete_unticked'}
 
@@ -779,6 +782,26 @@ class TestLanes(Base):
         out = self.roadmap_case(False, True)
         self.assertEqual((chain_keys(out), out['blocked']), ([['s1']], []))
 
+    def test_unresolved_source_milestone_blocks_every_lane(self):
+        # fails closed: a Source: that names a roadmap milestone the lint cannot resolve never skips its gates
+        self.write('roadmap.md', roadmap(milestone(1, gate_kind='ops', done=True), milestone(2, 'doc.md', deps='1')))
+        self.write('other.md', proposal(step(1), step(2)))
+        for source in ('no-such-roadmap.md#2', 'other.md#2', 'roadmap.md#9', 'roadmap.md, milestone 2'):
+            with self.subTest(source=source):
+                out = self.lanes_text(proposal(step(1), step(2, deps='1'), source=source))
+                self.assertEqual(out['chains'], [])
+                self.assertEqual(sorted(blocked(out)), ['s1', 's2'])
+                for b in out['blocked']:
+                    self.assertIn('milestone_unresolved', [w['reason'] for w in b['waiting_on']])
+                self.assertIn('source_unresolved', codes(out['warnings']))
+                self.assertIn('source_unresolved', codes(self.lint_text(proposal(step(1), source=source))[1]['warnings']))
+        # a resolvable milestone and a plain brief or concern source cause neither
+        for source in ('roadmap.md#2', 'docs/brief.md', 'concern'):
+            with self.subTest(source=source):
+                out = self.lanes_text(proposal(step(1), step(2, deps='1'), source=source))
+                self.assertEqual((chain_keys(out), out['blocked']), ([['s1', 's2']], []))
+                self.assertNotIn('source_unresolved', codes(out['warnings']))
+
     def test_status_gates_every_lane(self):
         for status in ('draft', 'done', None):
             with self.subTest(status=status):
@@ -834,6 +857,18 @@ class TestLanes(Base):
         out = self.lanes_text(proposal(step(1, lane='a'), step(2, deps='1'), step(3, lane='a', deps='2')), rc=1)
         self.assertEqual(codes(out['errors']), ['lane_cycle'])
         self.assertEqual(out['chains'], [])
+
+    def test_lane_cycle_is_found_among_blocked_lanes(self):
+        cyc = (step(1, lane='a'), step(2, deps='1'), step(3, lane='a', deps='2'))
+        # a draft: the preview with --allow-draft, and without it, where every lane is blocked
+        for extra in (('--allow-draft',), ()):
+            with self.subTest(extra=extra):
+                out = self.lanes_text(proposal(*cyc, status='draft'), *extra, rc=1)
+                self.assertEqual((codes(out['errors']), out['chains']), (['lane_cycle'], []))
+        # an accepted doc whose cyclic lanes all wait on a pending gate
+        out = self.lanes_text(proposal(gate(1), step(2, lane='a', deps='1'), step(3, deps='2'),
+                                       step(4, lane='a', deps='3')), rc=1)
+        self.assertEqual((codes(out['errors']), out['chains']), (['lane_cycle'], []))
 
     def test_concern_text(self):
         path = self.write('docs/design/doc.md',
@@ -910,6 +945,41 @@ class TestRoadmapMode(Base):
         rc, stdout, _ = run(self.write('roadmap.md', roadmap(milestone(1))), '--roadmap')
         self.assertEqual(rc, 1)
         self.assertIn('missing_proposal', codes(json.loads(stdout)['errors']))
+
+
+# ---- ci/lint-doc-examples.py -------------------------------------------------------------------
+
+class TestDocExamples(Base):
+    def load(self):
+        spec = importlib.util.spec_from_file_location('lint_doc_examples', os.path.join(ROOT, 'ci', 'lint-doc-examples.py'))
+        mod = importlib.util.module_from_spec(spec)
+        keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True   # no __pycache__ in ci/
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.dont_write_bytecode = keep
+        return mod
+
+    def test_any_info_string_opens_a_fence_and_only_md_examples_are_linted(self):
+        doc = proposal(step(1))
+        text = ('Intro.\n\n```sh\npython3 lint.py doc.md\n```\n\n```md\n' + doc + '```\n\n'
+                '```js\n# Proposal: not an example\n```\n\n~~~yaml\n```\n~~~\n\n'
+                '````markdown\n' + doc + '```\ninner fence\n```\n````\n')
+        path = self.write('README.md', text)
+        found = list(self.load().examples(path))
+        self.assertEqual(len(found), 2)
+        self.assertTrue(found[0][1].startswith('# Proposal: Test'))
+        self.assertIn('inner fence', found[1][1])
+        lines = text.splitlines()
+        self.assertEqual([lines[n - 1] for n, _ in found], ['```md', '````markdown'])
+
+    def test_cli_reports_a_broken_example(self):
+        path = self.write('doc.md', 'x\n\n```sh\nls\n```\n\n```md\n' + proposal(step(1, deps=None)) + '```\n')
+        p = subprocess.run([sys.executable, os.path.join('ci', 'lint-doc-examples.py'), path], cwd=ROOT,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn('missing_depends', p.stdout)
+        self.assertIn('1 example design docs, 1 with lint errors', p.stdout)
 
 
 if __name__ == '__main__':

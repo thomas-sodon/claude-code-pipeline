@@ -100,6 +100,12 @@ At least two real options each, weighed against the source's constraints: prefer
        - QUALITY_GATES_FAST: `npm run lint && npm test`
        - CI job: `gates`
 
+   An optional fourth line lists the CI checks beyond the gates job that must also be green to merge — what the agent's Linux host cannot run, such as a mobile build on a macOS runner or a hosted build service:
+
+       - Required checks: `ios-build`, `android-build`
+
+   These names are what a person passes to `proposal-build-chain` / `plan-to-merged-pr` as `required_checks`. The gates job exists from bootstrap; each required check's job is added by a proposal step the roadmap plans (see *Rules*).
+
 10. **`## Environments and deployment`** — each environment (local, preview or staging, production): purpose, host, data it holds, who deploys. Hosting per component. CI/CD: what runs on pull requests, on push to `main`, and what deploys where. Every secret and env var by **NAME** per environment and where its value lives (CI secret store, host secret manager; locally a gitignored `.env`, with names in `.env.example`) — never a value. Migration policy (tool; expand-then-contract, each release compatible with the previous schema; when migrations run). Monitoring and alerts (errors, uptime, cost). Backups (what, how often, retention, a tested restore). Rollback per component. Release process: versioning, who approves a production release, and — when there is a mobile app — store accounts, signing keys by name, review submission, privacy labels and staged rollout.
 11. **`## Testing`** — test layers and frameworks, where tests live, what is mocked (network, clocks, third-party APIs), the coverage expectation, one smoke test per package, and the fixture policy: synthetic or redacted data only, never real personal data, with a provenance note beside any recorded sample. Copied verbatim into `CLAUDE.md` like the invariants.
 12. **`## Risks and open questions`** — each: the risk, its impact, the mitigation, and the milestone that retires it.
@@ -122,36 +128,32 @@ Validate demand with a waitlist before building the product; everything after th
 ## Milestones
 
 1. [ ] **Bootstrap the repository.** Green skeleton, CLAUDE.md and CI from architecture.md.
-   - Human gate: ops — set architecture.md to Status: accepted, run /bootstrap architecture.md, review the root commit, create the repository, push main, protect main and require the `gates` check
+   - Human gate: ops — set architecture.md to Status: accepted, run /bootstrap architecture.md, review its commit, create the repository, push main, protect main and require the `gates` check
    - Depends on: none
    - Acceptance: CI green on main; main protected; the Outcome records the repository URL
 2. [ ] **Provision hosting.** Accounts the first deploy needs.
    - Human gate: ops — create the staging and production projects on the host; add DATABASE_URL to each by name
    - Depends on: 1
    - Acceptance: both projects exist; `DATABASE_URL` set in both; CI can deploy to staging
-3. [ ] **Waitlist landing page.** The source's cheapest validation: measure sign-ups before building the product.
+3. [ ] **Waitlist landing page.** The source's cheapest validation: measure sign-ups before building the product. Its proposal ends with the production release gate, which depends on milestone 4 as roadmap.md#4.
    - Proposal: 01-waitlist.md
    - Depends on: 1, 2
-   - Acceptance: page deployed to staging; sign-ups stored with recorded consent; daily count visible to the team
-4. [ ] **Approve the privacy notice and consent text.** Sign-ups are personal data.
+   - Acceptance: page live in production; sign-ups stored with recorded consent; daily count visible to the team
+4. [ ] **Approve the privacy notice and consent text.** Sign-ups are personal data; the waitlist's release waits on it.
    - Human gate: decision — a qualified person approves the privacy notice and the consent wording
    - Depends on: none
    - Acceptance: approved text linked from the Outcome
-5. [ ] **Launch the waitlist.** First production release.
-   - Human gate: release — deploy to production and check the page
-   - Depends on: 3, 4
-   - Acceptance: production page live; one test sign-up recorded and deleted
-6. [ ] **Go / no-go on demand.** Apply the source's stop criterion.
+5. [ ] **Go / no-go on demand.** Apply the source's stop criterion.
    - Human gate: decision — continue only with 200 sign-ups within 30 days of launch
-   - Depends on: 5
+   - Depends on: 3
    - Acceptance: the Outcome records the count and the decision
-7. [ ] **Confirm the provider's terms allow automated reminders.** Desk research could not settle it: the terms page defers to sales.
+6. [ ] **Confirm the provider's terms allow automated reminders.** Desk research could not settle it: the terms page defers to sales.
    - Human gate: research — ask the provider in writing; save the answer under docs/research/
    - Depends on: none
    - Acceptance: written answer saved; the Outcome records allowed or not, and any volume limit
-8. [ ] **Paid reminders.** Spike first: confirm the provider's API sends from a verified sender.
+7. [ ] **Paid reminders.** Spike first: confirm the provider's API sends from a verified sender.
    - Proposal: 02-paid-reminders.md
-   - Depends on: 6, 7
+   - Depends on: 5, 6
    - Acceptance: a paying test account receives reminders on schedule in staging; failed sends alert
 ```
 
@@ -163,8 +165,10 @@ Rules:
   - `research` — every assumption only a person can settle (see *Desk research*);
   - `decision` — every legal or compliance sign-off and every go/no-go;
   - `ops` — every account, domain, store listing or secret a person must create (secrets by NAME, per environment), placed before the first milestone that needs it;
-  - `release` — every production release and app-store submission.
+  - `release` — a launch that ships several milestones' work together (one store submission of an app built across milestones). Each production release, app-store submission or launch is gated exactly **once**: by default as a `release` gate inside the proposal whose code it ships, right after that code (`/propose` writes it), and as a roadmap milestone only in that several-milestones case — never both.
+  - A gate milestone that only one step of a proposal must wait for — a legal or privacy sign-off before its release, an `ops` milestone that provisions the accounts the step uses — need not hold back the whole code milestone: that step depends on it as `roadmap.md#N` (the lint resolves it and treats it as satisfied once ticked). Name such gates in the code milestone's description so `/propose` wires them.
 - **Code milestones** — `Proposal: NN-slug.md`: two-digit sequence in roadmap order from `01` (continue after the highest `NN-` already in `$OUT`), kebab-case slug of at most 40 characters. The file is not written here. Size each to one proposal of roughly 3–10 PR-sized steps that is independently valuable; split anything larger.
+- **Required checks.** For each check in the architecture's `Required checks`, the code milestone that introduces its platform says in its description that its proposal adds that CI job, in a step before any step whose Acceptance needs the check. Acceptance is provable by `QUALITY_GATES`, a named CI check or a human gate — never by a device or OS the agent's Linux host does not have.
 - **Every milestone** has `Depends on:` (`none` written out; only lower-numbered milestones) and `Acceptance:` — the exit criteria, observable and checkable: for a gate, the evidence that closes it and where it is recorded. A milestone whose design turns on a gate's outcome depends on that gate.
 - No `Files:` or `Lane:` in a roadmap: files and lanes belong to proposal steps. No `Outcome:` either: the person writes it when ticking a gate.
 

@@ -90,9 +90,9 @@ The doc reads as freshly authored: no quoted request, no mention of this command
 
 Grammar (the lint enforces it): `N. [ ] **Title.** One to three sentences.` at column 0, numbered 1, 2, 3 in build order, then sub-bullets indented three spaces (four from step 10 on, so they nest under the wider number):
 
-- `Depends on:` on **every** step — `none`, same-doc numbers (always lower), or `<file>.md#N` for a step of another proposal that exists now. Ordering between milestones is the roadmap's job; do not restate it with cross-doc refs.
+- `Depends on:` on **every** step — `none`, same-doc numbers (always lower), `<file>.md#N` for a step of another proposal that exists now, or `<roadmap file>.md#N` for a roadmap gate milestone this step must wait for (a legal or privacy sign-off before a release, an `ops` milestone that provisions the accounts it uses); the lint resolves a roadmap milestone like any cross-doc ref and treats it as satisfied once ticked. That is the one exception: other ordering between milestones is the roadmap's job; do not restate it with cross-doc refs.
 - `Files:` (code steps) — backticked repo-relative paths; existing files by current path, created ones suffixed ` (new)`; ≤8 per step.
-- `Acceptance:` — testable: a test, a command, an observable state; never "works well". Name new tests.
+- `Acceptance:` — testable: a test, a command, an observable state; never "works well". Name new tests. A code step's Acceptance must be provable by `QUALITY_GATES` or by a CI check the architecture names (its `CI job` or `Required checks`): the agent's Linux host cannot build an iOS or Android app, observe device behaviour or run a macOS-only tool. Verification only a device can give becomes a human gate (`research` or `release`) right after the code step, or a CI job named in the architecture's `Required checks` (the step that adds that job is planned too).
 - `Lane: <key>` — only for code steps that cannot merge apart (each would leave the tree broken alone); they ship as one PR. Prefer splitting.
 - `Human gate: <kind> — <what a person does>` instead of `Files:` for person-only work.
 
@@ -108,6 +108,8 @@ Everything a person must do is its own step with `Acceptance:` stating the evide
 - `release` — production deploy, store submission, flag flip, observation window.
 
 Place each right after the code steps it follows (a release gate right after the step that ships the deployable change); every step that needs a gate's result carries it in `Depends on:` so it stays blocked until a person ticks it.
+
+**Release ownership.** Each production release, app-store submission or launch is gated exactly **once**. By default it is a `release` gate in the proposal whose code it ships, right after that code. It is a roadmap `release` milestone instead only when one launch ships several milestones' work together — then this proposal has no gate for it, and `## Rollout and operations` names the milestone that releases it. Never both. A release gate depends on every roadmap gate milestone it needs (the legal or privacy sign-off, the `ops` milestone that provisions the host or store accounts) as `<roadmap file>.md#N`.
 
 **Conditional work.** When the next steps depend on a gate's finding, `## Design` describes each alternative and the steps that would differ `Depend on` the gate, written for the alternative the evidence currently favours and saying so. After a person records the gate's `Outcome:` and ticks it, `/propose --revise` rewrites them to the chosen alternative. No conditional syntax.
 
@@ -149,7 +151,9 @@ Architecture: architecture.md
 Applies to a milestone proposal that exists, a superseded concern proposal, and revise mode.
 
 - **Never change an `[x]` step**: its number, checkbox, title, description and sub-bullets (including `Outcome:`) stay byte-identical.
-- **Protected numbers.** A pending step keeps its number when another doc references it (`grep -rn "<file>.md#" <proposals dir>` — `Depends on:` refs and `Source:` headers), and in an `in-progress` doc every pending step keeps its number (its default lane key `s<N>` names its built branch). A change that would shift a protected number is not made: add new steps after the last protected one when build order allows; otherwise leave that part unapplied and report which docs must change with it.
+- **Protected numbers** rest on facts, never on a status a person must remember to set. Every pending step keeps its number when the doc has any ticked step; or has ever been accepted (its `Status:` is `accepted`, `in-progress` or `done` now, or `git log -S'Status: accepted' --oneline -- <doc>` finds a commit); or another doc references it (`grep -rn "<file>.md#" <proposals dir>` — `Depends on:` refs and `Source:` headers). New steps then go after the last step. A change that would shift a protected number is not made: leave that part unapplied and report which docs must change with it.
+- **Built lanes are frozen.** A pending step whose lane was already built — a branch matching `*<slug>-s<N>-*` (its default lane key) or `*<slug>-<lane>-*` (its `Lane:` key) exists locally or among remote-tracking refs: `git branch -a --list '*<slug>-s<N>-*'` (`<slug>`: the doc's file name without `.md`, lowercased, non-alphanumeric runs → `-`) — is treated like an `[x]` step: never rewritten. A change to its work goes into a new follow-up step after the last step.
+- **Retiring a step.** To retire a pending step in a protected doc, keep its number and turn it into `Human gate: decision — superseded by step M; tick to retire`, with no `Files:` or `Lane:`.
 - Renumbering unprotected pending steps updates every same-doc `Depends on:` to match.
 - Keep existing `Proposal:` file names in a roadmap; renaming one orphans its doc.
 - The rewritten doc gets `Status: draft`. If it was `accepted`, `in-progress` or `done`, the report says a person must re-accept it before lanes build.
@@ -185,7 +189,7 @@ Print the resolved path as the final message:
 - Status reset to `draft` from `accepted` / `in-progress` / `done` — a person must re-accept it.
 - Steps, human gates (by kind) and lanes in the doc; lint warnings left and why.
 - A departure from an architecture decision, or a collision with a `CLAUDE.md` rule.
-- A finding left unapplied because it would shift a protected step number — the docs that must change with it.
+- A finding left unapplied because it would shift a protected step number — the docs that must change with it; a built lane's step left as it is, and the follow-up step added instead.
 - Desk-research questions left open because web tools were unavailable.
 - Grounded on a branch other than `$MAIN_BRANCH`.
 
@@ -202,6 +206,6 @@ Close with the next step: `/review-proposal <path>`. Under `--dry-run`, print th
 ## Safety
 
 - Writes go only to the resolved doc path (atomically) and, in revise mode, the existing ledger under `~/.claude/reviews/`.
-- Never delete a design doc; never change an `[x]` step or a protected step number.
+- Never delete a design doc; never change an `[x]` step, a built lane's step or a protected step number.
 - No destructive git and no git-state change of any kind.
 - Redact credentials (tokens, `Bearer ` headers, API keys, passwords) and personal data (names, addresses, emails, phone and account numbers) from anything quoted into the doc — secrets are named, never valued; examples are synthetic or redacted. Design docs are committed and shared.

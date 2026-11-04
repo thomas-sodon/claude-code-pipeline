@@ -35,13 +35,18 @@ cp ~/my-brief.md docs/brief.md
 claude   # then: "Run the brief-to-proposals workflow with { brief: 'docs/brief.md', dir: '<absolute path here>' }"
 ```
 
+The directory must hold the pipeline's `.claude` (the copy above) before
+`brief-to-proposals` runs: its authors run `.claude/scripts/proposal-lint.py`
+there, so an empty directory is not enough.
+
 1. **Design.** The workflow writes `docs/design/architecture.md`, `roadmap.md` and
    one proposal per code milestone, each reviewed until clean. No code, no commits.
 2. **Accept** (you). Read and edit the docs, then set `Status: accepted` on each one
-   you approve. Nothing is bootstrapped or built from a draft.
+   you approve. `/bootstrap` and the builders refuse a draft (see
+   [How it works](#how-it-works)).
 3. **Bootstrap.** `/bootstrap docs/design/architecture.md` writes a skeleton whose
-   gates pass, `CLAUDE.md` with the Pipeline config, CI, and one root commit on
-   local `main` that holds the docs too.
+   gates pass, `CLAUDE.md` with the Pipeline config, CI, and one commit on local
+   `main` that holds the docs too (the root commit in an empty repo).
 4. **Publish** (you). Create the GitHub repository, push `main`, protect it and
    require the CI check, add the secrets by name, and tick the roadmap's bootstrap
    milestone: `/bootstrap` prints the commands.
@@ -58,7 +63,7 @@ claude   # then: "Run the brief-to-proposals workflow with { brief: 'docs/brief.
            architecture.md      --milestone=N: one     + /propose --revise   Status: accepted
            roadmap.md           proposal per           until no bug or
                                 milestone              concern
- new repo only:  /bootstrap architecture.md ──> green skeleton, CI, root commit ──> push main (human)
+ new repo only:  /bootstrap architecture.md ──> green skeleton, CI, one commit ──> push main (human)
 
  Build: one concern, or each lane of an accepted proposal     (proposal-build-chain derives the lanes)
  concern ──> 1. Plan ──> 2. Implement ──> 3. Review loop ──> 4. Polish / PR ──> 5. Monitor ──> merge (human)
@@ -77,11 +82,16 @@ claude   # then: "Run the brief-to-proposals workflow with { brief: 'docs/brief.
 - **Gates decide, not the agent.** Your own `QUALITY_GATES` command must be green
   before the PR is opened and again after merging `main`.
 - **Docs before code, for big work.** `proposal-lint.py` checks every design doc's
-  format and derives the PR lanes from its step list, so the split is deterministic;
-  nothing is built from a doc a person has not accepted.
+  format and derives the PR lanes from its step list, so the split is deterministic.
+- **Drafts are not built.** `proposal-build-chain` derive mode and
+  `/plan --proposal` refuse a `Status: draft` doc unless the caller passes
+  `allow_draft` (`--allow-draft`), and `/impl <doc>` always does. Explicit lanes and
+  direct `plan-to-merged-pr` runs with a `proposal` plan through `/plan --proposal`,
+  so they refuse it too. A legacy doc with no `Status:` line is still planned, with a warning.
 - **A human keeps the judgment.** You choose the concern or write the brief. You
-  accept the design docs, push a new repository's root commit, do every human-gated
-  step (research, decisions, accounts and secrets, releases) and merge. The
+  accept the design docs, push a new repository's bootstrap commit, do every human-gated
+  step (research, decisions, accounts and secrets, releases) and merge. Each
+  production release is gated exactly once, in its proposal by default. The
   workflows never force-push, never push to main and never merge.
 
 ## Why this exists
@@ -137,7 +147,7 @@ examples/
 | `/roadmap <brief>` | Turns a product brief (or free text) into draft `architecture.md` and `roadmap.md`: decisions with their options, milestones in validation order, every person-only step a human gate. |
 | `/propose <concern>` | Writes one draft proposal: design, security, rollout and a build-ordered list of one-PR steps and human gates. `--milestone=N` for a roadmap milestone; `--revise <doc>` applies review findings. |
 | `/review-proposal <doc>` | Read-only review of a design doc against its source, the tree and the architecture; findings as in `/review-changes`. |
-| `/bootstrap <architecture.md>` | Greenfield only: skeleton, `CLAUDE.md`, CI, gates green, one root commit on local `main`. Never pushes. |
+| `/bootstrap <architecture.md>` | Greenfield only (no code yet, docs-only history allowed): skeleton, `CLAUDE.md`, CI, gates green, one commit on local `main` (the root commit in an empty repo). Never pushes. |
 | `/plan <concern>` | Grounds a free-text concern in today's tree and writes one increment's plan to the plans directory. `--proposal=<doc>` plans that doc's steps. Writes no code. |
 | `/impl [plan \| doc]` | Re-validates the plan (or a doc's next buildable step) against the tree, then implements it and runs the gates. Does not commit. |
 | `/review-changes [scope]` | Read-only review of the branch's changes; findings are `bug` / `concern` / `suggestion` / `nit`. |
@@ -215,9 +225,10 @@ code, no commits.
    reviewed and revised the same way.
 3. **Consistency**: one pass over every doc for interfaces that disagree, work
    planned twice or not at all, and parts of the brief no doc covers; each finding
-   is revised in the one doc it names.
-4. **Lint**: `proposal-lint.py` on every doc, the lanes of each proposal, and the
-   roadmap's next milestones.
+   and coverage gap is revised in the one doc it names, and every revised doc is
+   reviewed again.
+4. **Lint**: `proposal-lint.py` on every doc, a preview of each proposal's lanes
+   (as if accepted), and the roadmap's next milestones.
 
 Every doc comes out `Status: draft`, for you to read, edit and accept. With
 `{ concern }` instead of a brief it skips the architecture and writes one
@@ -233,8 +244,8 @@ an earlier lane stacks on it, and lanes with neither form separate chains, which
 build at the same time. Each lane runs `plan-to-merged-pr` in build-only mode and
 ticks its steps in its own commit; a lane that does not push stops only its chain.
 Lanes waiting on a human gate, another doc, an earlier roadmap milestone or the
-doc's acceptance are reported as blocked, never built; lanes already on origin are
-not rebuilt. The rules are in [docs/PROPOSALS.md](docs/PROPOSALS.md#lanes-and-chains).
+doc's acceptance are reported as blocked, never built (a `Source:` milestone the
+lint cannot resolve blocks every lane); lanes already on origin are not rebuilt. The rules are in [docs/PROPOSALS.md](docs/PROPOSALS.md#lanes-and-chains).
 
 To give the lanes by hand, pass `{ lanes }`: they build in the order given,
 stopping at the first lane that does not push.

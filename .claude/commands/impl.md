@@ -23,7 +23,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 - *(empty)* — implement this folder's most recent plan (see *Locate the work*).
 - `<slug>` — resolve to `$PLANS_DIR/<slug>.md` (`.md` optional).
-- `<path>` — a file path. If it resolves inside `$PROPOSALS_DIR`, this is **doc mode**; otherwise it is used as the plan file.
+- `<path>` — a file path. A `# Proposal:` doc (wherever it lives) or a path inside `$PROPOSALS_DIR` is **doc mode**; anything else is used as the plan file (see *Detect the mode*).
 
 ## Locate the work
 
@@ -47,12 +47,13 @@ Run only when *Detect the mode* chose doc mode. It selects one step from the doc
 3. **Check its status.** `Status: draft` → stop with `error=doc_not_accepted`: a person sets `accepted` before anything is built. No `Status:` line → warn and proceed.
 4. **Locate the step list.** Expect an ordered checkbox list — `N. [x] **Title.** …` for shipped steps, `N. [ ] **Title.** …` for pending — with `Files:`, `Depends on:`, `Acceptance:`, `Lane:` and `Human gate:` sub-bullets (three-space indent, `- Key: value`; an older doc may lack some — no `Depends on:` there means no dependencies). No checkbox step list → stop with `error=no_step_list` and suggest running `/plan` on the doc's next increment instead.
 5. **Classify each pending step.** A step with a `Human gate:` sub-bullet is human-gated: a person does it and ticks it. In a doc that uses no `Human gate:` key anywhere, judge from the prose instead: a step explicitly held for a human decision (a rollout, flag flip, or deletion gated on an observation window or sign-off) is gated. Every other step is a code step.
-6. **Select the next step** — the first `[ ]` code step in document order whose every `Depends on:` ref is `[x]`: `N` in this doc, `<file>.md#N` in that doc (path relative to this doc's directory; an unreadable doc or a missing step there is unmet). A code step that depends on a pending human gate is therefore never selected. Then check, in order:
+6. **Check the roadmap's gates.** When the script exists, run `python3 .claude/scripts/proposal-lint.py <doc> --lanes --allow-draft` (the status check above already ran; the flag only stops it from re-gating on status). A non-empty `milestone_waits` → stop with `error=step_dependency_unmet`, naming each roadmap milestone it waits on (`doc`, `n`, `title`, and whether it is a human gate or an unfinished milestone): the doc's `Source:` milestone still depends on it. An entry with reason `milestone_unresolved` means the `Source:` header names a roadmap milestone that cannot be resolved — the fix is to correct that header (`<roadmap file>.md#N`), not to wait. Lane `errors` (`lane_cycle`) → `error=doc_malformed`, quoting them.
+7. **Select the next step** — the first `[ ]` code step in document order whose every `Depends on:` ref is `[x]`: `N` in this doc, `<file>.md#N` in that doc — a proposal step, or a roadmap milestone, met once ticked (path relative to this doc's directory; an unreadable doc or a missing step there is unmet). A code step that depends on a pending human gate is therefore never selected. Then check, in order:
    - **Nothing pending.** Every step `[x]` → stop with `error=doc_complete`.
    - **Only gates pending.** No `[ ]` code step remains → stop with `error=step_human_gated`, listing each pending gate (number, kind, text).
    - **Nothing selectable.** Pending code steps exist but each has an unmet dependency → stop with `error=step_dependency_unmet`, naming for the first one each blocker and whether it is a human gate or a step in another doc.
    - **Checkbox vs. prose.** If the doc's prose says this step landed (or the tree already meets its acceptance criteria), the checkbox is stale: stop with `error=doc_stale` and tell the user to tick it before re-invoking. Do not edit the doc yourself.
-7. **Extract the unit of work:** step number `M`, title, its `Files:` — the cited files, those marked `(new)` to be created — and the symbols it names, its description, its dependencies, and its `Acceptance:` criteria — which become binding success criteria, treated like a plan's `## Verification`. The doc's Decisions, Security and privacy, and Rollout and operations sections bind it like `CLAUDE.md` invariants.
+8. **Extract the unit of work:** step number `M`, title, its `Files:` — the cited files, those marked `(new)` to be created — and the symbols it names, its description, its dependencies, and its `Acceptance:` criteria — which become binding success criteria, treated like a plan's `## Verification`. The doc's Decisions, Security and privacy, and Rollout and operations sections bind it like `CLAUDE.md` invariants.
 
 ## Review the plan against today's tree
 

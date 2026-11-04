@@ -346,7 +346,7 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None):
                 elif other.step(d['n']) is None:
                     doc.err(line, 'xref_missing_step', '%s %d depends on %s#%d, which has no step %d'
                             % (what, n, d['doc'], d['n'], d['n']))
-    if doc.kind == 'proposal':
+    if doc.kind == 'proposal' and resolve_xrefs:
         state, _r, _m, why = source_milestone(doc, cache if cache is not None else {})
         if state == 'unresolved':
             doc.warn(1, 'source_unresolved', '%s; until it resolves, --lanes blocks every lane '
