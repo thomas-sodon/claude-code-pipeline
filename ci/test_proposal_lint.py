@@ -242,7 +242,8 @@ class TestCli(Base):
         with open(os.path.join(FIXTURES, 'valid-proposal.md'), 'rb') as f:
             data = f.read()
         self.write('valid-proposal.md', data.replace(b'\n', b'\r\n'))
-        self.write('valid-roadmap.md', proposal(step(1), step(2)))
+        with open(os.path.join(FIXTURES, 'valid-roadmap.md'), 'rb') as f:
+            self.write('valid-roadmap.md', f.read())
         rc, out = self.lint(os.path.join(self.tmp, 'valid-proposal.md'))
         self.assertEqual((rc, out['errors'], out['warnings']), (0, [], []))
         self.assertEqual([s['acceptance'] for s in out['steps']][2],

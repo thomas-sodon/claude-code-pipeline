@@ -13,7 +13,8 @@ export const meta = {
 // args:
 //   brief?: string            path of a product brief (relative to dir, or absolute): brief mode
 //   concern?: string          one change too big for one PR, or a structural class: concern mode (one proposal, no roadmap)
-//   dir: string               absolute path of the project directory (may be a fresh, empty repo)
+//   dir: string               absolute path of the project directory: an existing repo, or a fresh one that already holds the
+//                             pipeline's .claude/commands and .claude/scripts (the authors run .claude/scripts/proposal-lint.py there)
 //   out?: string              proposals directory relative to dir (default: PROPOSALS_DIR from the Pipeline config, else docs/design)
 //   context?: string          extra framing for every author (builder, budget, constraints the source does not state)
 //   panel?: number            independent architecture sketches before /roadmap (default 3; 0 = skip the panel)
@@ -46,6 +47,7 @@ const WHERE = `Work ONLY in ${DIR} (cd there / use absolute paths). `
 const DOCS_ONLY = `This is design work: write only design docs in the proposals directory. Never write code, never commit, stage, push, ` +
   `create a branch or open a PR, and change no git state. `
 const CTX = A.context ? `Framing from the person (binding unless a source fact contradicts it): ${A.context}\n` : ''
+const REVIEW_CTX = A.context ? `The authors were told to follow this framing from the person as binding (unless a source fact contradicts it); a choice that follows it is not a defect: ${A.context}\n` : ''
 const WORK = GUARD + WHERE + DOCS_ONLY
 const SOURCE = BRIEF_MODE ? `the product brief ${A.brief}` : `the concern ${JSON.stringify(A.concern)}`
 const LINT = `python3 .claude/scripts/proposal-lint.py`
@@ -129,9 +131,11 @@ const ROADMAP_SCHEMA = {
     roadmap: { type: 'string', description: 'path of roadmap.md, relative to the project directory' },
     milestones: { type: 'array', items: MILESTONE },
     lint_clean: { type: 'boolean' },
+    stopped: { type: 'boolean', description: 'true if the skill stopped without writing the docs (an error= stop such as exists, lint_missing or source_too_vague); then the other fields are empty' },
+    stop_reason: { type: 'string', description: 'when stopped: the skill\'s error code and recommendation, verbatim' },
     notes: { type: 'string' },
   },
-  required: ['out_dir', 'architecture', 'roadmap', 'milestones', 'lint_clean'],
+  required: ['out_dir', 'architecture', 'roadmap', 'milestones', 'lint_clean', 'stopped'],
 }
 const PROPOSE_SCHEMA = {
   type: 'object',
@@ -140,9 +144,11 @@ const PROPOSE_SCHEMA = {
     steps: { type: 'integer', description: 'number of steps' },
     human_gates: { type: 'integer', description: 'number of human-gated steps' },
     lint_clean: { type: 'boolean' },
+    stopped: { type: 'boolean', description: 'true if the skill wrote no proposal (it routed the work elsewhere, e.g. to /plan or /bug-fix, or stopped with an error=); then doc is empty' },
+    stop_reason: { type: 'string', description: 'when stopped: the recommendation or error code, verbatim' },
     notes: { type: 'string' },
   },
-  required: ['doc', 'steps', 'human_gates', 'lint_clean'],
+  required: ['doc', 'steps', 'human_gates', 'lint_clean', 'stopped'],
 }
 const CONSISTENCY_SCHEMA = {
   type: 'object',
@@ -158,36 +164,43 @@ const LINT_SCHEMA = {
     },
     lanes: {
       type: 'array',
-      items: { type: 'object', properties: { doc: { type: 'string' }, chains: { type: 'integer' }, lanes: { type: 'integer' }, blocked: { type: 'integer' }, human_gates_pending: { type: 'integer' } }, required: ['doc', 'chains', 'lanes', 'blocked', 'human_gates_pending'] },
+      description: 'from --lanes --allow-draft: how each proposal will split once a person accepts it',
+      items: { type: 'object', properties: { doc: { type: 'string' }, errors: { type: 'integer', description: 'errors in the --lanes output (e.g. lane_cycle)' }, chains: { type: 'integer' }, lanes: { type: 'integer' }, blocked: { type: 'integer' }, human_gates_pending: { type: 'integer' } }, required: ['doc', 'errors', 'chains', 'lanes', 'blocked', 'human_gates_pending'] },
     },
     next_milestones: { type: 'array', items: { type: 'string' }, description: 'from --roadmap: the next actionable milestones' },
   },
   required: ['docs', 'lanes', 'next_milestones'],
 }
 const blocking = list => list.filter(f => f.severity === 'bug' || f.severity === 'concern')
+// Agents may name a doc absolutely, relative to DIR, or with a leading ./ — compare them as DIR-relative paths.
+const norm = d => String(d || '').trim().replace(new RegExp('^' + DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/'), '').replace(/^\.\//, '')
 
 // Review docs with /review-proposal and revise with /propose --revise until no bug or concern remains.
 // Same shape as plan-to-merged-pr's review loop: suggestions and nits get one revise round, defects block.
+// A reviser edits only the docs under review; findings about any other doc are deferred to the Consistency phase,
+// so two concurrent loops never rewrite the same roadmap or architecture.
 async function reviewLoop(docs, frame, label, ph) {
-  const history = []
+  const own = new Set(docs.map(norm))
+  const history = [], deferred = []
   let fixes = 0, findings = [], clean = false, reviewed = true
   for (let round = 1; ; round++) {
     const review = await agent(
-      WORK + `Invoke the Skill tool with skill "review-proposal" once for each of these docs: ${docs.join(', ')}. ${frame}` +
+      WORK + REVIEW_CTX + `Invoke the Skill tool with skill "review-proposal" once for each of these docs: ${docs.join(', ')}. ${frame}` +
       `Report every finding (bug/concern/suggestion/nit) with the doc it is about, verified against the docs, ${SOURCE} and the tree. Do not edit files. ` +
       `Set completed=false if the skill stopped without reviewing every doc (an empty findings list must mean a real, clean review).` +
       (history.length ? `\nEarlier rounds and what the reviser did (confirm each is resolved; do not re-report revised items or ones validly declined):\n${JSON.stringify(history, null, 1)}` : ''),
       opts(`review:${label}-${round}`, ph, 'review', REVIEW_SCHEMA),
     )
     if (!review || review.completed === false) { reviewed = false; break }
-    findings = review.findings
+    for (const f of review.findings) if (!own.has(norm(f.doc)) && !deferred.some(d => d.description === f.description)) deferred.push(f)
+    findings = review.findings.filter(f => own.has(norm(f.doc)))
     const defects = blocking(findings)
-    log(`${label} review ${round}: ${findings.length} findings, ${defects.length} blocking`)
-    if (!defects.length && (!findings.length || fixes >= 1)) { clean = true; break }
+    log(`${label} review ${round}: ${findings.length} findings, ${defects.length} blocking${deferred.length ? `, ${deferred.length} about other docs (deferred)` : ''}`)
+    if (!defects.length && (!findings.length || fixes >= 1 || fixes >= MAX_REVIEW)) { clean = true; break }
     if (fixes >= MAX_REVIEW) break
     const fix = await agent(
       WORK + CTX + `For each doc with findings below, invoke the Skill tool with skill "propose" with args "--revise <doc>", applying these findings; ` +
-      `decline any you can verify is wrong and give the reason. Edit only the docs the findings name. Re-run ${LINT} on each revised doc until it reports no errors.\n` +
+      `decline any you can verify is wrong and give the reason. Edit only ${docs.join(', ')}; never any other doc. Re-run ${LINT} on each revised doc until it reports no errors.\n` +
       JSON.stringify(findings, null, 2),
       opts(`revise:${label}-${round}`, ph, 'revise', REVISE_SCHEMA),
     )
@@ -195,7 +208,7 @@ async function reviewLoop(docs, frame, label, ph) {
     fixes++
     history.push({ round, findings, revised: fix.summary, declined: fix.declined })
   }
-  return { docs, clean, reviewed, revise_rounds: fixes, findings_remaining: clean ? findings.filter(f => !blocking([f]).length) : findings }
+  return { docs, clean, reviewed, revise_rounds: fixes, findings_remaining: clean ? findings.filter(f => !blocking([f]).length) : findings, deferred }
 }
 
 let arch = null, judged = null, archReview = null
@@ -238,7 +251,10 @@ if (BRIEF_MODE) {
     `Then run ${LINT} <roadmap> --roadmap --json and return the milestones from it, with the paths of architecture.md and roadmap.md relative to ${DIR}.`,
     opts('roadmap', 'Architecture', 'roadmap', ROADMAP_SCHEMA),
   )
-  if (!arch) return { status: 'failed_at_roadmap', panel: judged }
+  if (!arch || arch.stopped) {
+    log(`/roadmap stopped: ${(arch && arch.stop_reason) || 'the stage failed to report'}`)
+    return { status: 'failed_at_roadmap', stop_reason: (arch && arch.stop_reason) || '', panel: judged }
+  }
   log(`Wrote ${arch.architecture} and ${arch.roadmap}: ${arch.milestones.length} milestones`)
   archReview = await reviewLoop(
     [arch.architecture, arch.roadmap],
@@ -257,7 +273,7 @@ if (BRIEF_MODE) {
     `architecture ${JSON.stringify(arch.architecture)} and roadmap ${JSON.stringify(arch.roadmap)}. Change nothing.`,
     opts('milestones', 'Architecture', 'lint', ROADMAP_SCHEMA),
   )
-  if (fresh) arch = fresh
+  if (fresh && !fresh.stopped) arch = fresh
 
   // ---- Proposals: one per pending milestone that names a proposal, each reviewed until clean (no barrier between milestones)
   phase('Proposals')
@@ -274,13 +290,13 @@ if (BRIEF_MODE) {
       `ordering between milestones is the roadmap's job. Return the proposal path relative to ${DIR}.`,
       opts(`propose:m${m.n}`, 'Proposals', 'propose', PROPOSE_SCHEMA),
     ),
-    (p, m) => p
+    (p, m) => (p && !p.stopped)
       ? reviewLoop(
         [p.doc],
         `This proposal implements milestone ${m.n} ("${m.title}") of ${arch.roadmap}; judge it against that milestone's scope and exit criteria, ${arch.architecture}, and ${SOURCE}. `,
         `m${m.n}`, 'Proposals',
       ).then(r => ({ milestone: m.n, title: m.title, ...p, review: r }))
-      : { milestone: m.n, title: m.title, doc: m.proposal, failed: true },
+      : { milestone: m.n, title: m.title, doc: m.proposal, failed: true, stop_reason: (p && p.stop_reason) || 'the stage failed to report' },
   )
   proposals.push(...results.filter(Boolean))
 } else {
@@ -292,7 +308,10 @@ if (BRIEF_MODE) {
     `Return the proposal path relative to ${DIR}.\n${JSON.stringify(A.concern)}`,
     opts('propose', 'Proposals', 'propose', PROPOSE_SCHEMA),
   )
-  if (!p) return { status: 'failed_at_propose' }
+  if (!p || p.stopped) {
+    log(`/propose wrote no proposal: ${(p && p.stop_reason) || 'the stage failed to report'}`)
+    return { status: 'failed_at_propose', stop_reason: (p && p.stop_reason) || '' }
+  }
   const r = await reviewLoop([p.doc], `This proposal is for ${SOURCE}; judge it against that concern and today's tree. `, 'proposal', 'Proposals')
   proposals.push({ ...p, review: r })
 }
@@ -300,45 +319,63 @@ if (BRIEF_MODE) {
 const written = proposals.filter(p => !p.failed)
 const allDocs = (arch ? [arch.architecture, arch.roadmap] : []).concat(written.map(p => p.doc))
 
-// ---- Consistency: needs every doc at once (barrier), then one revise per affected doc
-let consistency = null
+// ---- Consistency: needs every doc at once (barrier). Blocking findings and coverage gaps are revised, one reviser per doc,
+// then every revised doc is reviewed again, so nothing changed after its review counts as clean unchecked.
+let consistency = null, consistencyOk = true
+const deferredAll = [archReview].concat(proposals.map(p => p.review)).filter(Boolean).flatMap(r => r.deferred || [])
 if (BRIEF_MODE && written.length) {
   phase('Consistency')
   consistency = await agent(
-    WORK + `Read ${SOURCE}, then every one of these docs in full: ${allDocs.join(', ')}. Report cross-doc problems: interfaces, data models or names that disagree; ` +
+    WORK + REVIEW_CTX + `Read ${SOURCE}, then every one of these docs in full: ${allDocs.join(', ')}. Report cross-doc problems: interfaces, data models or names that disagree; ` +
     `work planned twice or by no doc; a proposal that contradicts a decision in ${arch.architecture}; Depends on references that point at the wrong step; ` +
-    `milestone order that builds on something not yet built or validated; parts of the source no doc plans for (coverage_gaps). ` +
-    `Each finding names the ONE doc that should change. Read-only: write no files.`,
+    `milestone order that builds on something not yet built or validated; a production release gated both in the roadmap and in a proposal; parts of the source no doc plans for (coverage_gaps). ` +
+    `Each finding names the ONE doc that should change, by its path relative to ${DIR}. Read-only: write no files.` +
+    (deferredAll.length ? `\nThe per-doc reviews raised these findings about docs other than the one they reviewed; check each and report the ones that hold:\n${JSON.stringify(deferredAll, null, 1)}` : ''),
     opts('consistency', 'Consistency', 'consistency', CONSISTENCY_SCHEMA),
   )
-  if (consistency) {
+  if (!consistency) {
+    consistencyOk = false
+    log('The consistency pass failed to report — the docs were not checked against each other')
+  } else {
     const bad = blocking(consistency.findings)
-    log(`Consistency: ${consistency.findings.length} findings (${bad.length} blocking), ${consistency.coverage_gaps.length} coverage gaps`)
+    const gaps = consistency.coverage_gaps.map(g => ({ doc: arch.roadmap, severity: 'concern', description: `Coverage gap: ${g}. Plan it in a milestone (or the proposal that should hold it), or state in Out of scope why it is not planned.` }))
+    log(`Consistency: ${consistency.findings.length} findings (${bad.length} blocking), ${gaps.length} coverage gaps`)
+    const known = new Set(allDocs.map(norm))
     const byDoc = {}
-    for (const f of bad) (byDoc[f.doc] = byDoc[f.doc] || []).push(f)
-    const fixes = await parallel(Object.keys(byDoc).map((doc, i) => () => agent(
+    for (const f of bad.concat(gaps)) { const d = norm(f.doc); (byDoc[d] = byDoc[d] || []).push(f) }
+    const targets = Object.keys(byDoc).filter(d => known.has(d))
+    consistency.unrouted = Object.keys(byDoc).filter(d => !known.has(d)).map(d => ({ doc: d, findings: byDoc[d] }))
+    if (consistency.unrouted.length) { consistencyOk = false; log(`Findings name docs this run did not write: ${consistency.unrouted.map(u => u.doc).join(', ')}`) }
+    const fixes = await parallel(targets.map((doc, i) => () => agent(
       WORK + CTX + `Invoke the Skill tool with skill "propose" with args "--revise ${doc}", applying these cross-doc findings; decline any you can verify is wrong and give the reason. ` +
       `Edit only ${doc}. Re-run ${LINT} ${doc} until it reports no errors.\n${JSON.stringify(byDoc[doc], null, 2)}`,
       opts(`revise:consistency-${i + 1}`, 'Consistency', 'revise', REVISE_SCHEMA),
     ).then(r => ({ doc, ...(r || { failed: true }) }))))
-    consistency.revisions = fixes.filter(Boolean)
+    consistency.revisions = fixes.map((f, i) => f || { doc: targets[i], failed: true })
+    if (consistency.revisions.some(f => f.failed)) { consistencyOk = false; log('A consistency revision failed to report') }
+    const revised = consistency.revisions.filter(f => !f.failed).map(f => f.doc)
+    const rechecks = await parallel(revised.map((doc, i) => () => reviewLoop(
+      [doc], `This doc was just revised for cross-doc consistency; judge it against ${SOURCE}, ${arch.architecture} and the docs it references. `, `recheck-${i + 1}`, 'Consistency')))
+    consistency.rechecks = rechecks.map((r, i) => r || { docs: [revised[i]], clean: false, reviewed: false })
+    if (consistency.rechecks.some(r => !r.clean)) { consistencyOk = false; log('A doc revised for consistency did not come back clean from its re-review') }
   }
 }
 
-// ---- Lint: the deterministic gate on every doc, plus lane derivation and roadmap progress
+// ---- Lint: the deterministic gate on every doc, plus a preview of each proposal's lanes and the roadmap's progress
 phase('Lint')
 const lint = await agent(
-  GUARD + WHERE + `In ${DIR}, run ${LINT} <doc> --json on each of: ${allDocs.join(', ')}; run ${LINT} <doc> --lanes on each proposal` +
+  GUARD + WHERE + `In ${DIR}, run ${LINT} <doc> --json on each of: ${allDocs.join(', ')}; run ${LINT} <doc> --lanes --allow-draft on each proposal ` +
+  `(a preview of how it splits once a person accepts it: the docs are drafts, and without --allow-draft every lane would show as blocked)` +
   (arch ? `; and ${LINT} ${arch.roadmap} --roadmap --json` : '') + `. Report per doc the error and warning counts and their messages, ` +
-  `per proposal the number of chains, lanes, blocked lanes and pending human gates, and the next actionable milestones. Change nothing.`,
+  `per proposal the --lanes errors (e.g. lane_cycle) and the number of chains, lanes, blocked lanes and pending human gates, and the next actionable milestones. Change nothing.`,
   opts('lint', 'Lint', 'lint', LINT_SCHEMA),
 )
-const lintErrors = lint ? lint.docs.reduce((n, d) => n + d.errors, 0) : null
+const lintErrors = lint ? lint.docs.reduce((n, d) => n + d.errors, 0) + lint.lanes.reduce((n, l) => n + (l.errors || 0), 0) : null
 const unclean = written.filter(p => !p.review || !p.review.clean)
 
 const status = !lint ? 'lint_failed'
   : lintErrors ? 'lint_errors'
-  : (unclean.length || proposals.some(p => p.failed)) ? 'proposals_need_attention'
+  : (unclean.length || proposals.some(p => p.failed) || !consistencyOk) ? 'proposals_need_attention'
   : 'ready'
 log(`Status: ${status}`)
 return {
@@ -348,7 +385,8 @@ return {
   roadmap: arch ? arch.roadmap : null,
   panel: judged ? { winner: judged.winner, scores: judged.scores } : null,
   architecture_review: archReview,
-  proposals: proposals.map(p => ({ milestone: p.milestone, title: p.title, doc: p.doc, failed: !!p.failed, clean: !!(p.review && p.review.clean), findings_remaining: p.review ? p.review.findings_remaining : null })),
+  proposals: proposals.map(p => ({ milestone: p.milestone, title: p.title, doc: p.doc, failed: !!p.failed, stop_reason: p.stop_reason || null, clean: !!(p.review && p.review.clean), findings_remaining: p.review ? p.review.findings_remaining : null })),
+  deferred_findings: BRIEF_MODE ? undefined : deferredAll,
   consistency,
   lint,
   next_steps: [

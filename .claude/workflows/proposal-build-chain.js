@@ -24,6 +24,7 @@ export const meta = {
 //   date     — suffix of the lane branch names (feat/<doc-slug>-<lane>-<date>), e.g. '20261104' (default 'undated')
 //   parallel_chains — default true: independent chains build at the same time; false = one chain after another
 //   allow_draft — build even when the proposal's Status is not accepted / in-progress (default false: a person accepts it first)
+//   ai_review_check, required_checks — not used to build; copied into the ship plan's args for the later ship-only runs
 //   The proposal must already be on origin/<main>: every lane worktree is cut from origin and reads it there.
 //   A lane that does not push stops only its own chain. A lane already pushed by an earlier run (its branch exists on
 //   origin) is not rebuilt; later lanes stack on it. Lanes waiting on a human-gated step, on an unfinished step of
@@ -35,7 +36,10 @@ if (A.lanes && A.proposal) throw new Error('proposal-build-chain: pass args.lane
 if (DERIVE && (!A.dir || !A.root)) throw new Error('proposal-build-chain: derive mode needs args.dir (a checkout of the repo) and args.root (where the lane worktrees go)')
 const MAIN = A.main_branch || 'main'
 const SHARED = {}
-for (const k of ['planner', 'gate', 'main_branch', 'commit_trailers', 'max_review_rounds', 'max_polish', 'efforts']) if (A[k] !== undefined) SHARED[k] = A[k]
+for (const k of ['planner', 'gate', 'main_branch', 'commit_trailers', 'max_review_rounds', 'max_polish', 'efforts', 'allow_draft']) if (A[k] !== undefined) SHARED[k] = A[k]
+// Settings the later ship-only runs need, carried into the ship plan's args.
+const SHIP_SHARED = {}
+for (const k of ['main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers']) if (A[k] !== undefined) SHIP_SHARED[k] = A[k]
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route ` +
   `(Bash, python, sed, heredocs, a different file path); record it as blocked and report it. `
@@ -93,7 +97,7 @@ const DERIVE_SCHEMA = {
 const derived = await agent(
   GUARD + AUTH + `Work ONLY in the git checkout ${A.dir} (cd there); change nothing in it: no checkout, no commit, no edit. Use a scratch directory outside the checkout for every file you write.\n` +
   `1. git fetch origin ${MAIN}. Copy the proposals directory as it is on origin/${MAIN} into the scratch directory, keeping repo-relative paths, so cross-doc references resolve: ` +
-  `git archive origin/${MAIN} -- "$(dirname ${A.proposal})" | tar -x -C <scratch>. If ${A.proposal} is not on origin/${MAIN}, copy that directory from the working copy instead and report source=working_copy.\n` +
+  `git archive origin/${MAIN} -- "$(dirname ${A.proposal})" | tar -x -C <scratch>; if the proposal's Source: header names a roadmap in another directory (e.g. ../roadmap.md#3), archive that directory too, so the roadmap's milestone gates resolve (an unresolvable one blocks every lane). If ${A.proposal} is not on origin/${MAIN}, copy those directories from the working copy instead and report source=working_copy.\n` +
   `2. git ls-remote --heads origin > <scratch>/heads.txt\n` +
   `3. From <scratch> (so the doc path stays repo-relative), run: python3 ${A.dir}/.claude/scripts/proposal-lint.py ${A.proposal} --lanes --repo ${A.dir} --root ${A.root} --date ${A.date || 'undated'}` +
   (A.branch_prefix ? ` --branch-prefix ${A.branch_prefix}` : '') + (A.allow_draft ? ' --allow-draft' : '') + ` --remote-heads <scratch>/heads.txt\n` +
@@ -156,7 +160,7 @@ const ship_plan = chains.filter(Boolean).map(c => {
         branch: l.branch,
         // plan_text and proposal give the ship-only monitor this lane's own design context for comments and conflicts.
         args: {
-          ship_only: true, branch: l.branch, dir: l.dir, title: `<title for steps ${l.steps.join(', ')}>`, proposal: A.proposal,
+          ...SHIP_SHARED, ship_only: true, branch: l.branch, dir: l.dir, title: `<title for steps ${l.steps.join(', ')}>`, proposal: A.proposal,
           ...(planText ? { plan_text: planText } : {}),
           ...(i ? { predecessor_prs: ['<PR numbers of the lanes above, once merged>'] } : {}),
         },

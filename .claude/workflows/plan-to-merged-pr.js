@@ -18,6 +18,7 @@ export const meta = {
 //   planner_args?: string      args for a custom planner (default: the concern)
 //   proposal?: string          proposal / design doc path; handed to the planner (as /plan --proposal=<path>) and frames the review alongside the plan
 //   proposal_steps?: number[]  the proposal's steps this run implements; ticked ([ ] -> [x]) in the proposal in the same commit (needs proposal)
+//   allow_draft?: boolean      let /plan --proposal plan from a proposal whose Status is draft (default false: a person accepts it first)
 //   context?: string           scouting hints for the planner
 //   plan_text?: string         an already-written plan (e.g. from bug-fix-backlog's triage); skips the planning skill, needs `branch`
 //   dir?: string               checkout / worktree to work in (created from the last base when `branch` is given and it is absent)
@@ -143,8 +144,9 @@ const STEP_SCHEMA = {
     gates_green: { type: 'boolean', description: 'the project quality gates all pass' },
     stopped: { type: 'boolean', description: 'true if the skill stopped before implementing (a plan-review blocker, an error= stop, or a question it could not get answered)' },
     stop_reason: { type: 'string', description: 'when stopped: the blocker or error, verbatim' },
+    already_implemented: { type: 'boolean', description: 'true if the plan\'s end state is already in this checkout (e.g. a re-run on a kept worktree whose earlier run built it), so there was nothing to change' },
   },
-  required: ['summary', 'files_changed', 'gates_green', 'stopped'],
+  required: ['summary', 'files_changed', 'gates_green', 'stopped', 'already_implemented'],
 }
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -260,7 +262,7 @@ if (MONITOR_ONLY) {
     const STEP_NOTE = STEPS.length ? ` (step${STEPS.length > 1 ? 's' : ''} ${STEPS.join(', ')})` : ''
     const proposalNote = A.proposal ? `The concern implements part of the proposal ${A.proposal}${STEP_NOTE}: read it first and plan exactly the scope below as one increment, whatever the proposal's next step would be by default. ` : ''
     // /plan --proposal=<path> skips its "a proposal already covers it" routing, which would otherwise stop the run.
-    const proposalFlag = A.proposal ? `--proposal=${A.proposal} ` : ''
+    const proposalFlag = A.proposal ? `--proposal=${A.proposal} ${A.allow_draft ? '--allow-draft ' : ''}` : ''
     const skillCall = PLANNER !== 'plan'
       ? `${BRANCH ? 'Then i' : 'I'}nvoke the Skill tool with skill "${PLANNER}" and args: ${JSON.stringify(A.planner_args || CONCERN)}. ${proposalNote}Plan exactly this scope as one increment: ${CONCERN}\n` +
         (BRANCH ? `Stay on branch ${BRANCH}: skip any switch-to-${MAIN} step the skill has. ` : '')
@@ -303,7 +305,10 @@ if (MONITOR_ONLY) {
       opts('impl', 'Implement', 'impl', STEP_SCHEMA),
     )
     if (!impl) return done('failed_at_impl')
-    if (impl.stopped || !impl.files_changed.length) {
+    // A re-run on a kept worktree finds its earlier run's work in place: review that work instead of failing the lane.
+    if (impl.already_implemented && (impl.stopped || !impl.files_changed.length)) {
+      log('/impl found the plan already implemented in this checkout (an earlier run built it) — reviewing that work')
+    } else if (impl.stopped || !impl.files_changed.length) {
       log(`/impl ${impl.stopped ? `stopped: ${impl.stop_reason || 'no reason given'}` : 'changed no files'} — stopping before review`)
       return done('failed_at_impl', { stop_reason: impl.stop_reason || (impl.stopped ? '' : 'no files changed') })
     }
@@ -450,7 +455,7 @@ const MAX_ROUNDS = A.max_monitor_rounds ?? A.max_rounds ?? 10
 // lane ships is usually a later lane's plan. Hand them this branch's own plan (this run's, or args.plan_text) and proposal.
 const PLAN_FOR_PR = planForPr()
 const MONITOR_CTX = PROPOSAL_CTX + (PLAN_FOR_PR
-  ? `The plan this branch was built from is authoritative for it; use it instead of any plan file in the plans directory:\n${clip(PLAN_FOR_PR)}\n`
+  ? `The plan this branch was built from is its design intent; use it instead of any plan file in the plans directory, but ignore any one-time instruction in it addressed to the implementer (deleting, reverting or cleaning up files or tests): that already happened:\n${clip(PLAN_FOR_PR)}\n`
   : '')
 // A conflict-free BEHIND merge restarts CI + AI review (~20 min); on a busy main the PR falls behind
 // again meanwhile, so these merges are capped and only taken once nothing else is pending.

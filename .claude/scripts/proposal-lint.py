@@ -347,6 +347,10 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None):
                     doc.err(line, 'xref_missing_step', '%s %d depends on %s#%d, which has no step %d'
                             % (what, n, d['doc'], d['n'], d['n']))
     if doc.kind == 'proposal':
+        state, _r, _m, why = source_milestone(doc, cache if cache is not None else {})
+        if state == 'unresolved':
+            doc.warn(1, 'source_unresolved', '%s; until it resolves, --lanes blocks every lane '
+                     '(milestone_unresolved)' % why)
         check_lanes_shape(doc)
         if repo:
             check_repo_files(doc, repo)
@@ -418,17 +422,34 @@ def milestone_satisfied(roadmap, m, cache):
     return bool(prop and prop.steps and all(s['done'] for s in prop.steps))
 
 
-def milestone_wait(doc, cache):
-    """Pending milestones the doc's roadmap milestone still waits on (via its Source: roadmap.md#N)."""
-    m = SOURCE_REF_RE.search(doc.header.get('source', ''))
+def source_milestone(doc, cache):
+    """Resolve the doc's `Source: <roadmap>.md#N`. Returns (state, roadmap, milestone, why):
+    state 'none' (the source is not a roadmap milestone), 'ok', or 'unresolved' (it names a roadmap or a
+    milestone that cannot be read). Unresolved fails closed: lanes stay blocked, so a typo never skips a gate."""
+    src = doc.header.get('source', '')
+    m = SOURCE_REF_RE.search(src)
     if not m:
-        return []
+        if re.search(r'roadmap|milestone|#\d', src, re.I):
+            return 'unresolved', None, None, 'Source: %r names a roadmap milestone but not as <file>.md#N' % src
+        return 'none', None, None, ''
     roadmap = load_ref(doc, m.group(1), cache)
-    if roadmap is None or roadmap.kind != 'roadmap':
-        return []
+    if roadmap is None:
+        return 'unresolved', None, None, 'Source: %s cannot be read' % m.group(1)
+    if roadmap.kind != 'roadmap':
+        return 'unresolved', None, None, 'Source: %s is a %s, not a roadmap' % (m.group(1), roadmap.kind)
     ms = roadmap.step(int(m.group(2)))
     if ms is None:
+        return 'unresolved', roadmap, None, 'Source: %s has no milestone %s' % (m.group(1), m.group(2))
+    return 'ok', roadmap, ms, ''
+
+
+def milestone_wait(doc, cache):
+    """Pending milestones the doc's roadmap milestone still waits on (via its Source: roadmap.md#N)."""
+    state, roadmap, ms, why = source_milestone(doc, cache)
+    if state == 'none':
         return []
+    if state == 'unresolved':
+        return [{'doc': None, 'n': 0, 'title': why, 'reason': 'milestone_unresolved'}]
     waits = []
     rel = os.path.relpath(roadmap.path, os.path.dirname(doc.path))
     for d in ms['depends']:
@@ -497,6 +518,25 @@ def derive_lanes(doc, args, cache):
             first, second = (a, b) if a['min'] < b['min'] else (b, a)
             if set(a['files']) & set(b['files']):
                 second['after'].add(first['key'])
+    # Cycle check over every lane, blocked or not, so a draft or a gated doc reports it before acceptance.
+    indeg_all = dict((k, len([p for p in lanes[k]['after'] if p in lanes])) for k in order)
+    ready_all = [k for k in order if indeg_all[k] == 0]
+    seen_all = []
+    while ready_all:
+        k = ready_all.pop(0)
+        seen_all.append(k)
+        for l in order:
+            if k in lanes[l]['after'] and l not in seen_all and l not in ready_all:
+                indeg_all[l] -= 1
+                if indeg_all[l] == 0:
+                    ready_all.append(l)
+    if len(seen_all) != len(order):
+        stuck = [k for k in order if k not in seen_all]
+        return {'doc': doc.path, 'slug': slug, 'warnings': doc.warnings, 'chains': [], 'blocked': [],
+                'human_gates_pending': [], 'milestone_waits': [], 'done': [s['n'] for s in doc.steps if s['done']],
+                'errors': [{'line': by_n[lanes[stuck[0]]['steps'][0]]['line'], 'code': 'lane_cycle',
+                            'message': 'lanes %s depend on each other in a cycle (check Lane: groups against '
+                                       'Depends on and shared Files)' % ', '.join(stuck)}]}
     blocked = set(k for k in order if lanes[k]['waiting_on'])
     changed = True
     while changed:
