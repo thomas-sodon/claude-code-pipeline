@@ -52,6 +52,9 @@ if (A.plan_text && !A.branch) throw new Error('args.plan_text needs args.branch 
 const STEPS = (A.proposal_steps || []).map(Number).filter(n => Number.isInteger(n) && n > 0)
 if (STEPS.length && !A.proposal) throw new Error('args.proposal_steps needs args.proposal (the design doc the steps belong to)')
 if (STEPS.length && SHIP_ONLY) throw new Error('args.proposal_steps is ticked when the work is built; ship-only mode builds nothing')
+// The plan this branch was built from: this run's, or args.plan_text (ship-only / monitor-only). Called once planning is done.
+const planForPr = () => (plan && plan.plan && plan.plan !== 'given') ? plan.plan : (A.plan_text || '')
+const clip = t => t.length > 8000 ? t.slice(0, 8000) + '\n[plan truncated]' : t
 // Every stage after planning keeps its changes consistent with the design doc, not only the review.
 const PROPOSAL_CTX = A.proposal
   ? `This work implements ${A.proposal}${STEPS.length ? ` steps ${STEPS.join(', ')}` : ''}: keep every change consistent with that design doc's Decisions, Security and privacy, and Rollout sections. `
@@ -415,8 +418,10 @@ if (MONITOR_ONLY) {
   const opened = await agent(
     GUARD + WHERE + GATES + AUTH + PREDS_CHECK + (A.existing_pr
       ? `PR #${A.existing_pr} should exist for ${BRANCH}: confirm its head is ${BRANCH} and its base is ${MAIN} (else report blocked). Push any unpushed commits with git push -u origin ${BRANCH} (never force). ` +
-        `Rewrite its body (gh pr edit --body-file) in the create-pr skill's body format, dropping any stacking/draft wording, and if it is a draft mark it ready (gh pr ready ${A.existing_pr}).`
+        `Rewrite its body (gh pr edit --body-file) in the create-pr skill's body format, dropping any stacking/draft wording, and if it is a draft mark it ready (gh pr ready ${A.existing_pr}).` +
+        (planForPr() ? ` Take the body's Deploy notes from this plan's ## Rollout section, if it has one:\n${clip(planForPr())}\n` : '')
       : `On branch ${BRANCH}, invoke the Skill tool with skill "create-pr" to open a PR (not a draft) for: ${CONCERN || A.title}. Its base branch is ${MAIN} (gh pr create --base ${MAIN}), whatever MAIN_BRANCH the Pipeline config names. The work is already committed. ` +
+        (planForPr() ? `The plan for this branch is below: use it (not a plan file found by branch name or folder pointer) for the skill's issue detection and for the PR body's Deploy notes from its ## Rollout section, if it has one.\n${clip(planForPr())}\n` : '') +
         (SHIP_ONLY
           ? `The branch already exists on the remote: push any unpushed commits yourself with git push -u origin ${BRANCH} (never force), then skip the skill's work check (its error=nothing_to_pr stop: the work is already pushed) and its commit and push steps; if its existing-PR check finds an open PR for the branch, mark it ready if it is a draft (gh pr ready) and return it. `
           : `Its commit step has nothing to commit; its push step is git push -u origin ${BRANCH} (never force), with GH_WRAPPER in front only when it works here. `) +
@@ -443,9 +448,9 @@ const PRN = pr.pr_number
 const MAX_ROUNDS = A.max_monitor_rounds ?? A.max_rounds ?? 10
 // Comment fixes and conflict resolution read "the plan" from the plans directory by default, which by the time a stacked
 // lane ships is usually a later lane's plan. Hand them this branch's own plan (this run's, or args.plan_text) and proposal.
-const PLAN_FOR_PR = (plan && plan.plan && plan.plan !== 'given') ? plan.plan : (A.plan_text || '')
+const PLAN_FOR_PR = planForPr()
 const MONITOR_CTX = PROPOSAL_CTX + (PLAN_FOR_PR
-  ? `The plan this branch was built from is authoritative for it; use it instead of any plan file in the plans directory:\n${PLAN_FOR_PR.length > 8000 ? PLAN_FOR_PR.slice(0, 8000) + '\n[plan truncated]' : PLAN_FOR_PR}\n`
+  ? `The plan this branch was built from is authoritative for it; use it instead of any plan file in the plans directory:\n${clip(PLAN_FOR_PR)}\n`
   : '')
 // A conflict-free BEHIND merge restarts CI + AI review (~20 min); on a busy main the PR falls behind
 // again meanwhile, so these merges are capped and only taken once nothing else is pending.

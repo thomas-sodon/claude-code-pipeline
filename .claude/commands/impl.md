@@ -2,7 +2,7 @@ Review a plan (or the next step of a design doc) against today's tree and, if it
 
 This command takes a unit of work, validates that every claim in it still holds against the current code, and — only when that review comes back clean — implements it step by step and runs the quality gates. It stops before commit: review the result with `/review-changes` (which hands off to `/polish`), then ship with `/create-pr`.
 
-The unit of work is either a **plan file** in `$PLANS_DIR` (written by `/plan`, `/bug-fix`, or by hand) or, in **doc mode**, the **next unimplemented step** of a proposal/design doc in `$PROPOSALS_DIR`.
+The unit of work is either a **plan file** in `$PLANS_DIR` (written by `/plan`, `/bug-fix`, or by hand) or, in **doc mode**, the **next buildable step** of a proposal/design doc in `$PROPOSALS_DIR` — the first pending code step whose dependencies are done.
 
 ## Configuration
 
@@ -13,7 +13,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 - `GATE_WRAPPER` — prefix for every gate run (default: none; `.claude/scripts/gate-slot.sh` is recommended when several agents share a host).
 - `MAIN_BRANCH` — integration branch (default `main`).
 - `PLANS_DIR` — plan location (default `~/.claude/plans`).
-- `PROPOSALS_DIR` — design docs (default: none; doc mode unavailable).
+- `PROPOSALS_DIR` — design docs (default: none; doc mode still applies to any `# Proposal:` doc passed by path).
 - `GH_WRAPPER` — optional prefix for git network commands (default: none).
 - `TEST_GUIDELINES` — the project's testing rules (default: the project's `CLAUDE.md`).
 
@@ -27,14 +27,14 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 ## Locate the work
 
-1. **Detect the mode.** Doc mode when the argument is a path inside `$PROPOSALS_DIR` (and `PROPOSALS_DIR` is set); otherwise plan-file mode. A path into a proposals directory when `PROPOSALS_DIR` is unset → stop with `error=invalid_argument` and ask the user to configure it.
+1. **Detect the mode.** Doc mode when the argument is a path inside `$PROPOSALS_DIR` (and `PROPOSALS_DIR` is set), or a file whose first heading is `# Proposal:` (the format `/propose` writes, wherever it lives); otherwise plan-file mode. An `# Architecture:` or `# Roadmap:` doc is not a unit of work → stop with `error=invalid_argument`, recommending `/propose --milestone=N` for a roadmap milestone.
 2. **Resolve the plan file** (plan-file mode).
    - Non-empty argument: a path is used directly; anything else is a slug under `$PLANS_DIR`. Missing file → stop with `error=plan_not_found` and list the five most recent files in `$PLANS_DIR`.
    - Empty argument, two tiers:
      - **Folder pointer.** Read `~/.claude/last-plan-by-folder.json` and look up the current working directory's absolute path. If its `plan` exists and is non-empty, use it and announce `Plan pointer: <path> (written <written_at>)`.
      - **Fallback.** Otherwise pick the most recently modified non-empty `*.md` in `$PLANS_DIR` and warn `No folder plan pointer — falling back to the most-recent plan globally`. Nothing found → `error=no_plan_found`.
-3. **Read the plan in full.** Layouts vary (`/plan` writes `# Plan:` / `## Context` / `## Implementation steps` / `## Critical files` / `## Reused functions and utilities` / `## Verification` / `## Out of scope`). Extract what it does, which files and symbols it cites, which utilities it reuses, and what verification it specifies.
-4. **Project sanity check.** If most cited paths do not exist in this tree, stop with `error=plan_project_mismatch`. Never auto-pick a different plan.
+3. **Read the plan in full.** Layouts vary (`/plan` writes `# Plan:` / `## Context` / `## Implementation steps` / `## Critical files` / `## Reused functions and utilities` / `## Verification` / optional `## Rollout` / `## Out of scope`). Extract what it does, which files and symbols it cites — split into files it **modifies** and files it **creates** (marked `(new)`) — which utilities it reuses, and what verification it specifies.
+4. **Project sanity check.** If most cited paths the plan modifies do not exist in this tree, stop with `error=plan_project_mismatch`. Files marked `(new)` never count, so a plan that only creates files is not a mismatch. Never auto-pick a different plan.
 
 The pointer file is read-only here — `/impl` never writes it. A missing or malformed file, a missing entry, or a deleted plan all fall back to the global most-recent plan. An explicit argument bypasses the pointer.
 
@@ -42,14 +42,17 @@ The pointer file is read-only here — `/impl` never writes it. A missing or mal
 
 Run only when *Detect the mode* chose doc mode. It selects one step from the doc and turns it into a unit of work; from then on, read "the plan" as "the selected step". This command **never edits the design doc**.
 
-1. **Read the doc in full**, including any metadata (status, dependencies) and any "what landed / what is missing" notes.
-2. **Locate the step list.** Expect an ordered checkbox list — `N. [x] **Title.** …` for shipped steps, `N. [ ] **Title.** …` for pending — optionally with `Depends on:` and `Acceptance:` sub-bullets. No checkbox step list → stop with `error=no_step_list` and suggest running `/plan` on the doc's next increment instead.
-3. **Select the next step** — the first `[ ]` in document order. Then validate:
-   - **Human-gated steps.** If the step is explicitly held for a human decision (a rollout, flag flip, or deletion gated on an observation window or sign-off), skip it when a later `[ ]` step still writes code and select that one instead; if every remaining step is gated, stop with `error=step_human_gated`.
-   - **Dependencies.** Every step named in its `Depends on:` must be `[x]`. Otherwise stop with `error=step_dependency_unmet` and name the blocker.
-   - **Checkbox vs. prose.** If the doc's prose says this step landed (or the tree already meets its acceptance criteria), the checkbox is stale: stop with `error=doc_stale` and tell the user to tick it before re-invoking. Do not edit the doc yourself.
+1. **Lint the doc.** If `.claude/scripts/proposal-lint.py` exists, run `python3 .claude/scripts/proposal-lint.py <doc> --json` first. Any `errors` (exit 1) → stop with `error=doc_malformed`, listing each as `line: code: message`; exit 2 (unreadable) → the same stop, quoting its stderr. Warnings are reported, never blocking. On a clean lint, use its `steps` (number, done, `human_gate`, `files` with their `new` flag, `depends`, `acceptance`) as the parse of the step list.
+2. **Read the doc in full**, including its header (`Status:`, `Architecture:`) and any "what landed / what is missing" notes.
+3. **Check its status.** `Status: draft` → stop with `error=doc_not_accepted`: a person sets `accepted` before anything is built. No `Status:` line → warn and proceed.
+4. **Locate the step list.** Expect an ordered checkbox list — `N. [x] **Title.** …` for shipped steps, `N. [ ] **Title.** …` for pending — with `Files:`, `Depends on:`, `Acceptance:`, `Lane:` and `Human gate:` sub-bullets (three-space indent, `- Key: value`; an older doc may lack some — no `Depends on:` there means no dependencies). No checkbox step list → stop with `error=no_step_list` and suggest running `/plan` on the doc's next increment instead.
+5. **Classify each pending step.** A step with a `Human gate:` sub-bullet is human-gated: a person does it and ticks it. In a doc that uses no `Human gate:` key anywhere, judge from the prose instead: a step explicitly held for a human decision (a rollout, flag flip, or deletion gated on an observation window or sign-off) is gated. Every other step is a code step.
+6. **Select the next step** — the first `[ ]` code step in document order whose every `Depends on:` ref is `[x]`: `N` in this doc, `<file>.md#N` in that doc (path relative to this doc's directory; an unreadable doc or a missing step there is unmet). A code step that depends on a pending human gate is therefore never selected. Then check, in order:
    - **Nothing pending.** Every step `[x]` → stop with `error=doc_complete`.
-4. **Extract the unit of work:** step number `M`, title, the files and symbols it names, its description, its dependencies, and its `Acceptance:` criteria — which become binding success criteria, treated like a plan's `## Verification`.
+   - **Only gates pending.** No `[ ]` code step remains → stop with `error=step_human_gated`, listing each pending gate (number, kind, text).
+   - **Nothing selectable.** Pending code steps exist but each has an unmet dependency → stop with `error=step_dependency_unmet`, naming for the first one each blocker and whether it is a human gate or a step in another doc.
+   - **Checkbox vs. prose.** If the doc's prose says this step landed (or the tree already meets its acceptance criteria), the checkbox is stale: stop with `error=doc_stale` and tell the user to tick it before re-invoking. Do not edit the doc yourself.
+7. **Extract the unit of work:** step number `M`, title, its `Files:` — the cited files, those marked `(new)` to be created — and the symbols it names, its description, its dependencies, and its `Acceptance:` criteria — which become binding success criteria, treated like a plan's `## Verification`. The doc's Decisions, Security and privacy, and Rollout and operations sections bind it like `CLAUDE.md` invariants.
 
 ## Review the plan against today's tree
 
@@ -59,7 +62,7 @@ A critique pass: every cited fact must still hold and every step must still be i
    - **Dirty-tree gate.** Uncommitted changes clearly unrelated to the plan → surface them and ask before proceeding. Never branch over an unrelated dirty tree.
    - **Record HEAD; do not branch yet.** Branch creation waits until *Decide* returns Go, so a run that stops on a blocker leaves no stray branch.
    - **Refresh (HEAD on `$MAIN_BRANCH`, clean tree only).** `$GH_WRAPPER git fetch origin $MAIN_BRANCH` then `git merge --ff-only origin/$MAIN_BRANCH`, before the checks below, so the review sees the tree the branch will be cut from. On fetch failure or divergence, warn and continue on local `$MAIN_BRANCH` as-is. Never fetch or touch a non-main branch the user is on.
-2. **Cited files exist.** Renamed or deleted → find the current path by name and neighbouring symbols; if you cannot, that is a blocker.
+2. **Cited files exist.** Applies only to files the plan modifies. Renamed or deleted → find the current path by name and neighbouring symbols; if you cannot, that is a blocker. A file marked `(new)`: its parent directory must exist or be one the plan itself creates (an area it names, e.g. from the architecture's repository layout) — otherwise a blocker; a `(new)` file that already exists is a concern, or *already implemented* when it holds the planned end state.
 3. **Cited symbols and line ranges still match.** Shifted line numbers are a concern; a symbol rewritten so the planned change no longer applies is a blocker.
 4. **Reused utilities still exist.** A missing reuse target is a blocker.
 5. **Config keys.** A setting the plan adds that already exists, partly exists, or conflicts with a sibling is a blocker until the plan accounts for it.
@@ -114,7 +117,7 @@ End with a plain-text summary:
 - **Quality gates** — which ran, which passed, how many fix iterations.
 - **Acceptance criteria** *(doc mode)* — each criterion and how it was met.
 - **Deviations from the plan** — anything done differently, and why.
-- **Next step** — `/review-changes` (in a fresh session) to review the branch against the plan; it hands off to `/polish`. Only once that is clean, commit and push and `/create-pr`. In doc mode, remind the user to tick step `M`'s checkbox in the doc (in the same PR or after it merges).
+- **Next step** — `/review-changes` (in a fresh session) to review the branch against the plan; it hands off to `/polish`. Only once that is clean, commit and push and `/create-pr`. In doc mode, remind the user to tick step `M` in the same PR: `python3 .claude/scripts/proposal-lint.py <doc> --tick M` (without the script, change only that step's `[ ]` to `[x]`).
 
 ## What to skip
 

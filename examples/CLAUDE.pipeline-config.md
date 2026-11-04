@@ -1,4 +1,6 @@
-<!-- Paste this section into your project's root CLAUDE.md and edit the values. -->
+<!-- Paste this section into your project's root CLAUDE.md and edit the values.
+     PROPOSALS_DIR is where /roadmap and /propose write the design docs, and where /plan and /impl read them.
+     On a greenfield project, /bootstrap writes this section for you. -->
 
 ## Pipeline config
 

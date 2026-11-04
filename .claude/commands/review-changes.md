@@ -21,7 +21,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 1. **Pull plan context.** Before reading the diff, recover what the branch was *trying* to do.
 
-   **1a — Plan file (primary).** Read `~/.claude/last-plan-by-folder.json` (keyed by absolute working directory, maintained by `/plan`). If this directory's entry points at an existing, non-empty plan, use it and announce `Plan context: <path> (written <written_at>)`. Otherwise fall back to the most recently modified non-empty `*.md` in `$PLANS_DIR` and warn `No folder plan pointer — using the most-recent plan globally; verify it matches this branch`. If none exists, `plan_path` is null. Read the plan in full: goal, files/symbols touched, verification/acceptance criteria. If most paths it cites do not exist in the tree, warn that it looks unrelated, set `plan_path` to null, and lean on 1b and the code. Never edit the plan.
+   **1a — Plan file (primary).** Read `~/.claude/last-plan-by-folder.json` (keyed by absolute working directory, maintained by `/plan`). If this directory's entry points at an existing, non-empty plan, use it and announce `Plan context: <path> (written <written_at>)`. Otherwise fall back to the most recently modified non-empty `*.md` in `$PLANS_DIR` and warn `No folder plan pointer — using the most-recent plan globally; verify it matches this branch`. If none exists, `plan_path` is null. Read the plan in full: goal, files/symbols touched, verification/acceptance criteria, and its `## Rollout` if any. If most paths it cites do not exist in the tree, warn that it looks unrelated, set `plan_path` to null, and lean on 1b and the code. Never edit the plan.
 
    **1b — Session transcript (supplement).** Claude Code stores sessions under `~/.claude/projects/<slug>/`, where `<slug>` is the absolute working directory with every non-alphanumeric character replaced by `-`. From the most recent non-empty `.jsonl` there, extract the first user message, any `ExitPlanMode` plan inputs, and the final `TodoWrite` snapshot. These files are large — parse them with a script, never Read them whole:
 
@@ -54,6 +54,8 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
    **Synthesize** a 3–5 line **Plan Context**: the plan file is the authoritative intent; the transcript supplies the original ask and what landed (and its `ExitPlanMode` plan stands in when there is no plan file). Prefer the plan file when they disagree and note the divergence. If nothing was recovered, say so — never invent intent. If the context is unrelated to the diff, say so and set `plan_path` to null.
 
+   **1c — Proposal.** When the plan's Context (or the caller) names a proposal or design doc, read its named steps and its `## Security and privacy` and `## Rollout and operations` sections; Steps 5 and 6 judge the diff against them too. A named doc that does not exist is a concern, not a stop.
+
    Then recall this branch's **review-findings ledger** (below).
 
 2. **Determine scope.** Parse `$ARGUMENTS` first.
@@ -63,13 +65,16 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
    - Explicit `committed`/`all` are honoured. Empty: uncommitted work **and** `N > 0` → `all`; only uncommitted → `uncommitted`; only `N > 0` → `committed`; neither → stop, nothing to review.
 
 3. **Gather the diff.**
-   - Uncommitted: `git diff HEAD` plus untracked files from `git status --porcelain`. Bound untracked reads: skip or head-truncate (~50 KB) any file over 50 KB, and skip build/vendor/artifact directories (e.g. `node_modules/`, `dist/`, `build/`, `.venv/`, `__pycache__/`, `logs/`); note each skip.
+   - Uncommitted: `git diff HEAD` plus untracked files from `git status --porcelain`. Bound untracked reads: head-truncate (~50 KB) any text file over 50 KB, and skip build/vendor/artifact directories (e.g. `node_modules/`, `dist/`, `build/`, `.venv/`, `__pycache__/`, `logs/`); note each truncation and skip.
    - Committed: `git diff <base>...HEAD` and `git log <base>..HEAD --oneline`.
    - All: both, reviewed as one change.
+   - **Fixture and data files.** In every scope, list each file added under a test-fixture or data directory (e.g. `fixtures/`, `__fixtures__/`, `testdata/`, `test/data/`, `data/`, `samples/`, `seeds/`) — from `git diff --name-status --diff-filter=A` over the scope's range plus untracked files — with its size and type (`file -b`), including large and binary ones the diff elides and ones over the read bound. None is ever silently skipped; each is judged in Step 5.
 
 4. **Understand the change.** Read every modified/added file in full. Grep for callers, tests, and type definitions of changed symbols. Classify the change (bug fix, feature, refactor, config, test-only, docs). Cross-check against the Plan Context: plan items with no code, and code with no motivating plan item, are both findings.
 
 5. **Check project rules.** The change must respect the architecture invariants and conventions in the project's `CLAUDE.md` (and any docs it points to). Ground each claim in today's tree — cite the code, not memory. Any new data flowing into a prompt, log, or persisted file must be bounded.
+   - **Data handling.** Trace personal data (names, emails, addresses, phone or account numbers, identifiers) into fixtures, logs, error messages, analytics events, prompts sent to third-party APIs, and persisted data; judge each against the `CLAUDE.md` invariants and the proposal's Security and privacy. Breaking an invariant is a bug; an unjudged new flow is a concern. A listed fixture or data file that could hold personal data or secrets, with no provenance or redaction note beside it (a README in its directory, a header comment, a sidecar), is a concern.
+   - **Deploy readiness.** A migration, new env var or secret, feature flag or scheduled job in the diff with no entry in the plan's `## Rollout` (or the proposal's Rollout and operations) is a concern. A destructive or non-reversible migration (dropping or renaming a table or column, a data-rewriting backfill, a narrowing type change) with no stated plan for it (backup, expand/contract, rollback) is a bug.
 
 6. **Look for bugs and logic errors.** Off-by-one, edge cases, null/empty handling; races in async code or file I/O; unbounded growth; exceptions caught at the wrong level or swallowed; type escape hatches; command injection, path traversal, secrets in logs.
 
@@ -140,8 +145,9 @@ Plain text in the response:
 1. Scope header: `Scope: uncommitted` / `Scope: committed (N commits vs <base>)` / `Scope: all (N commits vs <base>)`.
 2. **Plan Context** (3–5 lines), or one line saying it was unavailable.
 3. A 2–3 sentence summary and overall assessment.
-4. Findings grouped **Bugs**, **Concerns**, **Suggestions**, **Nits** — each with `path:line`, the quoted code, what is wrong, why it matters, and a concrete fix or question.
-5. **Ledger** line (unless skipped): new, carried over, fixed since last review, regressions.
+4. Findings grouped **Bugs**, **Concerns**, **Suggestions**, **Nits** — each with `path:line`, the quoted code (secrets and personal data redacted), what is wrong, why it matters, and a concrete fix or question.
+5. **Fixture and data files** (when Step 3 listed any): `path — size — type — provenance note found / missing`.
+6. **Ledger** line (unless skipped): new, carried over, fixed since last review, regressions.
 
 If the change is good, say so briefly — don't manufacture issues. End with exactly one of:
 - `Run /polish in a fresh session to apply fixes — it will recall the ledger and fix every recorded finding.`
@@ -152,5 +158,6 @@ If the change is good, say so briefly — don't manufacture issues. End with exa
 
 - Read-only: never modify the repo working tree. The sole write is the ledger under `~/.claude/reviews/`.
 - Never invoke `/polish` from this command.
-- Read-only against `$PLANS_DIR`, `~/.claude/last-plan-by-folder.json`, and session transcripts.
+- Read-only against `$PLANS_DIR`, `~/.claude/last-plan-by-folder.json`, design docs, and session transcripts.
+- Never quote credentials or personal data (names, addresses, phone or account numbers) into the review or the ledger; cite the file and line and redact the value.
 - Do not commit, push, stage, unstage, stash, or discard changes; no destructive git operations (`reset --hard`, `checkout --`, `clean -f`, branch deletes).

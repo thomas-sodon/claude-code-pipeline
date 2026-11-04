@@ -286,10 +286,11 @@ The plan reads as freshly authored — no "the issue said", no drift section, no
    4. **Update docs** — only if the fix changes a documented rule or module purpose.
 
    Order steps so an interrupted run leaves a working tree.
-5. `## Critical files` — files to modify, current paths.
+5. `## Critical files` — files to modify, current paths, and files to create, marked `(new)` (`` `tests/regression/test_rounding.py` (new) ``).
 6. `## Reused functions and utilities` — `path:line — symbol — purpose`, or `None — fix is self-contained.`
 7. `## Verification` — run `$QUALITY_GATES` (name the configured command) plus the new test by name; add a manual repro step when the original failure needed a runtime trigger. End with: `When opening the PR, include "Fixes #<NNN>" in the body so the issue auto-closes on merge.`
-8. `## Out of scope` — forward-looking boundaries (surrounding refactors, adjacent hardening, other call sites).
+8. `## Rollout` *(optional)* — required when the fix adds or changes a migration, env var, secret, feature flag, scheduled job, external integration, infrastructure or deploy config: deploy-time prerequisites (secret and env var **names** per environment, never values), apply order, reversibility, post-deploy checks, rollback. Omit it otherwise.
+9. `## Out of scope` — forward-looking boundaries (surrounding refactors, adjacent hardening, other call sites).
 
 ### Record the plan pointer
 

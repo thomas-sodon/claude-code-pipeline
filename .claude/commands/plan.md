@@ -22,19 +22,21 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 - `--dry-run` — print the plan body to stdout; write nothing (no plan file, no pointer update) and change no git state.
 - `--slug=<slug>` — force the output slug. Must be kebab-case and ≤60 chars, else `error=invalid_argument`. A leading `plan-` is stripped, so `--slug=plan-foo` and `--slug=foo` both write `plan-foo.md`.
 - `--no-switch` — skip the switch to `$MAIN_BRANCH` (and its refresh) and plan against the branch currently checked out. Use it when the concern is about work in flight on this branch.
+- `--proposal=<path>` — the concern implements step(s) of this design doc (path relative to the working directory; if absent there and `PROPOSALS_DIR` is set, tried under it). See *Plan a proposal's steps*. A missing file → stop with `error=proposal_not_found` (checked after the switch, against the tree the plan is grounded in). A bare `--proposal` or a space-separated `--proposal <path>` → `error=invalid_argument`.
 
 An unrecognized `--`-prefixed token is never swallowed into the concern: stop with `error=invalid_argument`, naming the token and the recognized forms (a typo'd `--dryrun` or a space-separated `--slug foo` must not turn a write-nothing run into a real write). No concern text → stop with `error=missing_concern` and an example (`/plan the status endpoint recomputes the full report on every poll and should cache it per request`).
 
 ## Route the concern elsewhere first
 
-Run this text-only check **before** any git operation, so a routed-away run never moves the user off their branch:
+Run these two checks **before** any git operation, so a routed-away run never moves the user off their branch:
 
 - **The concern names a GitHub issue** (`#NNN` or an `.../issues/NNN` URL) → recommend `/bug-fix NNN`, which verifies the issue and writes a plan whose PR auto-closes it. Stop. A `#` that is plainly not an issue reference (a heading, a shell comment) does not trigger this.
+- **The tree has no code yet** (skipped under `--proposal`). The working directory holds no source code, tests, manifests or CI config outside `.git/`, `.claude/` and design docs → this is a product, not a change. Recommend `/roadmap <brief or concern>` (it writes `architecture.md` and `roadmap.md`, by default under `docs/design`), then `/bootstrap <dir>/architecture.md` once a person accepts it; when an `architecture.md` already exists, recommend only `/bootstrap`, and name any proposal that covers the concern (it builds after bootstrap). Stop with `error=greenfield`.
 
-Two more checks run after *Read the concern*, once its nouns are known:
+Two more checks run after *Read the concern*, once its nouns are known. Both are skipped under `--proposal`: the doc is the design and fixes the scope.
 
 - **A proposal already covers it.** When `$PROPOSALS_DIR` is set, grep it for the concern's nouns. If an open proposal/design doc covers this concern's substance (not merely the same module), stop and name it — `/impl <path-to-doc>` implements its next step.
-- **The concern is a structural class, not one change.** If it reads "keeps happening", "every fix adds another", or lands on code with a visible trail of point fixes, the right deliverable is a design doc that closes the class, not an increment plan. Say so and stop.
+- **The concern is a structural class, or too big for one PR.** If it reads "keeps happening", "every fix adds another", or lands on code with a visible trail of point fixes; or its core alone needs more than ~7 implementation steps, a step only a person can do (an account, a legal check, research), or design decisions across several components — the right deliverable is a design doc, not an increment plan. Recommend `/propose <concern>` and stop. A concern whose first slice is obvious is still planned (see *Scope to one increment*).
 
 These are recommendations, never delegations: do not invoke another command from inside this one.
 
@@ -71,6 +73,16 @@ Pin the concern down before touching code. Extract:
 
 If no observable can be extracted, stop with `error=concern_too_vague`, quote what you extracted, and name the specifics that would make it plannable.
 
+## Plan a proposal's steps
+
+Only under `--proposal`. The doc fixes the increment; grounding still decides how it lands in today's code. Never edit the doc.
+
+1. **Read the doc in full** — header, Design, Decisions, Security and privacy, Rollout and operations, Steps, Out of scope — and the architecture doc it names (`Architecture:`, relative to the doc's directory; default `architecture.md` beside it) where it exists. When `.claude/scripts/proposal-lint.py` exists, also run `python3 .claude/scripts/proposal-lint.py <doc> --json` and take the step numbers, titles, `Files`, `Depends on`, gates and checkbox states from its `steps` — the same parse the lane builder used; lint errors → stop with `error=doc_malformed`, quoting them (the fix is `/propose --revise <doc>`).
+2. **Pin the steps.** The steps the concern names (`Step 3 of …`, `Steps 3, 4 of …`) are the increment. A named number the doc lacks → stop with `error=proposal_step_not_found`; a named step that is human-gated → `error=step_human_gated`. A concern naming no step number: map it to the step(s) whose title and description it matches; none → `error=concern_too_vague`, listing the doc's pending code steps.
+3. **Their Files are the grounding targets.** A file without `(new)` is modified: read it in full plus its direct callers; missing → find its current path by name, else name it in an addendum (an unmerged earlier step may create it). A file marked `(new)` is created: take its location from the proposal and, when the area does not exist yet, from the architecture doc's `## Repository layout`; read its nearest siblings for conventions. A `(new)` file that already exists is planned as a modification, with an addendum.
+4. **The doc binds the plan.** Its Decisions, Security and privacy rules and Rollout and operations are constraints like `CLAUDE.md` invariants: the plan never contradicts them, and a collision is reported, never planned around.
+5. **Dependencies.** A named step whose `Depends on:` names a step still `[ ]` (outside the named set) → addendum naming it; `/impl` blocks if its work has not landed.
+
 ## Ground the concern in today's tree
 
 The plan must rest on code you read first-hand, not on the concern's description of it. Do not delegate this to subagents.
@@ -92,6 +104,7 @@ Use the **Explore** subagent for discovery only: usage patterns, prior implement
 1. State the **core**: the one change without which the concern is not addressed.
 2. Keep only what the core needs to be safe and testable; move tempting adjacent improvements to `## Out of scope`.
 3. If the core is still too big for one focused PR, plan its first slice. More than ~7 implementation steps signals the increment was not cut.
+   Under `--proposal`, the named steps are the increment: never cut them or move one to `## Out of scope`; steps 1–3 apply only to adjacent work beyond them.
 4. Order steps so an interrupted run leaves the tree working. Put risky behavior changes behind a flag defaulting to today's behavior when the project has such a convention.
 
 ### Forbidden remedies
@@ -118,16 +131,17 @@ When the stated remedy matches one of these, the plan carries a clean replacemen
 The plan reads as **freshly authored**: it does not quote the request, does not mention this command, and has no drift/comparison section.
 
 1. **`# Plan: <Title>`**
-2. **`## Context`** — what is wrong or missing, why it matters, the intended end state. Cite the target file and symbol once. No pasted concern text or log excerpts.
+2. **`## Context`** — what is wrong or missing, why it matters, the intended end state. Cite the target file and symbol once. No pasted concern text or log excerpts. Under `--proposal`, name the doc path and the step numbers implemented once.
 3. **`## Implementation steps`** — numbered, one increment only. Each step: a short title, the file(s) and symbol(s) touched, and a 1–3 sentence description. Ordering by shape:
    - **bug** — step 1 adds the regression test (file, test name, triggering inputs); step 2 applies the root-cause fix; optionally a step that makes the defect fail loudly and earlier. The test lands in the same commit as the fix — never a failing test alone.
    - **feature** — smallest working surface, then its tests, then wiring into its caller.
    - **refactor** — new structure alongside the old, move call sites, delete the old last. Name the characterization tests that prove equivalence.
    - **docs** — the drifted claim, the code that contradicts it, the corrected wording.
-4. **`## Critical files`** — files to be modified, by current path.
+4. **`## Critical files`** — files to be modified, by current path, and files to be created, marked `(new)` (`` `src/report/cache.ts` (new) ``).
 5. **`## Reused functions and utilities`** — `path — symbol — purpose` per helper to call instead of reimplementing; or the single bullet `None — change is self-contained.`
-6. **`## Verification`** — concrete end-to-end checks. Default to `$QUALITY_GATES` (and `$QUALITY_GATES_FAST` for iteration), name every new test explicitly, and add a one-line manual repro when the behavior needs a runtime trigger.
-7. **`## Out of scope`** — forward-looking boundaries ("Reworking the surrounding module is out of scope"), later increments, and constraints the concern ruled out.
+6. **`## Verification`** — concrete end-to-end checks. Default to `$QUALITY_GATES` (and `$QUALITY_GATES_FAST` for iteration), name every new test explicitly, and add a one-line manual repro when the behavior needs a runtime trigger. Under `--proposal`, carry each named step's `Acceptance:` in as a check, with the test or command that demonstrates it.
+7. **`## Rollout`** *(optional)* — required when the increment adds or changes a migration, env var, secret, feature flag, scheduled job, external integration, infrastructure or deploy config: deploy-time prerequisites (secret and env var **names** per environment, never values), apply order, reversibility, post-deploy checks, rollback. Omit it otherwise. `/create-pr` copies it into the PR as deploy notes.
+8. **`## Out of scope`** — forward-looking boundaries ("Reworking the surrounding module is out of scope"), later increments, and constraints the concern ruled out. Under `--proposal`, list the doc's other pending steps by number and title.
 
 ## Record the plan pointer
 
@@ -157,6 +171,7 @@ Add bullet addenda only when they apply:
 - The switch or refresh was skipped (dirty tree, unmerged branch, `--no-switch`, fetch failure, diverged main) — say which tree the plan was grounded in.
 - An open PR or branch already touches the implicated code (`$GH_WRAPPER gh pr list --search <noun>`) — name it.
 - `QUALITY_GATES` is missing from the pipeline config.
+- Under `--proposal`: the doc is not `Status: accepted` or `in-progress`; a named step depends on a pending step; a cited file is missing or a `(new)` file already exists; the doc collides with `CLAUDE.md` or the architecture doc — name each.
 
 Close with the next step: `/impl` (no argument needed — the pointer is recorded).
 
@@ -166,7 +181,7 @@ Under `--dry-run`, print the full plan body instead, clearly marked as not writt
 
 - Do not write code, tests, or docs; do not run the quality gates.
 - Do not commit, stage, push, open a PR, or create a branch.
-- Do not file or comment on issues, and do not author a design doc.
+- Do not file or comment on issues, and do not author a design doc (that is `/propose`). Never edit the doc `--proposal` names.
 - Do not enter plan mode or invoke other commands.
 - One concern per invocation. Two unrelated concerns → plan the first and say so, or stop with `error=concern_too_vague` if neither dominates.
 
@@ -176,4 +191,4 @@ Under `--dry-run`, print the full plan body instead, clearly marked as not writt
 - Writes go only to the resolved plan path and the pointer file, both outside the repo.
 - Never delete a plan file; the supersede rule overwrites one path in place.
 - No destructive git: no `reset --hard`, no force-push, no branch deletion, no history rewrite.
-- Redact tokens, `Bearer ` headers, API keys, and other credentials from anything quoted into the plan — plans are often pasted into PRs.
+- Redact tokens, `Bearer ` headers, API keys, and other credentials — and personal data (names, addresses, phone and account numbers) — from anything quoted into the plan; plans are often pasted into PRs.

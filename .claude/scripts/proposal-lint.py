@@ -84,8 +84,9 @@ class Doc(object):
 
 
 def read_lines(path):
-    with open(path, 'r', encoding='utf-8') as f:
-        return f.read().splitlines(True)
+    # newline='' keeps each line's own ending (LF or CRLF), so --tick rewrites nothing but the checkbox
+    with open(path, 'r', encoding='utf-8', newline='') as f:
+        return f.readlines()
 
 
 def parse(path):
@@ -194,7 +195,9 @@ def interpret_keys(doc, s):
         s['_depends_line'] = line
         s['has_depends'] = True
         v = COMMENT_RE.sub('', value).strip().rstrip('.')
-        if v.lower() not in ('', 'none', 'nothing', '-'):
+        if not v:
+            s['has_depends'] = False
+        elif v.lower() not in ('none', 'nothing', '-'):
             for tok in [t.strip() for t in v.split(',') if t.strip()]:
                 tok = re.sub(r'^(steps?|milestones?)\s+', '', tok, flags=re.I)
                 if tok.isdigit():
@@ -560,7 +563,9 @@ def derive_lanes(doc, args, cache):
             branch = stem + date
             built = False
             if heads is not None:
-                matches = sorted(h for h in heads if h.startswith(stem))
+                # the rest must be a date, not another lane's key: lane `api` must not match `api-v2-...`
+                matches = sorted(h for h in heads if h.startswith(stem) and h[len(stem):] and
+                                 (h[len(stem):] == date or not re.search(r'[-/]', h[len(stem):])))
                 if matches:
                     branch, built = matches[-1], True
             steps = lane['steps']

@@ -24,7 +24,7 @@ Any other tokens are free-form context (e.g. a findings list pasted from `/revie
 
 1. **Verify there is work.** `git status --porcelain`; if empty, stop — nothing to polish.
 
-2. **Gather the diff.** `git diff HEAD` (staged + unstaged), read every untracked file from `git status --porcelain` in full, and note the branch (`git rev-parse --abbrev-ref HEAD`). Recall this branch's **review-findings ledger** (below) so findings from a prior `/review-changes` session are in scope even without `$ARGUMENTS`.
+2. **Gather the diff.** `git diff HEAD` (staged + unstaged), read every untracked text file from `git status --porcelain` in full, and note the branch (`git rev-parse --abbrev-ref HEAD`). Recall this branch's **review-findings ledger** (below) so findings from a prior `/review-changes` session are in scope even without `$ARGUMENTS`. List every file added under a test-fixture or data directory (e.g. `fixtures/`, `__fixtures__/`, `testdata/`, `test/data/`, `data/`, `samples/`, `seeds/`) with its size and type (`file -b`), large and binary ones included — none is silently skipped; Step 4 judges each.
 
 3. **Understand the change.** Read every modified/added file in full, not just the hunks. Trace callers and tests with Grep where logic is non-trivial. Classify each file: bug fix, feature, refactor, config, test-only, docs. Check the change against the invariants and rules in the project's `CLAUDE.md` — a violation is a bug.
 
@@ -35,6 +35,8 @@ Any other tokens are free-form context (e.g. a findings list pasted from `/revie
    - Errors caught at the wrong level or swallowed silently
    - Type escape hatches hiding real type bugs
    - Command injection, path traversal, secrets or tokens leaking into logs
+   - Personal data (names, emails, addresses, phone or account numbers, identifiers) in fixtures, logs, error messages, analytics events, prompts sent to third-party APIs, or persisted data, judged against the `CLAUDE.md` invariants — breaking one is a bug
+   - A listed fixture or data file that could hold personal data or secrets with no provenance or redaction note beside it (a README in its directory, a header comment, a sidecar) — a concern; never invent the provenance, surface it
    - Leftover debug output, breakpoints, hard-coded paths, secrets
    - Test gaps: new functions, branches, or error paths without a test; tests that only cover the happy path; a bug fix without a regression test; tests that break the rules in `TEST_GUIDELINES` (e.g. real I/O, network, or sleeps where the project requires mocks)
 
@@ -99,5 +101,6 @@ Timestamps are ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
 - The only file written outside the working tree is the review-findings ledger under `~/.claude/reviews/`; a malformed or foreign ledger is never overwritten.
 - Never bypass a gate failure with a workaround — fix the root cause.
 - If a *fresh* fix would change observable behavior the user may not intend, surface it before applying; ledger findings are still fixed, with the decision recorded in the report.
-- If the working tree contains files that look like secrets (`.env`, credentials, tokens), stop and tell the user — never edit, stage, or delete them.
+- Gitignored local env files (`.env`, `.env.local`, …) are expected: never read, edit, stage, or delete them, and do not stop because one exists. Stop and tell the user only when a secret-looking file (`.env`, credentials, tokens, keys) is tracked, staged, or would be committed.
+- Never quote credentials or personal data into the report or the ledger; cite the file and line and redact the value.
 - If the same gate fails three times on the same root cause, stop and ask the user.
