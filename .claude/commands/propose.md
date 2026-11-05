@@ -68,6 +68,16 @@ Every path and symbol in the doc comes from this step, cited by file path and sy
 - **Explore** subagent for discovery only (usage patterns, prior implementations, other call sites): one call by default, up to 3 in parallel across layers, each with one specific question. It never substitutes for the reading above.
 - **Desk research.** Settle every assumption a source can settle — official docs, API limits, pricing pages, store and provider guidelines, regulators' FAQs (WebSearch / WebFetch), or a local source (a repo path and symbol, an installed tool's docs) — and cite it in the Decision that rests on it: a link with the date checked, a path and symbol, or the tool's name and version. Only what needs data or action a person must provide becomes a `Human gate: research` step. Web tools unavailable → list the question, with the source to check, under `## Risks and open questions`; never state it as fact.
 
+## Questions before assumptions
+
+A **blocking question** is one only the person can answer — what they intend, a requirement or constraint the source (the concern, the milestone and its brief, or the findings) leaves out or states two incompatible ways, a trade-off that is theirs to make, or a blocker whose way forward is their call — and whose plausible answers lead to materially different work. Settle yourself anything the tree, `CLAUDE.md`, the architecture and the other design docs or desk research can settle; never ask about it. Data a person must go and gather stays a `research` gate, and a choice that waits on evidence the plan produces (a go/no-go after an experiment, a sign-off on finished work) stays a `decision` gate; a choice the person can make now, from what they already know, that the design would be built on is a question. Revise mode: a finding only the person can settle (the source is silent or ambiguous on it, and the fix would choose for them) is a question, never a decline.
+
+- **One pass, before writing.** Collect every blocking question at the end of *Research what the tree cannot tell you*, before *Write the proposal* (revise mode: before applying any finding). Never guess the answer to one.
+- **Someone can answer** (an interactive session with a question tool, such as AskUserQuestion): ask them all at once, each with 2–4 concrete options and your recommended one first, and wait. The answers bind like explicit constraints.
+- **No one can answer** (the invoking prompt says the run is unattended, or there is no question tool): make no further change; stop with `error=needs_input` and print each question with an id (`q1`, `q2`, …), why it blocks (what changes with the answer), its options and the one you recommend. When the invoking prompt says to proceed on assumptions instead, take the recommended option and list the question with it under *Assumptions*.
+- **Answers handed in** by the invoking prompt bind the same way; never re-ask one.
+- **Everything else is an assumption:** take the smallest choice consistent with the sources and the surrounding code, and list each under **Assumptions** in the report. None stays silent.
+
 ## Write the proposal
 
 **File.** Concern mode: title ≤8 words describing the end state; slug from `--slug` or the title (lowercase, non-alphanumeric runs → `-`, collapsed, ≤60 chars at a word boundary); path `<proposals dir>/<slug>.md`. **Supersede check:** read the H1 and `## Context` of every proposal in the directory whose slug shares significant words; one covering the same concern → rebind the path to it and update it in place (*Updating an existing doc*). Milestone mode: the path from *Read the source*.
@@ -224,6 +234,7 @@ Print the resolved path as the final message:
 - A departure from an architecture decision, or a collision with a `CLAUDE.md` rule.
 - A finding left unapplied because it would shift a protected step number — the docs that must change with it; a built lane's step left as it is, and the follow-up step added instead.
 - Desk-research questions left open because web tools were unavailable.
+- **Assumptions** — each choice the source did not settle and the doc rests on (see *Questions before assumptions*).
 - Grounded on a branch other than `$MAIN_BRANCH`.
 
 Close with the next step: `/review-proposal <path>`. Under `--dry-run`, print the doc clearly marked as not written.

@@ -20,6 +20,8 @@ jobs:
         run: node ci/check-workflows.mjs .claude/workflows
       - name: Workflows invoke existing skills with documented flags
         run: node ci/check-skill-refs.mjs
+      - name: Workflows stop on blocking questions and route the answers
+        run: node ci/test-workflow-questions.mjs
       - name: proposal-lint tests
         run: python3 ci/test_proposal_lint.py
       - name: Valid fixtures lint clean

@@ -104,6 +104,16 @@ Every path and symbol in the plan comes from this step. Cite by file path and sy
 
 Use the **Explore** subagent for discovery only: usage patterns, prior implementations to reuse, other call sites of a helper being changed. One call by default; up to 3 in parallel only when the concern spans several layers. Give each the one-sentence observable, a short summary of the implicated code, and one specific question. Explore never substitutes for the first-hand reading above.
 
+## Questions before assumptions
+
+A **blocking question** is one only the person can answer — what they intend, a requirement or constraint the concern leaves out or states two incompatible ways, a trade-off that is theirs to make, or a blocker whose way forward is their call — and whose plausible answers lead to materially different work. Settle yourself anything the tree, `CLAUDE.md`, the design docs or desk research can settle; never ask about it. A concern with no observable at all is still `error=concern_too_vague`; one whose observable is clear but whose intended end state has two readings (which callers, which behaviour wins, what must stay compatible) is a question. Under `--proposal`, the doc's Decisions settle what they cover.
+
+- **One pass, before writing.** Collect every blocking question at the end of *Ground the concern in today's tree* and *Research what the concern does not say* (grounding settles most of what a concern leaves out). Never guess the answer to one.
+- **Someone can answer** (an interactive session with a question tool, such as AskUserQuestion): ask them all at once, each with 2–4 concrete options and your recommended one first, and wait. The answers bind like explicit constraints.
+- **No one can answer** (the invoking prompt says the run is unattended, or there is no question tool): make no further change; stop with `error=needs_input` and print each question with an id (`q1`, `q2`, …), why it blocks (what changes with the answer), its options and the one you recommend. When the invoking prompt says to proceed on assumptions instead, take the recommended option and list the question with it under *Assumptions*.
+- **Answers handed in** by the invoking prompt bind the same way; never re-ask one.
+- **Everything else is an assumption:** take the smallest choice consistent with the sources and the surrounding code, and list each under **Assumptions** in the report. None stays silent.
+
 ## Scope to one increment
 
 1. State the **core**: the one change without which the concern is not addressed.
@@ -169,6 +179,7 @@ Print the resolved output path as the final message:
 
 Add bullet addenda only when they apply:
 
+- **Assumptions** — each choice the concern did not settle and the plan rests on (see *Questions before assumptions*).
 - The stated remedy was dropped — which one, which forbidden pattern, and the replacement.
 - The concern collides with a project rule in `CLAUDE.md` — name it.
 - An existing plan was superseded — the path overwritten.
@@ -180,7 +191,7 @@ Add bullet addenda only when they apply:
 
 Close with the next step: `/impl` (no argument needed — the pointer is recorded).
 
-Under `--dry-run`, print the full plan body instead, clearly marked as not written. When a routing check or `error=` stop fired, report that and the recommended next action instead of a path.
+Under `--dry-run`, print the full plan body instead, clearly marked as not written. When a routing check or `error=` stop fired, report that and the recommended next action instead of a path; for `error=needs_input`, the questions.
 
 ## What to skip
 

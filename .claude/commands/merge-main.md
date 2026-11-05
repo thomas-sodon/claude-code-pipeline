@@ -29,6 +29,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
    - Produce a merged result that keeps **both** intents: the branch's intended change (as the plan states it, when there is one) *and* main's change. Never silently drop either side to match the plan.
    - Remove all conflict markers, `git add <file>`, and finish with `git commit --no-edit`.
    - For an ambiguous or high-risk resolution (both sides changed the same logic incompatibly), explain it to the user, citing the plan step or acceptance criterion that drove it.
+   - When neither the plan nor either side's intent decides which behaviour wins, never pick one: that is the person's call. `git merge --abort` and push nothing, then ask them, with the options (keep ours, keep theirs, a named combination) and the one you recommend; when no one can answer (the invoking prompt says the run is unattended, or there is no question tool), stop with `error=needs_input` and print that question instead.
 
 6. **Run the quality gates** in the foreground with the maximum tool timeout — never in the background, since a backgrounded run can be reaped when the turn yields. Run exactly one of these, with the text of `QUALITY_GATES` in place of `<QUALITY_GATES>`:
    ```
