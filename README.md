@@ -118,6 +118,13 @@ build each proposal with `proposal-build-chain`.
   after each fix until no `bug` or `concern` remains; a defect still standing stops
   the run before anything is pushed. Design docs get the same loop with
   `/review-proposal`.
+- **Questions before assumptions.** What only you can answer (your intent, a
+  requirement the brief leaves out or states two ways, a trade-off that is yours) is
+  asked, never guessed. A command asks you directly; a workflow stops with
+  `needs_input` and returns the questions, each with options and a recommendation,
+  so the session that ran it asks you and re-runs with your `answers`.
+  `brief-to-proposals` asks before any design is written. Everything else the
+  agents decide is listed as an assumption in the result.
 - **Gates decide, not the agent.** Your own `QUALITY_GATES` command must be green
   before the PR is opened and again after merging `main`.
 - **A human keeps the judgment.** You choose the concern or write the brief. You
@@ -174,7 +181,8 @@ docs/
 examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
 ci/                           checks: workflow syntax; every skill and flag the workflows call
-                              exists; the lint's tests and fixtures; every example design doc
+                              exists; the workflows stop on blocking questions and route the
+                              answers; the lint's tests and fixtures; every example design doc
                               in README, docs and commands lints clean
 .github/workflows/ci.yml      runs them, plus shellcheck and a gate-slot smoke test
 LICENSE
@@ -213,17 +221,22 @@ pipeline's files and `CLAUDE.md`, it writes design docs only: no code, no commit
    workflows and scripts into the repo and writes a base `CLAUDE.md`; a stop
    (`no_source`, `not_a_repo`, `no_remote`, `dirty_tree`) ends the run with
    `failed_at_seed`.
-1. **Architecture**: three sketches (validation, trust, operations first) are
+1. **Intake**: one read of the brief for blocking questions, the ones only you can
+   answer whose answer changes the design. Any → the run stops with `needs_input`
+   before anything is sketched or written. Pass `on_question: 'assume'` to proceed on
+   the recommended answers instead; every later stage then shares them.
+2. **Architecture**: three sketches (validation, trust, operations first) are
    scored by a judge and merged into one synthesis, which `/roadmap` builds on to
    write `architecture.md` and `roadmap.md`. Both are reviewed with
    `/review-proposal` and revised with `/propose --revise` until no `bug` or
    `concern` remains, or the run stops before any proposal is written.
-2. **Proposals**: `/propose --milestone=N` for each pending code milestone, each
-   reviewed and revised the same way.
-3. **Consistency**: one pass over every doc for interfaces that disagree, work
+3. **Proposals**: `/propose --milestone=N` for each pending code milestone, each
+   reviewed and revised the same way. A milestone that needs your answer waits;
+   the others carry on.
+4. **Consistency**: one pass over every doc for interfaces that disagree, work
    planned twice or not at all, and parts of the brief no doc covers; each is
    revised in the one doc it names, and every revised doc is reviewed again.
-4. **Lint**: `proposal-lint.py` on every doc, a preview of each proposal's lanes
+5. **Lint**: `proposal-lint.py` on every doc, a preview of each proposal's lanes
    (as if accepted), and the roadmap's next milestones.
 
 Every doc comes out `Status: draft`, for you to read, edit and accept. With
@@ -374,6 +387,11 @@ the behaviour already correct, and puts #218 in `needs_human`.
 - **No new repositories or remotes.** Nothing creates a repository or adds a remote:
   `/seed`, `brief-to-proposals` and `/bootstrap` need a clone you made, with an
   `origin` and no uncommitted changes to tracked files (`/seed` lets its own through).
+- **Asked, never guessed.** A stage that hits a question only you can answer stops
+  (`needs_input`) rather than building on a guess. The result's `relay` tells the
+  session that ran it to ask you and re-run with `answers` and `resumeFromRunId`;
+  each answer reaches the stage that asked and every later one
+  ([details](docs/REFERENCE.md#answering-questions)).
 - **A denied action stays denied.** If a permission check refuses something, the
   agent reports it as blocked and does not try another route.
 - **No `git stash` in parallel worktrees.** Every worktree of a repo shares one

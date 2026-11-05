@@ -1,6 +1,6 @@
 export const meta = {
   name: 'plan-to-merged-pr',
-  whenToUse: 'Take one concern — or one proposal lane — from plan to an open, review-clean PR, then babysit it. Also: build-only (stacked lanes, no PR), ship-only (open/ready a built branch — a stacked lane once its predecessors merged, or the bootstrap/<date> branch from /bootstrap) and monitor-only modes. See the pipeline README.',
+  whenToUse: 'Take one concern — or one proposal lane — from plan to an open, review-clean PR, then babysit it. Also: build-only (stacked lanes, no PR), ship-only (open/ready a built branch — a stacked lane once its predecessors merged, or the bootstrap/<date> branch from /bootstrap) and monitor-only modes. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
   description: 'Plan → impl → review/fix until clean → polish-until-clean → PR → monitor CI, comments and conflicts, for one concern or proposal lane',
   phases: [
     { title: 'Plan', detail: '/plan (or a project planning skill) at medium effort' },
@@ -37,6 +37,12 @@ export const meta = {
 //   commit_trailers?: string[] lines the workflow's own commits end with (default ['Co-Authored-By: Claude <noreply@anthropic.com>'])
 //   max_review_rounds?: 5, max_polish?: 6, max_monitor_rounds?: 10 (max_rounds is accepted as an alias)
 //   efforts?: { plan, impl, review, fix, polish, merge_check, pr, monitor }  (pr unset = the session's effort, as /create-pr always ran)
+//   on_question?: 'stop'|'assume'  default 'stop': a stage that hits a blocking question (one only the person can answer) stops the
+//                              run with status needs_input and the questions; 'assume' takes each recommended option instead and
+//                              lists it in the result's assumptions
+//   answers?: [{ id, answer }] the questions a needs_input result returned, each with the person's answer (or { <id>: answer });
+//                              each answer reaches the stage that asked and every later stage, so a resume (resumeFromRunId)
+//                              replays the stages before it from the record
 // Monitor-only mode: { pr: number, branch: string, dir?: string } skips straight to the Monitor phase.
 const A = typeof args === 'string' ? { concern: args } : (args || {})
 const CONCERN = A.concern
@@ -119,6 +125,49 @@ const PREDS_CHECK = PREDS.length
   ? `First confirm each of ${PREDS.map(n => '#' + n).join(', ')} reads MERGED (gh pr view <n> --json state). If any does not, change nothing and report blocked=true naming it. `
   : ''
 const WORK = GUARD + WHERE + GATES
+// Questions before assumptions. No one can answer an agent mid-run, so a stage that needs the person's answer returns its
+// questions and the run stops with needs_input; the caller asks the person and re-runs with args.answers.
+// Stage kinds in run order: an answer reaches the kind that asked and every later kind, never an earlier one, so a resume
+// replays the earlier stages from the record.
+const KINDS = ['plan', 'impl', 'fix', 'merge_check', 'monitor']
+const ON_Q = A.on_question === 'assume' ? 'assume' : 'stop'
+const kindOrder = id => { const i = KINDS.indexOf(String(id || '').split('.')[0]); return i < 0 ? 0 : i }
+const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers || {}).map(([id, answer]) => ({ id, answer })))
+  .filter(a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
+const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No one can answer a question mid-run, so never wait for one and never use a question tool. ` +
+  `A blocking question is one only the person can answer (what they intend, a requirement the concern, plan or design doc leaves out or states two ways, a trade-off that is theirs to make, or a blocker whose way forward is their call) and whose plausible answers lead to materially different work. ` +
+  `Settle yourself anything the tree, CLAUDE.md, the plan, the design docs or research can settle; never ask about it. ` +
+  (ON_Q === 'assume'
+    ? `The person chose to proceed on assumptions: for each blocking question, take the option you recommend and report it in assumptions as "<question> -> <option taken>". `
+    : `Never guess the answer to a blocking question: stop there, change nothing further, and return every such question (all of them, in one pass) in questions, each with why it blocks, 2-4 concrete options and the one you recommend. `) +
+  `Report in assumptions every other choice you made that the inputs did not settle (empty when none). `
+const answersFor = kind => {
+  const mine = ANSWERS.filter(a => kindOrder(a.id) <= KINDS.indexOf(kind))
+  return mine.length
+    ? `Answers from the person to questions an earlier run raised (binding, like an explicit constraint; never re-ask them): ${JSON.stringify(mine.map(a => ({ question: a.question || a.id, answer: a.answer })))}\n`
+    : ''
+}
+const ASK = kind => ASK_RULE + answersFor(kind)
+const QUESTION = {
+  type: 'object',
+  properties: {
+    question: { type: 'string' },
+    why: { type: 'string', description: 'what changes with the answer: the work each option leads to' },
+    options: { type: 'array', items: { type: 'string' }, description: '2-4 concrete options' },
+    recommended: { type: 'string', description: 'the option you recommend, and why in one clause' },
+  },
+  required: ['question', 'why', 'options', 'recommended'],
+}
+const QA = {
+  questions: { type: 'array', items: QUESTION, description: 'blocking questions only the person can answer; non-empty means you stopped there and changed nothing further' },
+  assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice you made that the inputs did not settle' },
+}
+const ASSUMED = []
+const noteAssumptions = (kind, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) if (a) ASSUMED.push({ stage: kind, assumption: a }); return r }
+const asked = r => !!(r && Array.isArray(r.questions) && r.questions.length)
+const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
+  `Then re-run this workflow with the same args plus answers (each question's id with the person's answer) and resumeFromRunId set to this run's id: ` +
+  `the stages before the one that asked replay from the record and the work in the checkout is kept.`
 // Review scope: a stacked branch's HEAD carries its bases' commits, so review only this branch's own change.
 // `bases` are ordered so the last one contains the others.
 const REVIEW_SCOPE = BASES.length ? `all:origin/${BASES[BASES.length - 1]}` : `all:origin/${MAIN}`
@@ -133,8 +182,9 @@ const PLAN_SCHEMA = {
     plan: { type: 'string', description: 'full plan text: files, changes, tests, verification' },
     stopped: { type: 'boolean', description: 'true if the planning skill stopped without writing a plan (a routing recommendation or an error= stop)' },
     stop_reason: { type: 'string', description: 'when stopped: the skill\'s error code or recommendation, verbatim' },
+    ...QA,
   },
-  required: ['branch', 'plan', 'stopped'],
+  required: ['branch', 'plan', 'stopped', 'questions', 'assumptions'],
 }
 const STEP_SCHEMA = {
   type: 'object',
@@ -142,11 +192,12 @@ const STEP_SCHEMA = {
     summary: { type: 'string' },
     files_changed: { type: 'array', items: { type: 'string' } },
     gates_green: { type: 'boolean', description: 'the project quality gates all pass' },
-    stopped: { type: 'boolean', description: 'true if the skill stopped before implementing (a plan-review blocker, an error= stop, or a question it could not get answered)' },
+    stopped: { type: 'boolean', description: 'true if the skill stopped before implementing (a plan-review blocker, an error= stop, or blocking questions, which go in questions)' },
     stop_reason: { type: 'string', description: 'when stopped: the blocker or error, verbatim' },
     already_implemented: { type: 'boolean', description: 'true if the plan\'s end state is already in this checkout (e.g. a re-run on a kept worktree whose earlier run built it), so there was nothing to change' },
+    ...QA,
   },
-  required: ['summary', 'files_changed', 'gates_green', 'stopped', 'already_implemented'],
+  required: ['summary', 'files_changed', 'gates_green', 'stopped', 'already_implemented', 'questions', 'assumptions'],
 }
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -199,6 +250,7 @@ const ACTION_SCHEMA = {
     handled: { type: 'integer', description: 'items handled (comments replied to / conflicts resolved / CI failures fixed)' },
     remaining: { type: 'integer', description: 'items still needing action after this step' },
     summary: { type: 'string' },
+    ...QA,
   },
   required: ['pushed', 'handled', 'remaining', 'summary'],
 }
@@ -213,8 +265,9 @@ const FIX_SCHEMA = {
       items: { type: 'object', properties: { finding: { type: 'string' }, reason: { type: 'string' } }, required: ['finding', 'reason'] },
     },
     gates_green: { type: 'boolean' },
+    ...QA,
   },
-  required: ['summary', 'declined', 'gates_green'],
+  required: ['summary', 'declined', 'gates_green', 'questions', 'assumptions'],
 }
 const MERGE_CHECK_SCHEMA = {
   type: 'object',
@@ -226,8 +279,9 @@ const MERGE_CHECK_SCHEMA = {
     gates_green: { type: 'boolean' },
     pushed: { type: 'boolean', description: 'true only if the branch was pushed in this step' },
     pushed_sha: { type: 'string' },
+    ...QA,
   },
-  required: ['blocked', 'merge_check', 'gates_green', 'pushed'],
+  required: ['blocked', 'merge_check', 'gates_green', 'pushed', 'questions', 'assumptions'],
 }
 const SHIP_PR_SCHEMA = {
   type: 'object',
@@ -245,7 +299,17 @@ const blocking = list => list.filter(f => f.severity === 'bug' || f.severity ===
 
 let plan = null, impl = null, pr = null, findings = [], clean = false, reviewClean = SHIP_ONLY ? null : false
 let BRANCH = A.branch || null
-const done = (status, extra) => ({ branch: BRANCH, plan: plan && plan.plan, impl, review_clean: reviewClean, polish_clean: clean, status, ...extra })
+const done = (status, extra) => ({ branch: BRANCH, plan: plan && plan.plan, impl, review_clean: reviewClean, polish_clean: clean, status, assumptions: ASSUMED, ...extra })
+// A stage returned blocking questions: stop here, before anything later builds on a guess.
+const needsInput = (kind, r, extra) => {
+  const questions = r.questions.map((q, i) => ({ id: `${kind}.q${i + 1}`, stage: kind, ...q }))
+  log(`${kind}: ${questions.length} question(s) only the person can answer — stopping (status needs_input)`)
+  for (const q of questions) log(`  ${q.id}: ${q.question} (recommended: ${q.recommended})`)
+  const relay = kind === 'monitor'
+    ? RELAY.replace(/ and resumeFromRunId set to this run's id:.*$/, `, in monitor-only mode ({ pr, branch, dir } from this result), so the PR is observed afresh.`)
+    : RELAY
+  return done('needs_input', { stage: kind, questions, relay, ...(extra || {}) })
+}
 if (MONITOR_ONLY) {
   pr = { pr_number: A.pr, url: `PR #${A.pr}` }
   log(`Monitor-only mode for PR #${A.pr} (${BRANCH})`)
@@ -285,12 +349,15 @@ if (MONITOR_ONLY) {
         return { branch: BRANCH, plan: A.plan_text }
       })
       : await agent(
-      WORK + setup + skillCall +
+      WORK + ASK('plan') + setup + skillCall +
       (CONTEXT ? `Scout context already found: ${CONTEXT}\n` : '') +
-      `Do NOT stop for interactive approval or plan mode — produce the plan directly. ` + branchAfter +
+      `Do NOT stop for interactive approval or plan mode — produce the plan directly, unless a blocking question stops it (see QUESTIONS): ` +
+      `then write no plan file, create no branch, and return the questions with branch and plan empty. ` + branchAfter +
       `The plan must list each acceptance criterion with its current status, the ordered per-file edits, the tests, and the gate commands. Return the branch and the full plan.`,
       opts('plan', 'Plan', 'plan', PLAN_SCHEMA),
     )
+    noteAssumptions('plan', plan)
+    if (asked(plan)) { const q = plan; plan = null; return needsInput('plan', q) }
     if (plan && plan.stopped) { log(`Planner stopped: ${plan.stop_reason || 'no reason given'}`); return done('failed_at_plan', { stop_reason: plan.stop_reason || '' }) }
     if (!plan) return done('failed_at_plan')
     BRANCH = plan.branch
@@ -300,10 +367,13 @@ if (MONITOR_ONLY) {
     // ---- Implement
     phase('Implement')
     impl = await agent(
-      WORK + `You are on branch ${BRANCH}. Invoke the Skill tool with skill "impl", and implement this plan (do not wait for approval). ${AUTHORITATIVE}` +
+      WORK + ASK('impl') + `You are on branch ${BRANCH}. Invoke the Skill tool with skill "impl", and implement this plan (do not wait for approval of a clean review or of concerns alone; ` +
+      `a blocker or a load-bearing detail the plan leaves open whose resolution is the person's call is a blocking question, per QUESTIONS). ${AUTHORITATIVE}` +
       `Include/adjust tests. Run ${GATE_CMDS}. Do not commit.`,
       opts('impl', 'Implement', 'impl', STEP_SCHEMA),
     )
+    noteAssumptions('impl', impl)
+    if (asked(impl)) return needsInput('impl', impl)
     if (!impl) return done('failed_at_impl')
     // A re-run on a kept worktree finds its earlier run's work in place: review that work instead of failing the lane.
     if (impl.already_implemented && (impl.stopped || !impl.files_changed.length)) {
@@ -323,7 +393,7 @@ if (MONITOR_ONLY) {
     let fixes = 0, reviewed = false
     for (let round = 1; ; round++) {
       const review = await agent(
-        WORK + `On branch ${BRANCH} (changes may be uncommitted), invoke the Skill tool with skill "review-changes"${REVIEW_SCOPE ? ` with args "${REVIEW_SCOPE}"` : ''}.${SCOPE_NOTE} ${frame}` +
+        WORK + answersFor('fix') + `On branch ${BRANCH} (changes may be uncommitted), invoke the Skill tool with skill "review-changes"${REVIEW_SCOPE ? ` with args "${REVIEW_SCOPE}"` : ''}.${SCOPE_NOTE} ${frame}` +
         `Report every finding (bug/concern/suggestion/nit), verified against the code. Do not edit files and do not change git state. ` +
         `Set completed=false if the skill stopped without reviewing (an empty findings list must mean a real, clean review).` +
         (history.length ? `\nEarlier rounds and what the fixer did (confirm each is resolved; do not re-report fixed items or ones validly declined below):\n${JSON.stringify(history, null, 1)}` : ''),
@@ -337,10 +407,13 @@ if (MONITOR_ONLY) {
       if (!defects.length && (!findings.length || fixes >= 1 || fixes >= MAX_REVIEW)) { reviewClean = true; break }
       if (fixes >= MAX_REVIEW) break
       const fix = await agent(
-        WORK + PROPOSAL_CTX + `On branch ${BRANCH}, validate and fix these review findings; decline any you can verify is wrong and give the reason:\n` +
+        WORK + ASK('fix') + PROPOSAL_CTX + `On branch ${BRANCH}, validate and fix these review findings; decline any you can verify is wrong and give the reason. ` +
+        `A finding whose fix is the person's call (a product or trade-off choice neither the plan nor the design doc settles) is a blocking question, per QUESTIONS: never decline it or pick a side for them:\n` +
         JSON.stringify(findings, null, 2) + `\nRe-run the relevant quality gates. Do not commit.`,
         opts(`apply-review-fixes-${round}`, 'Review', 'fix', FIX_SCHEMA),
       )
+      noteAssumptions('fix', fix)
+      if (asked(fix)) return needsInput('fix', fix, { review_findings: findings })
       if (!fix) { reviewed = false; break }
       fixes++
       history.push({ round, findings, fixed: fix.summary, declined: fix.declined })
@@ -359,7 +432,7 @@ if (MONITOR_ONLY) {
     const MAX_POLISH = A.max_polish ?? 6
     for (let i = 1; i <= MAX_POLISH && !clean; i++) {
       const p = await agent(
-        WORK + PROPOSAL_CTX + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". Fix every bug found and run the quality gates. ` +
+        WORK + PROPOSAL_CTX + answersFor('fix') + `On branch ${BRANCH}, invoke the Skill tool with skill "polish". Fix every bug found and run the quality gates. ` +
         `Report how many issues you found and fixed this round (0 if the diff was already clean) and whether gates are green.`,
         opts(`polish-${i}`, 'Polish', 'polish', POLISH_SCHEMA),
       )
@@ -373,12 +446,14 @@ if (MONITOR_ONLY) {
   // ---- Commit, then merge check; push here only in build-only mode
   phase('PR')
   const mc = await agent(
-    WORK + AUTH + PROPOSAL_CTX + (SHIP_ONLY ? PREDS_CHECK : '') + `On branch ${BRANCH}:\n` +
+    WORK + AUTH + PROPOSAL_CTX + ASK('merge_check') + (SHIP_ONLY ? PREDS_CHECK : '') + `On branch ${BRANCH}:\n` +
     (STEPS.length
       ? `0. Mark the proposal steps this change implements as landed: run python3 .claude/scripts/proposal-lint.py ${A.proposal} --tick ${STEPS.join(',')} (if that script is missing, change only "[ ]" to "[x]" on the lines of steps ${STEPS.join(', ')} under "## Steps" in ${A.proposal}, nothing else). Stage ${A.proposal} with the change.\n`
       : '') +
     `1. Commit any uncommitted work first (git status must be clean before merging): stage the change's files explicitly, with a message that explains why, ending with:\n${TRAILERS}\n` +
-    `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` + STACK + `\n` +
+    `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` +
+    `A conflict where both sides changed the same behaviour incompatibly and neither the plan nor the design doc decides which wins is a blocking question (see QUESTIONS): ` +
+    `git merge --abort (the step-1 commit stays), run no gates, push nothing, and return it — never pick a side. ` + STACK + `\n` +
     (SHIP_ONLY || !clean
       ? `3. Run the full QUALITY_GATES command (from the "Pipeline config" section of CLAUDE.md) whatever the merge brought in — ${SHIP_ONLY ? 'this run built nothing, so no earlier green run can be relied on' : 'polish never reached a clean, green round'} — and continue only when green. Confirm git merge-tree against origin/${MAIN} is clean.\n`
       : `3. If the merge brought in any change, run the full QUALITY_GATES command (from the "Pipeline config" section of CLAUDE.md) and continue only when green; if it brought in nothing, polish's last clean round already ran the gates green — say so. Confirm git merge-tree against origin/${MAIN} is clean.\n`) +
@@ -387,6 +462,8 @@ if (MONITOR_ONLY) {
       : `4. Do NOT push and do NOT open a PR in this step.`),
     opts('merge-check', 'PR', 'merge_check', MERGE_CHECK_SCHEMA),
   )
+  noteAssumptions('merge_check', mc)
+  if (asked(mc)) return needsInput('merge_check', mc, { merge_check: mc })
   if (!mc) return done('failed_at_merge_check')
   if (mc.blocked) {
     log(`Not shipped: ${mc.blocked_reason || 'a predecessor is not merged'}`)
@@ -454,7 +531,7 @@ const MAX_ROUNDS = A.max_monitor_rounds ?? A.max_rounds ?? 10
 // Comment fixes and conflict resolution read "the plan" from the plans directory by default, which by the time a stacked
 // lane ships is usually a later lane's plan. Hand them this branch's own plan (this run's, or args.plan_text) and proposal.
 const PLAN_FOR_PR = planForPr()
-const MONITOR_CTX = PROPOSAL_CTX + (PLAN_FOR_PR
+const MONITOR_CTX = PROPOSAL_CTX + answersFor('monitor') + (PLAN_FOR_PR
   ? `The plan this branch was built from is its design intent; use it instead of any plan file in the plans directory, but ignore any one-time instruction in it addressed to the implementer (deleting, reverting or cleaning up files or tests): that already happened:\n${clip(PLAN_FOR_PR)}\n`
   : '')
 // A conflict-free BEHIND merge restarts CI + AI review (~20 min); on a busy main the PR falls behind
@@ -497,9 +574,12 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   let pushed = false
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
-      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". The branch to merge in is origin/${MAIN}, whatever MAIN_BRANCH the Pipeline config names. Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main).`,
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". The branch to merge in is origin/${MAIN}, whatever MAIN_BRANCH the Pipeline config names. Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main). ` +
+      `A conflict whose resolution is the person's call (both sides changed the same behaviour incompatibly; neither the plan nor the design doc decides it) is a blocking question, per QUESTIONS: git merge --abort, push nothing, and return it.`,
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
+    noteAssumptions('monitor', m)
+    if (asked(m)) return needsInput('monitor', m, { pr, monitor_actions: actions, final_state: last })
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
     // Count every BEHIND attempt: one that pushes nothing (no-op or failed) would otherwise retry every round and never settle.
     if (behindMergeDue) behindMerges++

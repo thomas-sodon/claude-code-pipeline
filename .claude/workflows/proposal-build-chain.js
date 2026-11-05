@@ -1,7 +1,7 @@
 export const meta = {
   name: 'proposal-build-chain',
   description: 'Build a proposal\'s lanes as stacked chains, each lane through plan-to-merged-pr in build-only mode (plan → /impl → review/fix until clean → polish → merge check → push, no PR); lanes come from args.lanes or are derived from the proposal\'s step list',
-  whenToUse: 'Implementing the steps of a proposal / design doc as stacked lanes; each lane is later shipped with plan-to-merged-pr {ship_only: true} once every PR below it has merged. Pass { proposal, dir, root, date } to derive the lanes from the doc, or { lanes } to give them by hand. See the pipeline README.',
+  whenToUse: 'Implementing the steps of a proposal / design doc as stacked lanes; each lane is later shipped with plan-to-merged-pr {ship_only: true} once every PR below it has merged. Pass { proposal, dir, root, date } to derive the lanes from the doc, or { lanes } to give them by hand. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
   phases: [
     { title: 'Derive', detail: 'proposal-lint.py --lanes on the proposal as it is on main (derive mode only)' },
     { title: 'Lanes', detail: 'one plan-to-merged-pr build per lane, in stack order; independent chains run at the same time' },
@@ -31,6 +31,9 @@ export const meta = {
 //   another doc, on an unfinished roadmap milestone, on the proposal's acceptance (a draft: proposal_not_accepted),
 //   on a Source: roadmap milestone that does not resolve (milestone_unresolved) or on a blocked lane before them are
 //   reported as blocked, never built (the blocking reasons in docs/PROPOSALS.md).
+// Both modes: on_question ('stop' | 'assume') passes through to every lane. A lane whose run stops with needs_input carries
+//   its questions (each tagged with the lane's key) up into this result; re-run with the same args plus
+//   answers: [{ lane, id, answer }], and each lane gets only its own answers.
 const A = args || {}
 const DERIVE = !A.lanes && !!A.proposal
 if (!DERIVE && (!A.lanes || !A.lanes.length)) throw new Error('proposal-build-chain: pass args.lanes, or args.proposal (with dir and root) to derive the lanes from the proposal (see the pipeline README)')
@@ -38,7 +41,13 @@ if (A.lanes && A.proposal) throw new Error('proposal-build-chain: pass args.lane
 if (DERIVE && (!A.dir || !A.root)) throw new Error('proposal-build-chain: derive mode needs args.dir (a checkout of the repo) and args.root (where the lane worktrees go)')
 const MAIN = A.main_branch || 'main'
 const SHARED = {}
-for (const k of ['planner', 'gate', 'main_branch', 'commit_trailers', 'max_review_rounds', 'max_polish', 'efforts', 'allow_draft']) if (A[k] !== undefined) SHARED[k] = A[k]
+for (const k of ['planner', 'gate', 'main_branch', 'commit_trailers', 'max_review_rounds', 'max_polish', 'efforts', 'allow_draft', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
+// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
+const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
+const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
+const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
+  `Then re-run proposal-build-chain with the same args (the same date) plus answers: each question's lane and id with the person's answer. ` +
+  `Lanes already pushed come back already_built; the lane that asked builds again in its kept worktree with its answers.`
 // Settings the later ship-only runs need, carried into the ship plan's args.
 const SHIP_SHARED = {}
 for (const k of ['main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers']) if (A[k] !== undefined) SHIP_SHARED[k] = A[k]
@@ -52,8 +61,10 @@ async function buildLane(l) {
   log(`Lane ${l.key}: building ${l.branch}${l.bases && l.bases.length ? ` on ${l.bases.join(', ')}` : ''}`)
   let r = null
   try {
+    const answers = laneAnswers(l.key)
     r = await workflow('plan-to-merged-pr', {
       ...SHARED,
+      ...(answers.length ? { answers } : {}),
       ...(l.planner_args ? { planner_args: l.planner_args } : {}),
       ...(l.steps && l.steps.length ? { proposal_steps: l.steps } : {}),
       concern: l.concern,
@@ -68,7 +79,8 @@ async function buildLane(l) {
   }
   const status = (r && r.status) || 'failed'
   log(`Lane ${l.key}: ${status}`)
-  return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result: r }
+  const questions = status === 'needs_input' ? ((r && r.questions) || []).map(q => ({ lane: l.key, ...q })) : []
+  return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result: r, ...(questions.length ? { questions, relay: RELAY } : {}) }
 }
 
 if (!DERIVE) {
@@ -171,9 +183,11 @@ const ship_plan = chains.filter(Boolean).map(c => {
   }
 })
 const built = chains.filter(Boolean).flatMap(c => c.lanes)
+const questions = built.flatMap(r => r.questions || [])
 const allOk = built.length && built.every(r => r.status === 'pushed' || r.status === 'already_built') && chains.every(c => c && !c.not_built.length)
 return {
-  status: !L.chains.length ? (L.blocked && L.blocked.length ? 'all_blocked' : 'nothing_to_build') : allOk ? 'pushed' : 'partial',
+  status: !L.chains.length ? (L.blocked && L.blocked.length ? 'all_blocked' : 'nothing_to_build') : allOk ? 'pushed' : questions.length ? 'needs_input' : 'partial',
+  ...(questions.length ? { questions, relay: RELAY } : {}),
   proposal: A.proposal,
   source: derived.source,
   chains: chains.filter(Boolean),

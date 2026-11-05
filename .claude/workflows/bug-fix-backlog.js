@@ -1,7 +1,7 @@
 export const meta = {
   name: 'bug-fix-backlog',
   description: 'Triage open bug issues with /bug-fix, adversarially verify each verdict (reproduce + refute), close the confirmed-fixed ones, and take each confirmed bug through plan-to-merged-pr',
-  whenToUse: 'Walking the open bug backlog: one lane per issue (or per group of issues that share a code site), each triaged, verified and shipped as its own PR. See the pipeline README.',
+  whenToUse: 'Walking the open bug backlog: one lane per issue (or per group of issues that share a code site), each triaged, verified and shipped as its own PR. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
   phases: [
     { title: 'Triage', detail: '/bug-fix <n> --dry-run per issue, in the lane worktree' },
     { title: 'Verify', detail: 'plan verdicts: failing regression test + skeptic; close verdicts: two refuters' },
@@ -16,8 +16,9 @@ export const meta = {
 //   ship    — default true; false = build only (push, no PR)
 //   close   — default true; false = report confirmed-fixed issues instead of closing them
 //   efforts — { triage, verify, close } for this workflow's stages; the whole object is also passed to plan-to-merged-pr
-//   gate, main_branch, ai_review_check, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds, efforts
-//             and ship: false are passed through to plan-to-merged-pr; no other key is
+//   gate, main_branch, ai_review_check, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds, efforts,
+//             on_question and ship: false are passed through to plan-to-merged-pr; no other key is
+//   answers — [{ lane, id, answer }]: answers to the questions a lane's needs_input result returned; each lane gets only its own
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
@@ -30,8 +31,14 @@ const MAIN = A.main_branch || 'main'
 const GATE = A.gate !== undefined ? A.gate : ''
 const EFF = { triage: 'medium', verify: 'high', close: 'low', ...(A.efforts || {}) }
 const SHARED = {}
-for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts']) if (A[k] !== undefined) SHARED[k] = A[k]
+for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
 if (A.ship === false) SHARED.ship = false
+// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
+const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
+const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
+const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
+  `Then re-run bug-fix-backlog with the same args (the same date) plus answers: each question's lane and id with the person's answer. ` +
+  `Issues already closed or shipped are re-checked and skipped; the lane that asked runs again in its kept worktree with its answers.`
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
 const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
@@ -333,8 +340,10 @@ const results = await pipeline(
       (dropped.length ? `\n\nOUT OF SCOPE: drop the plan sections for ${dropped.map(n => '#' + n).join(', ')} (not confirmed), delete any regression test written for them (${humanTests.join(', ') || 'none recorded; the reproducer may have failed before reporting, so check the test files for uncommitted ones written for them'}), and do not claim to fix them.${deleteSparing}\n` : '')
     let r = null
     try {
+      const answers = laneAnswers(l.key)
       r = await workflow('plan-to-merged-pr', {
         ...SHARED,
+        ...(answers.length ? { answers } : {}),
         concern,
         plan_text: planText,
         dir: l.dir,
@@ -346,7 +355,9 @@ const results = await pipeline(
     }
     const status = (r && r.status) || 'failed'
     log(`${l.key}: ${status}${r && r.pr ? ` (${r.pr.url})` : ''}`)
-    return { ...summary, status, spared_tests: spared, pr: r && r.pr, review_clean: r && r.review_clean, polish_clean: r && r.polish_clean, final_state: r && r.final_state }
+    const questions = status === 'needs_input' ? ((r && r.questions) || []).map(q => ({ lane: l.key, ...q })) : []
+    return { ...summary, status, spared_tests: spared, pr: r && r.pr, review_clean: r && r.review_clean, polish_clean: r && r.polish_clean, final_state: r && r.final_state,
+      ...(questions.length ? { questions, relay: RELAY } : {}) }
   },
 )
 

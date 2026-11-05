@@ -177,6 +177,9 @@ request that cannot be met; 2 = usage error or unreadable file. `--lanes`,
   max_review_rounds: 5, max_polish: 6, max_monitor_rounds: 10,   // max_rounds is an alias of max_monitor_rounds
   efforts: { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low' },
                                    // efforts.pr (unset) sets /create-pr's effort; unset keys inherit the session's
+  on_question: 'stop',             // 'stop' = a blocking question ends the run with needs_input; 'assume' = take the
+                                   // recommended option and list it in the result's assumptions
+  answers: [{ id: 'plan.q1', answer: '...' }],   // answers to a needs_input result's questions (see Answering questions)
 }
 ```
 
@@ -198,8 +201,9 @@ default `undated`). `root` is required unless every lane gives its own `dir`
 `{ triage: 'medium', verify: 'high', close: 'low' }`.
 Only `gate`, `main_branch`, `ai_review_check`, `commit_trailers`,
 `max_review_rounds`, `max_polish`, `max_monitor_rounds`, `efforts` (the whole
-object, so it may carry `plan-to-merged-pr`'s keys too) and `ship: false` are passed
-through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or a
+object, so it may carry `plan-to-merged-pr`'s keys too), `on_question` and
+`ship: false` are passed through to `plan-to-merged-pr`; `answers` (each with the
+`lane` it belongs to) go to their own lane only. Lanes must not share a key, an issue, a `dir` or a
 `branch`.
 
 `brief-to-proposals` (pass exactly one of `brief` and `concern`):
@@ -221,7 +225,9 @@ through to `plan-to-merged-pr`. Lanes must not share a key, an issue, a `dir` or
   max_milestones: 1,               // propose at most the first N of those, in roadmap order (try the flow on one)
   force: false,                    // let /roadmap overwrite architecture.md / roadmap.md (never once a milestone is ticked)
   max_review_rounds: 3,            // revise rounds per doc
-  efforts: { sketch: 'medium', judge: 'high', roadmap: 'high', propose: 'medium', review: 'high', revise: 'medium', consistency: 'high', lint: 'low' },
+  efforts: { intake: 'medium', sketch: 'medium', judge: 'high', roadmap: 'high', propose: 'medium', review: 'high', revise: 'medium', consistency: 'high', lint: 'low' },
+  on_question: 'stop',             // 'assume' = proceed on the recommended answers; the Intake's are shared by every later stage
+  answers: [{ id: 'intake.q1', answer: '...' }],  // answers to a needs_input result's questions
 }
 ```
 
@@ -234,8 +240,9 @@ findings about any other doc are deferred to the Consistency phase. Concern mode
 has no Consistency phase, so its result returns those as `deferred_findings`.
 
 `proposal-build-chain` has two modes; `planner`, `gate`, `main_branch`,
-`commit_trailers`, `max_review_rounds`, `max_polish`, `efforts` and `allow_draft`
-pass through to every lane in both. `ai_review_check` and `required_checks` are
+`commit_trailers`, `max_review_rounds`, `max_polish`, `efforts`, `allow_draft` and
+`on_question` pass through to every lane in both, and each of `answers` (with the
+`lane` it belongs to) to its own lane only. `ai_review_check` and `required_checks` are
 not used to build: derive mode copies them, with `main_branch`, `gate` and
 `commit_trailers`, into each `ship_plan` entry's args.
 
@@ -286,6 +293,7 @@ Every result carries a `status`.
 `plan-to-merged-pr`:
 
 - `pushed` (build-only)
+- `needs_input` — a stage (`stage`: `plan`, `impl`, `fix`, `merge_check` or `monitor`) hit questions only the person can answer and stopped there, changing nothing further; `questions` lists them and `relay` says what to do (see [Answering questions](#answering-questions))
 - `failed_at_plan`, `failed_at_impl`
 - `review_failed`, `blocked_at_review` (also in ship-only, after a conflicted merge)
 - `blocked_at_predecessors`
@@ -293,11 +301,16 @@ Every result carries a `status`.
 - `failed_at_push`, `blocked_at_pr`
 - after monitoring: the PR's last state (`OPEN` / `MERGED` / `CLOSED`), or `monitor_failed`
 
+Every result also carries `assumptions`: each choice a stage made that its inputs
+did not settle, with the stage that made it.
+
 `proposal-build-chain`, explicit mode: an array of `{ lane, branch, steps, status, result }`,
 one per lane attempted, `status` being the lane's `plan-to-merged-pr` status (or
-`failed`). Derive mode: `{ status, proposal, source, chains, blocked, human_gates_pending, milestone_waits, ship_plan }`, where:
+`failed`); a `needs_input` lane also carries `questions` (each with its `lane`) and
+`relay`. Derive mode: `{ status, proposal, source, chains, blocked, human_gates_pending, milestone_waits, ship_plan }`, where:
 
 - `pushed` — every lane is pushed or `already_built`
+- `needs_input` — some lane stopped with `needs_input` (its chain stopped there; other chains carried on); `questions` lists every lane's questions, each with its `lane`, and `relay` says what to do
 - `partial` — some lane did not push; its chain stopped there (`not_built` lists the rest), other chains carried on
 - `all_blocked` — no lane can build: each waits on a gate, another doc, a milestone (or an unresolvable `Source:` milestone) or acceptance (see `blocked`)
 - `nothing_to_build` — no pending code step
@@ -314,6 +327,7 @@ lane after the first).
 
 `brief-to-proposals`:
 
+- `needs_input` — blocking questions only the person can answer: from the Intake (no design written yet), `/roadmap` or the architecture's reviser (no proposal written), a milestone's author or reviser (that milestone waits, the others finish, and the Consistency phase is skipped), or a consistency reviser; `questions` lists them and `relay` says what to do
 - `ready` — every doc lints clean, every proposal's lane preview has no errors, every proposal's review came back clean, and the Consistency phase (brief mode) reported, revised every affected doc and got each revised doc back clean from its re-review
 - `proposals_need_attention` — a proposal was not written (listed `failed`, with its `stop_reason` when `/propose` stopped or routed the work elsewhere), its review did not finish, or it still has a `bug` or `concern` after `max_review_rounds` (`findings_remaining`); or the Consistency pass failed to report, a consistency revision failed, a revised doc did not come back clean from its re-review, or a finding named a doc this run did not write (`consistency.unrouted`)
 - `lint_errors` — a doc still has lint errors, or a proposal's lane preview (`--lanes --allow-draft`, e.g. `lane_cycle`) has errors; `lint_failed` — the lint stage did not report
@@ -323,7 +337,7 @@ lane after the first).
 - `failed_at_roadmap` — `/roadmap` stopped or did not finish (e.g. `error=exists`: pass `force`, or revise instead); `stop_reason` quotes it
 - `failed_at_propose` — concern mode: `/propose` stopped, routed the work elsewhere (e.g. to `/plan`) or did not finish; `stop_reason` quotes it
 
-`failed_at_roadmap` and every status the Lint phase sets (`ready`,
+Every result past the Intake carries `assumptions`. `failed_at_roadmap` and every status the Lint phase sets (`ready`,
 `proposals_need_attention`, `lint_errors`, `lint_failed`) also carry `seeded`: what
 was copied, kept and written; `review_failed`, `blocked_at_architecture_review` and
 `failed_at_propose` do not. The Lint-phase result also carries the doc paths, the panel's scores, each doc's review
@@ -343,12 +357,56 @@ once a revise round has run, or once `max_review_rounds` is reached.
 - otherwise the `plan-to-merged-pr` status of the lane's run (`failed` when it threw
   or returned nothing), with `pr`, `review_clean`, `polish_clean`, `final_state` and
   `spared_tests` (tests the implementer was told to delete but had to spare, because
-  their file held work from before the run)
+  their file held work from before the run); a `needs_input` lane also carries
+  `questions` (each with its `lane`) and `relay`
 - `failed` — also a lane that failed outright: `{ lane, status }` only
 
 Every entry past triage also lists `branch`, `dir`, `closed`, `not_closed`,
 `confirmed_fixed_unclosed` (filled only with `close: false`), `needs_human`,
 `skipped` and `bugs`.
+
+## Answering questions
+
+A **blocking question** is one only the person can answer: what they intend, a
+requirement or constraint the brief, concern, plan or design doc leaves out or
+states two incompatible ways, a trade-off that is theirs, or a blocker whose way
+forward is their call, where the plausible answers lead to materially different
+work. Anything the tree, `CLAUDE.md`, the docs or desk research can settle is
+settled, not asked. Data a person must gather stays a `research` gate, and a choice
+that waits on evidence the plan produces stays a `decision` gate.
+
+Run interactively, a command (`/roadmap`, `/propose`, `/plan`, `/impl`,
+`/merge-main`) asks every such question at once, each with options and a
+recommendation, and waits. Inside a workflow no one can answer mid-run, so the
+stage stops and the workflow returns `status: 'needs_input'` with:
+
+```js
+questions: [{ id: 'plan.q1', stage: 'plan', question: '...', why: 'what changes with the answer',
+              options: ['...', '...'], recommended: '...' }],   // a lane workflow adds lane: '<key>'
+relay: 'Ask the person these questions yourself ...',
+```
+
+The session that ran the workflow asks the person (never answers for them), then
+re-runs it with the same args plus `answers`, the questions with an `answer` field
+added (`[{ id, answer }]`, or `{ '<id>': '<answer>' }`), and `resumeFromRunId` set
+to the stopped run's id. Each answer reaches the stage that asked and every later
+stage, never an earlier one, so the stages before it replay from the record:
+
+- `plan-to-merged-pr`: stages run `plan` → `impl` → `fix` → `merge_check` → `monitor`.
+  An answer to a `monitor` question (an incompatible conflict `/merge-main` would
+  not pick a side in) is given in monitor-only mode instead: `{ pr, branch, dir, answers }`.
+- `brief-to-proposals`: `intake` → `architecture` → a milestone (`m<N>`; in concern
+  mode `proposal`) → `consistency`. A milestone's answer reaches only that
+  milestone's author, reviewers and revisers, and the Consistency phase.
+- `proposal-build-chain` and `bug-fix-backlog`: each answer keeps the `lane` its
+  question carried and goes to that lane only. Re-run with the same args (the same
+  `date`): pushed lanes come back `already_built`, closed or shipped issues are
+  re-checked and skipped, and the lane that asked builds again in its kept worktree.
+
+`on_question: 'assume'` is for runs no one will answer: each blocking question is
+settled by its recommended option instead, and listed in the result's `assumptions`.
+Every result lists `assumptions` either way, the choices the agents made that their
+inputs did not settle, so none is silent.
 
 ## Resuming a stopped run
 

@@ -73,9 +73,19 @@ A critique pass: every cited fact must still hold and every step must still be i
 
 ## Decide
 
-- **Blockers** (drift, missing dependency, conflicting state, rule violation, project mismatch) → stop. Print a `Plan review` report listing each blocker with the plan section or step it affects, any concerns, and a one-line recommendation (revise the plan — e.g. re-run `/plan` or `/bug-fix` — and re-invoke). Do not implement.
-- **Concerns only** (shifted lines, a renamed-but-findable helper, a removed adjacent test) → surface them in the same shape and ask the user to confirm. Do not assume yes.
+- **Blockers** (drift, missing dependency, conflicting state, rule violation, project mismatch) → stop. A blocker whose way forward is the person's call (re-plan around the rewritten code, drop the step, wait for the dependency) is also a blocking question, asked with those options (see *Questions before assumptions*). Print a `Plan review` report listing each blocker with the plan section or step it affects, any concerns, and a one-line recommendation (revise the plan — e.g. re-run `/plan` or `/bug-fix` — and re-invoke). Do not implement.
+- **Concerns only** (shifted lines, a renamed-but-findable helper, a removed adjacent test) → surface them in the same shape and ask the user to confirm. Do not assume yes. Unattended (see *Questions before assumptions*), proceed and report them as concerns: by definition none changes what gets built.
 - **Clean** → print `Plan review: clean — proceeding to implementation` and continue.
+
+## Questions before assumptions
+
+A **blocking question** is one only the person can answer — what they intend, a requirement or constraint the plan (or the selected step) leaves out or states two incompatible ways, a trade-off that is theirs to make, or a blocker whose way forward is their call — and whose plausible answers lead to materially different work. Settle yourself anything the tree, `CLAUDE.md`, the design doc or desk research can settle; never ask about it.
+
+- **One pass, before writing.** Collect every blocking question at *Decide*, and again whenever a step proves infeasible as written or a load-bearing detail turns out to be open mid-implementation (stop there, leaving the edits so far in place, and report them). Never guess the answer to one.
+- **Someone can answer** (an interactive session with a question tool, such as AskUserQuestion): ask them all at once, each with 2–4 concrete options and your recommended one first, and wait. The answers bind like explicit constraints.
+- **No one can answer** (the invoking prompt says the run is unattended, or there is no question tool): make no further change; stop with `error=needs_input` and print each question with an id (`q1`, `q2`, …), why it blocks (what changes with the answer), its options and the one you recommend. When the invoking prompt says to proceed on assumptions instead, take the recommended option and list the question with it under *Assumptions*.
+- **Answers handed in** by the invoking prompt bind the same way; never re-ask one.
+- **Everything else is an assumption:** take the smallest choice consistent with the sources and the surrounding code, and list each under **Assumptions** in the report. None stays silent.
 
 ## Create the implementation branch
 
@@ -98,7 +108,7 @@ Only after *Decide* returns Go, and before the first edit.
    - Apply the change, reusing the helpers the plan named instead of reimplementing.
    - Add or update tests in the same step as any behavior change, following `TEST_GUIDELINES` (typically: mock external services, the network, subprocesses, clocks, and sleeps; never touch real user state). For a bug, the regression test must fail before the fix and pass after.
    - If the step adds or removes a module, changes a CLI/API surface, or changes a documented design decision, update the project's docs (and `CLAUDE.md` if an invariant changed) in the same step.
-   - If a step proves infeasible as written, stop and surface it. Do not improvise a materially different scope.
+   - If a step proves infeasible as written, stop and surface it as a blocking question, with the ways forward as its options. Do not improvise a materially different scope.
 3. **Self-review.** Run `git diff` after each step and check for leftover debug code, breakpoints, hard-coded paths, secrets, dead branches, happy-path-only tests, and missing error handling.
 4. **Run the quality gates.** Use `$QUALITY_GATES_FAST` while iterating and finish with `$QUALITY_GATES` — each as `$GATE_WRAPPER bash -c '<gate command>'` when `GATE_WRAPPER` is set, so the whole compound command runs under the wrapper and any `$VAR` in it is expanded by the wrapper's shell (write any `'` inside the gate command as `'\''`) — plus every check in the plan's `## Verification` (in doc mode, each `Acceptance:` criterion must be demonstrably met).
    - Run gates in the **foreground** with an explicit long Bash timeout (e.g. `600000`), never in the background — a backgrounded run is reaped when the turn yields and the work stalls silently. If the full gate exceeds the ceiling, split it into its component commands as separate foreground calls.
@@ -118,13 +128,14 @@ End with a plain-text summary:
 - **Quality gates** — which ran, which passed, how many fix iterations.
 - **Acceptance criteria** *(doc mode)* — each criterion and how it was met.
 - **Deviations from the plan** — anything done differently, and why.
+- **Assumptions** — each detail the plan left open and the choice made.
 - **Next step** — `/review-changes` (in a fresh session) to review the branch against the plan; it hands off to `/polish`. Only once that is clean, commit and push and `/create-pr`. In doc mode, remind the user to tick step `M` in the same PR: `python3 .claude/scripts/proposal-lint.py <doc> --tick M` (without the script, change only that step's `[ ]` to `[x]`).
 
 ## What to skip
 
 - Do not edit the plan file or the design doc.
 - Do not implement more than the selected step (doc mode) — one step, one PR.
-- Do not refactor outside what the plan touches, and do not invent steps it does not specify. Small unspecified details: make a minimal choice consistent with surrounding code; load-bearing ones: ask.
+- Do not refactor outside what the plan touches, and do not invent steps it does not specify. Small unspecified details: make a minimal choice consistent with surrounding code and list it under **Assumptions**; load-bearing ones are blocking questions (see *Questions before assumptions*).
 - **Do not commit, stage, push, or open a PR.**
 - Do not switch branches once implementation has begun.
 - Do not rewrite the plan or invoke other commands. If the plan is unsalvageable, say so and stop.
