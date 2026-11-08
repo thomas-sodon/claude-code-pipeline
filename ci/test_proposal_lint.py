@@ -1027,6 +1027,19 @@ class TestClaudeMd(Base):
                 res, _ = self.drift(arch_with_rules(), claude_md(pointer_last=last))
                 self.assertEqual((res['kind'], res['errors'], res['warnings']), ('architecture', [], []))
 
+    def test_a_hand_written_section_above_the_bootstrap_copy_is_not_compared(self):
+        # /seed appends to an existing CLAUDE.md and /bootstrap appends its copies after its marker: a person's own
+        # ## Testing above them is theirs, and the copy /bootstrap wrote is the one checked.
+        own = '# Product\n\n## Testing\n\nRun `make test` before pushing.\n\n'
+        marked = own + claude_md().replace('## Pipeline config\n\n', '## Pipeline config\n\n<!-- Pipeline config written by /bootstrap -->\n', 1).replace('# Product\n\n', '', 1)
+        res, _ = self.drift(arch_with_rules(), marked)
+        self.assertEqual(res['errors'], [], 'the copy after the /bootstrap marker matches')
+        res, _ = self.drift(arch_with_rules(), marked.replace('fixtures are synthetic', 'fixtures are real'))
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'], 'and a drifted copy is still caught')
+        # No marker: the last section of a name (the appended one) is checked.
+        res, _ = self.drift(arch_with_rules(), own + claude_md().replace('# Product\n\n', '', 1))
+        self.assertEqual(res['errors'], [])
+
     def test_without_pointer_line_and_crlf_is_clean(self):
         res, _ = self.drift(arch_with_rules(), claude_md(pointer='').replace('\n', '\r\n'))
         self.assertEqual(res['errors'], [])

@@ -7,6 +7,8 @@
 # like every other change. Files you edited in .claude/ are kept and listed as conflicts in the PR body,
 # and so is any difference between CLAUDE.md's "## How work happens here" and the pipeline's template
 # (sync never edits CLAUDE.md: apply it by hand).
+# When files are kept back but nothing else changed and no PR was ever opened for that upstream commit (the
+# manifest was committed at it by /bootstrap or /create-pr), the report goes in an issue instead, once.
 #
 # Stale PRs: there is one branch, and one PR, per upstream commit (pipeline/update-<sha>). When upstream
 # moves on before you merge, the next run opens a PR for the newer commit and closes the older open
@@ -31,6 +33,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write   # kept-back files with nothing to commit are reported in an issue
 
 concurrency:
   group: pipeline-update
@@ -94,9 +97,19 @@ jobs:
             git config user.email '41898+github-actions[bot]@users.noreply.github.com'
             git switch -c "$branch"
             git add -- .claude
-            # Only kept-back files and an unchanged manifest (their update PR for $SHA merged and its branch was
-            # deleted): they were reported already, and there is nothing to commit.
-            if git diff --cached --quiet; then echo "nothing to commit: kept-back files were already reported for $SHA"; exit 0; fi
+            # Nothing to commit, yet files are kept back (edited here: conflict, differs, or edited and removed
+            # upstream), and no PR was ever opened for $SHA (that case ended above). /bootstrap or /create-pr
+            # committed this manifest at $SHA. Report it in an issue, once per upstream commit.
+            if git diff --cached --quiet; then
+              title="Pipeline $SHA: files kept back from the update"
+              if [ "$(gh issue list --state all --search "in:title \"$title\"" --json title --jq "[.[] | select(.title == \"$title\")] | length")" = "0" ]; then
+                { echo "Nothing to commit for [\`$SHA\`]($PIPELINE_REPO/commit/$SHA), but these files were kept back because they"
+                  echo "were edited in this repository. Merge them by hand, or run \`python3 .claude/scripts/pipeline-sync.py --update --force\`."
+                  echo; echo '```'; cat "$RUNNER_TEMP/report.txt"; echo '```'; } > "$RUNNER_TEMP/issue.md"
+                gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md"
+              else echo "already reported in an issue: $title"; fi
+              exit 0
+            fi
             git commit -q -m "Update the pipeline to $SHA" -m "From $PIPELINE_REPO at $PIPELINE_REF, by pipeline-sync.py --update."
             git push -q -u origin "$branch"
           fi

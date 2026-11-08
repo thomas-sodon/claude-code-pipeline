@@ -744,26 +744,41 @@ def tick(path, numbers):
 
 # ---- CLAUDE.md drift --------------------------------------------------------------------------
 
-def section_bodies(path):
+BOOTSTRAP_CONFIG_MARKER = '<!-- Pipeline config written by /bootstrap -->'
+
+
+def section_bodies(path, appended=False):
     """{lowercased H2 name: (heading line, [body lines])} outside code fences; a body ends at the next
-    # or ## heading. The first section of a name wins."""
-    out = {}
+    # or ## heading. The first section of a name wins; with appended=True (a CLAUDE.md, where /bootstrap appends
+    its copies after its Pipeline config marker, possibly below sections of the same name a person wrote), the
+    first one after that marker wins, else the last one in the file."""
+    found = {}
     in_fence = False
     cur = None
+    marker_line = None
     for i, raw in enumerate(read_lines(path), 1):
         line = raw.rstrip('\r\n')
+        if marker_line is None and BOOTSTRAP_CONFIG_MARKER in line:
+            marker_line = i
         if FENCE_RE.match(line):
             in_fence = not in_fence
         elif not in_fence and (line.startswith('# ') or line.startswith('## ')):
             m = H2_RE.match(line)
             name = m.group(1).lower() if m and line.startswith('## ') else None
             cur = None
-            if name and name not in out:
-                out[name] = (i, [])
-                cur = out[name][1]
+            if name:
+                found.setdefault(name, []).append((i, []))
+                cur = found[name][-1][1]
             continue
         if cur is not None:
             cur.append((i, line))
+    out = {}
+    for name, secs in found.items():
+        if not appended:
+            out[name] = secs[0]
+        else:
+            after = [sec for sec in secs if marker_line is not None and sec[0] > marker_line]
+            out[name] = after[0] if after else secs[-1]
     return out
 
 
@@ -794,7 +809,7 @@ def check_claude_md(doc, claude_path):
     adds: the first or last line of the body, when it names architecture.md and the architecture's body
     does not have it."""
     arch = section_bodies(doc.path)
-    mine = section_bodies(claude_path)
+    mine = section_bodies(claude_path, appended=True)
     rel = doc.path
     for name in CLAUDE_MD_SECTIONS:
         key = name.lower()
