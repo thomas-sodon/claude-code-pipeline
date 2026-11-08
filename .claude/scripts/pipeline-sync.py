@@ -61,6 +61,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -137,6 +138,14 @@ def load_manifest(target):
     if not isinstance(m, dict) or not isinstance(m.get('files'), dict):
         raise Fail('%s has no "files" object: fix or delete it' % MANIFEST)
     return m
+
+
+_USERINFO = re.compile(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]*@')
+
+
+def redact_url(url):
+    """A URL without its user:password@ part, so a token in a remote never reaches the manifest or a report."""
+    return _USERINFO.sub(r'\1', url) if url else url
 
 
 def is_pipeline_path(rel):
@@ -303,7 +312,9 @@ def sync(a):
             r = subprocess.run(['git', 'clone', '--quiet', '--filter=blob:none', '--branch', ref, repo, src],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if r.returncode != 0:
-                raise Fail('git clone %s at %s failed: %s' % (repo, ref, r.stderr.strip()))
+                raise Fail('git clone %s at %s failed: %s' % (redact_url(repo), ref, redact_url(r.stderr.strip())))
+        # Cloned with the URL as given; from here on only its redacted form is stored or reported.
+        repo = redact_url(repo)
         missing = [p for p in REQUIRED if not os.path.isfile(os.path.join(src, p))]
         if missing:
             raise Fail('%s is not a pipeline source: missing %s' % (src, ', '.join(missing)))

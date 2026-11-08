@@ -83,6 +83,9 @@ jobs:
           git config user.email '41898+github-actions[bot]@users.noreply.github.com'
           git switch -c "$branch"
           git add -- .claude
+          # Only kept-back files and an unchanged manifest (their update PR for $SHA merged and its branch was
+          # deleted): they were reported already, and there is nothing to commit.
+          if git diff --cached --quiet; then echo "nothing to commit: kept-back files were already reported for $SHA"; exit 0; fi
           git commit -q -m "Update the pipeline to $SHA" -m "From $PIPELINE_REPO at $PIPELINE_REF, by pipeline-sync.py --update."
           git push -q -u origin "$branch"
           {

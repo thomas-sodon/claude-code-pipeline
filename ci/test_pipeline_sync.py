@@ -183,6 +183,31 @@ class SyncTest(Fixture):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_credentials_in_the_source_remote_are_never_written(self):
+        # A token in the source checkout's origin URL must not reach the committed manifest or the report.
+        git(self.src, 'remote', 'add', 'origin', 'https://someone:ghp_SECRET123@github.com/acme/ccp.git')
+        p = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', self.src, '--json'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn('SECRET123', p.stdout + p.stderr)
+        self.assertNotIn('SECRET123', read(self.dst, MANIFEST))
+        self.assertEqual(json.loads(read(self.dst, MANIFEST))['source']['repo'], 'https://github.com/acme/ccp.git')
+        human = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', self.src, '--check'],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertNotIn('SECRET123', human.stdout + human.stderr)
+        # redact_url itself (a remote's URL can be rewritten by git's insteadOf config, so test the function):
+        # only an URL's user:password@ goes; an scp-style remote has no secret and is kept as it is.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('pipeline_sync', SYNC)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for url, want in [('https://u:t0k@github.com/a/b.git', 'https://github.com/a/b.git'),
+                          ('https://x-access-token:t0k@github.com/a/b', 'https://github.com/a/b'),
+                          ('ssh://git@host:22/a/b.git', 'ssh://host:22/a/b.git'),
+                          ('git@github.com:a/b.git', 'git@github.com:a/b.git'),
+                          ('https://github.com/a/b', 'https://github.com/a/b'), (None, None)]:
+            self.assertEqual(mod.redact_url(url), want, url)
+
     def test_manifest_paths_outside_the_pipeline_are_never_touched(self):
         # The manifest is a committed file anyone can edit: an obsolete-looking entry for a path outside
         # .claude/<dir>/ must not be deleted, even when its recorded hash matches the file.
