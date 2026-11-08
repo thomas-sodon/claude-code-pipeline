@@ -1,5 +1,5 @@
-// Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing.
-// Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every
+// Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing, and for
+// ship-chain's merge-order sequencing. Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every
 // prompt is recorded so the tests can check which stages saw which answers.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -191,6 +191,93 @@ await test('proposal-build-chain: a lane that needs input carries its questions,
   assert.deepEqual(seen[0].answers, [{ id: 'plan.q1', answer: 'for a' }])
   assert.deepEqual(seen[1].answers, [{ id: 'plan.q1', answer: 'for b' }])
   assert.equal(seen[0].on_question, 'stop')
+})
+
+// ---- ship-chain: ships a ship_plan chain lane by lane, each only after the PR below it reads MERGED
+const CHAIN = { chain: 's1', order: [
+  { lane: 's1', branch: 'feat/p-s1', steps: [1], args: { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: '<title for steps 1>', proposal: 'p.md', main_branch: 'main' } },
+  { lane: 's2', branch: 'feat/p-s2', steps: [2], args: { ship_only: true, branch: 'feat/p-s2', dir: '/w/s2', title: '<title for steps 2>', proposal: 'p.md', main_branch: 'main', predecessor_prs: ['<PR numbers of the lanes above, once merged>'] } },
+] }
+const sc = (over = {}) => (label, prompt) => {
+  if (over[label] !== undefined) return typeof over[label] === 'function' ? over[label](prompt) : over[label]
+  if (label.startsWith('lookup-')) return { state: 'NONE', pr_number: 0, title: `Title ${label.slice(7)}` }
+  if (label.startsWith('wait-')) return { state: 'MERGED' }
+  return {}
+}
+const shipWf = (byBranch, seen = []) => async (name, a) => {
+  seen.push({ name, ...a })
+  const f = byBranch[a.branch]
+  return typeof f === 'function' ? f(a) : f
+}
+
+await test('ship-chain: ships each lane after the one below merged, with predecessor_prs and a filled title', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }, seen)
+  const { result, calls, prompt } = await run('ship-chain', { chain: CHAIN, title_prefix: '[p] ', ai_review_check: 'Review' }, sc(), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.deepEqual(result.merged_prs, [10, 11])
+  assert.deepEqual(calls.map(c => c.label), ['lookup-s1', 'wait-s1-1', 'lookup-s2', 'wait-s2-1'])
+  assert.match(prompt('lookup-s1'), /steps 1 under "## Steps" in p\.md/)
+  assert.deepEqual(seen.map(s => s.name), ['plan-to-merged-pr', 'plan-to-merged-pr'])
+  assert.equal(seen[0].ship_only, true)
+  assert.equal(seen[0].title, '[p] Title s1')
+  assert.equal(seen[0].predecessor_prs, undefined)
+  assert.equal(seen[0].ai_review_check, 'Review')
+  assert.deepEqual(seen[1].predecessor_prs, [10])
+  for (const l of ['lookup-s1', 'wait-s1-1']) assert.match(prompt(l), /Never merge/, l)
+})
+
+await test('ship-chain: a lane that needs input stops the chain, carries its questions tagged with the lane, and gets only its answers', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s1': { status: 'MERGED', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'needs_input', stage: 'merge_check', questions: [{ id: 'merge_check.q1', ...Q }] } }, seen)
+  const answers = [{ lane: 's1', id: 'monitor.q1', answer: 'for s1' }, { lane: 's2', id: 'plan.q1', answer: 'for s2' }]
+  const { result, calls } = await run('ship-chain', { chain: CHAIN, answers }, sc(), { workflow })
+  assert.equal(result.status, 'needs_input')
+  assert.deepEqual(result.questions.map(q => [q.lane, q.id]), [['s2', 'merge_check.q1']])
+  assert.match(result.relay, /never answer them on their behalf/)
+  assert.equal(result.stopped_at.lane, 's2')
+  assert.deepEqual(seen[0].answers, [{ id: 'monitor.q1', answer: 'for s1' }])
+  assert.deepEqual(seen[1].answers, [{ id: 'plan.q1', answer: 'for s2' }])
+  assert.ok(!calls.some(c => c.label.startsWith('wait-')), 'a PR that merged during its monitor is not waited on')
+})
+
+await test('ship-chain: a re-run skips merged lanes and monitors an already-open PR instead of opening another', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }, seen)
+  const over = { 'lookup-s1': { state: 'MERGED', pr_number: 10, title: 'x' }, 'lookup-s2': { state: 'OPEN', pr_number: 11, title: 'y' } }
+  const { result } = await run('ship-chain', { chain: CHAIN }, sc(over), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].pr, 11)
+  assert.equal(seen[0].ship_only, undefined)
+  assert.equal(seen[0].title, undefined)
+})
+
+await test('ship-chain: stops on a closed PR, a PR still open at the wait cap, or a lane that did not ship', async () => {
+  const two = { 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }
+  const closed = await run('ship-chain', { chain: CHAIN }, sc({ 'wait-s1-1': { state: 'CLOSED' } }), { workflow: shipWf(two) })
+  assert.equal(closed.result.status, 'closed')
+  assert.deepEqual(closed.result.not_shipped, ['s2'])
+  const open = await run('ship-chain', { chain: CHAIN, max_wait_rounds: 2 }, sc({ 'wait-s1-1': { state: 'OPEN' }, 'wait-s1-2': { state: 'OPEN', notes: 'changes requested' } }), { workflow: shipWf(two) })
+  assert.equal(open.result.status, 'not_merged')
+  assert.match(open.result.stopped_at.reason, /changes requested/)
+  assert.ok(!open.calls.some(c => c.label === 'lookup-s2'), 'the next lane is not touched while the one below is open')
+  const blocked = await run('ship-chain', { chain: CHAIN }, sc(), { workflow: shipWf({ 'feat/p-s1': { status: 'blocked_at_merge_check' } }) })
+  assert.equal(blocked.result.status, 'lane_failed')
+  assert.match(blocked.result.stopped_at.reason, /blocked_at_merge_check/)
+})
+
+await test('proposal-build-chain: each ship_plan chain carries ship_chain_args for ship-chain', async () => {
+  const lanesJson = JSON.stringify({ chains: [{ key: 's1', lanes: [
+    { key: 's1', branch: 'feat/p-s1', dir: '/w/s1', bases: [], steps: [1], concern: 'c1' },
+    { key: 's2', branch: 'feat/p-s2', dir: '/w/s2', bases: ['feat/p-s1'], steps: [2], concern: 'c2' }] }], blocked: [], errors: [] })
+  const workflow = async () => ({ status: 'pushed', plan: 'the plan' })
+  const respond = label => label === 'derive-lanes' ? { lanes_json: lanesJson, exit_code: 0, source: 'origin' } : {}
+  const { result } = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w' }, respond, { workflow })
+  assert.equal(result.status, 'pushed')
+  const c = result.ship_plan[0]
+  assert.deepEqual(c.ship_chain_args.chain.order.map(l => [l.lane, l.steps]), [['s1', [1]], ['s2', [2]]])
+  assert.deepEqual(c.order[1].args.predecessor_prs, ['<PR numbers of the lanes above, once merged>'])
 })
 
 process.exit(failed ? 1 : 0)
