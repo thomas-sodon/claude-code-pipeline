@@ -99,19 +99,36 @@ repository with no AI review check.
 update can tell an upstream change from your own edit. From your repository:
 
 ```sh
-python3 .claude/scripts/pipeline-sync.py --check     # exit 1 when the pipeline's main has changes for you
+python3 .claude/scripts/pipeline-sync.py --check     # exit 1 when the pipeline's ref has changes for you
 python3 .claude/scripts/pipeline-sync.py --update    # take them; then land .claude/ through a PR
 ```
 
 It clones the pipeline (the manifest's repo and ref, `--repo` / `--ref` to change
 them, or `--from <checkout>`), replaces the files you have not edited, deletes the
 ones upstream removed, and keeps your edits: a file changed on both sides is listed
-as a `conflict` (`--update --force` takes upstream's). It never touches `CLAUDE.md`
-and never commits. To have it come to you, copy
+as a `conflict` (`--update --force` takes upstream's). It never edits `CLAUDE.md`
+and never commits, but it compares `CLAUDE.md`'s `## How work happens here` (which
+`/seed` marks with a comment) with the pipeline's current template,
+`.claude/scripts/claude-md-base.md`, and prints the diff for you to apply by hand;
+`--check --check-claude-md` also fails on it. To have it come to you, copy
 [`examples/pipeline-update.yml`](examples/pipeline-update.yml) to
-`.github/workflows/`: once a week it opens a PR with the update and the sync report.
-A pipeline copied with `cp -r` has no manifest yet; the first `--update` adopts it
-(files that differ are replaced, so commit any local edits first and re-apply them).
+`.github/workflows/`: once a week it opens a PR with the update and the sync report,
+on a branch per upstream commit, and closes the older update PRs it supersedes.
+A pipeline copied with `cp -r` has no manifest yet; the first run adopts it: a file
+that matches some older upstream version is treated as unedited (`outdated`, listed
+under `adopted`), and one that matches none is `differs`, which `--update` replaces,
+so commit any local edits first and re-apply them.
+
+**Pinning a release.** `PIPELINE_REF` (in the Action) and `--ref` take a branch or
+a tag; the manifest records it, so later runs and `--check` compare against the
+same ref until you change it. `main` tracks the tip. To pin, set
+`PIPELINE_REF: v1.4.0` (or run `--update --ref v1.4.0` once), and bump the tag to
+take the next release. For the pipeline's maintainer, the recommendation is to cut
+an annotated semver tag on `main` (`git tag -a v1.4.0 -m '...'`, then
+`git push origin v1.4.0`) once CI is green, with release notes that call out
+renamed or removed commands and changes to `claude-md-base.md`, since those need a
+person: a renamed command changes what workflows call, and the `CLAUDE.md` section
+is applied by hand. Tags are never moved: a fix is a new tag.
 
 For a brief or a change too big for one PR, run `brief-to-proposals` with
 `{ brief }` or `{ concern }` and `dir` (no `pipeline`: the repo holds it now). It
@@ -223,6 +240,7 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
     proposal-lint.py          design-doc lint, lane derivation, step ticking, CLAUDE.md drift check
     gate-slot.sh              optional host-wide semaphore for gate runs
     pipeline-sync.py          install / update the pipeline's files in a repo (3-way, via a manifest)
+    claude-md-base.md         the CLAUDE.md "How work happens here" template /seed writes and sync compares
 docs/
   PROCESS.md                  the end-to-end process diagram, and the known gaps in the flow
   PROPOSALS.md                the design-doc format: architecture, roadmap, proposals

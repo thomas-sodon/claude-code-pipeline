@@ -49,7 +49,8 @@ must be a git repository with an `origin` remote and no uncommitted changes to
 tracked files. `/seed` copies the same directories (plus `.claude/skills/` when the
 source has one, and `.claude/settings.json` when the project has none), never
 replaces a file that differs without `--update`, and writes a base `CLAUDE.md`, or
-appends to an existing one the sections it lacks: `## How work happens here` and a
+appends to an existing one the sections it lacks: `## How work happens here` (the
+template in `.claude/scripts/claude-md-base.md`, with a marker comment) and a
 `## Pipeline config` with `MAIN_BRANCH` and `PROPOSALS_DIR` but no `QUALITY_GATES`.
 It commits nothing: on an existing project, land the files with `/create-pr`.
 `brief-to-proposals` runs `/seed` as its first phase.
@@ -61,19 +62,47 @@ that file with the rest of `.claude/`.
 
 ```
 pipeline-sync.py [--target DIR] [--from DIR | --repo URL] [--ref REF]
-                 [--update] [--force] [--dry-run] [--check] [--json]
+                 [--update] [--force] [--dry-run] [--check] [--check-claude-md] [--json]
 ```
 
-With no `--from`, it clones `--repo` at `--ref` (default: the manifest's, else this
-repository at `main`). Without `--update` it only adds missing files. `--update`
+With no `--from`, it clones `--repo` at `--ref` (a branch or a release tag;
+default: the manifest's, else this repository at `main`) with its full commit
+history but no file contents (`--filter=blob:none`). With `--from`, the ref is the
+checkout's branch, or the tag a detached checkout sits on. Without `--update` it
+only adds missing files. `--update`
 replaces files unedited since install, deletes unedited files the source no longer
 ships, and keeps local edits (`local_edit`) and files changed on both sides
 (`conflict`; `--force` takes the source's). A file a person deleted stays deleted.
+A file with no install record that differs from the source (a `cp -r` install,
+before the manifest) is looked up in the source's git history: when some commit
+shipped exactly its bytes (`git hash-object` against the blobs `git log --raw`
+lists for that path), it is an unedited older version, classified `outdated` and
+listed under `adopted`, with that version recorded as its base; otherwise it is
+`differs`, which `--update` replaces.
 `--check` changes nothing and exits 1 when anything is pending; `--dry-run` reports
 without writing; exit 2 is a usage error, a source that is not a pipeline, or a git
-failure. `CLAUDE.md` is never touched: compare its `## How work happens here` with
-`/seed`'s template after a large update. [`examples/pipeline-update.yml`](../examples/pipeline-update.yml)
-runs it weekly in GitHub Actions and opens a PR.
+failure.
+
+`CLAUDE.md` is never edited. The report's `claude_md` compares its
+`## How work happens here` section with the source's template,
+`.claude/scripts/claude-md-base.md` (which `/seed` copies, marker comment
+included), ignoring the marker, trailing spaces and blank-line runs:
+
+| `claude_md.status` | Meaning |
+|---|---|
+| `current` | the section matches the template |
+| `differs` | the section carries `/seed`'s marker and differs; `diff` holds a unified diff, `added` / `removed` its line counts |
+| `unmarked` | the section differs and has no marker (written by hand, or by a `/seed` older than the marker); reported, never pending |
+| `missing` | no `CLAUDE.md`, or no such section (`/seed` appends it) |
+| `no_template` | the source ships no `claude-md-base.md` (an older pipeline) |
+
+Apply a difference by hand. `--check-claude-md` adds `claude_md` to `pending` when
+the status is `differs`, so `--check --check-claude-md` exits 1 on it; without the
+flag `--check` ignores it. [`examples/pipeline-update.yml`](../examples/pipeline-update.yml)
+runs the sync weekly in GitHub Actions and opens a PR on `pipeline/update-<sha>`
+(one branch per upstream commit), closing the older open `pipeline/update-*` PRs
+with a comment that points to the new one. `PIPELINE_REF` there, like `--ref`, pins
+a release tag; see the README's *Pinning a release*.
 
 **Linting the design docs in CI.** `/bootstrap` gives a new repository's CI a
 `docs` job: `proposal-lint.py` on every design doc in `PROPOSALS_DIR` (a `.md` file

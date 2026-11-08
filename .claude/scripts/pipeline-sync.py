@@ -2,7 +2,7 @@
 """Install or update the pipeline's files in a repository (stdlib only, Python 3.8+).
 
 pipeline-sync.py [--target DIR] [--from DIR | --repo URL] [--ref REF]
-                 [--update] [--force] [--dry-run] [--check] [--json]
+                 [--update] [--force] [--dry-run] [--check] [--check-claude-md] [--json]
 
 Copies .claude/commands/, .claude/skills/, .claude/workflows/ and .claude/scripts/
 from a pipeline source into the target repository, and .claude/settings.json only
@@ -19,18 +19,36 @@ edit:
   target edited, source == base         local_edit   (kept)
   target edited, source changed too     conflict     (kept; --update --force takes the source's)
   no base recorded, target differs      differs      (kept; --update takes the source's)
+  no base, target is an older upstream  outdated     (adopted: a legacy cp -r install, see below)
   in base, gone from source, unedited   obsolete     -> deleted with --update
   in base, gone from source, edited     obsolete_edited (kept)
 
 Without --update it only adds missing files (what /seed does on a first install).
-It never touches CLAUDE.md, never follows a symlink, never commits.
+It never edits CLAUDE.md, never follows a symlink, never commits.
+
+Adopting a legacy install: a target file with no recorded base that differs from the
+source is looked up in the source's git history (when the source is a git checkout).
+If some upstream commit shipped exactly that content, the file is an unedited older
+version: it is classified outdated (and listed under "adopted") with that version as
+its base, so --update replaces it and a later run tells edits from upstream changes.
+
+CLAUDE.md: the report's "claude_md" compares the target's "## How work happens here"
+section with the source's template (.claude/scripts/claude-md-base.md), ignoring the
+marker comment /seed writes in it: status current, differs (marked by /seed, and
+different), unmarked (different, no marker: written by hand or by an older /seed),
+missing (no CLAUDE.md or no such section) or no_template (an older source), with a
+unified diff. It only reports; a person applies the change.
 
 Source: --from DIR (a checkout of the pipeline, or a project that has it), else
 --repo URL cloned at --ref (default: the manifest's repo and ref, else
-https://github.com/thomas-sodon/claude-code-pipeline at main).
+https://github.com/thomas-sodon/claude-code-pipeline at main). The clone keeps the
+full commit history without file contents (--filter=blob:none), so adopting a
+legacy install can search it. --ref takes a branch or a release tag.
 
 --check: change nothing; exit 1 when anything would be added, updated or deleted,
 or a conflict / differs is pending (for a scheduled CI job).
+--check-claude-md: also count a CLAUDE.md section marked by /seed that differs from
+the template as pending ("claude_md"), so --check exits 1 on it.
 --dry-run: change nothing; report what would happen.
 
 Exit: 0 = done (or, with --check, up to date); 1 = --check found pending changes;
@@ -38,6 +56,7 @@ Exit: 0 = done (or, with --check, up to date); 1 = --check found pending changes
 """
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -54,18 +73,24 @@ DEFAULT_REF = 'main'
 REQUIRED = (os.path.join('.claude', 'workflows', 'brief-to-proposals.js'),
             os.path.join('.claude', 'scripts', 'proposal-lint.py'))
 PENDING = ('added', 'outdated', 'conflict', 'differs', 'obsolete')
+CLAUDE_MD = 'CLAUDE.md'
+CLAUDE_MD_TEMPLATE = '.claude/scripts/claude-md-base.md'
+SECTION = '## How work happens here'
+MARKER = '<!-- How work happens here written by /seed'
 
 
 class Fail(Exception):
     pass
 
 
-def git(cwd, *a, check=True):
+def git(cwd, *a, check=True, strip=True):
     r = subprocess.run(['git', '-C', cwd] + list(a), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        universal_newlines=True)
     if check and r.returncode != 0:
         raise Fail('git %s failed: %s' % (' '.join(a), r.stderr.strip()))
-    return r.stdout.strip() if r.returncode == 0 else None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() if strip else r.stdout
 
 
 def sha(path):
@@ -131,28 +156,110 @@ def write_manifest(target, data):
     os.replace(tmp, p)
 
 
-def classify(rel, src, target, base):
+def history_blobs(src, rel):
+    """Ids of every blob the source's history stored at rel. Tree diffs only, so a blob-less clone fetches nothing."""
+    out = git(src, 'log', '-m', '--format=', '--raw', '--no-abbrev', '--no-renames', 'HEAD', '--', rel,
+              check=False) or ''
+    blobs = set()
+    for line in out.splitlines():
+        parts = line.split()  # :old_mode new_mode old_id new_id status path
+        if line.startswith(':') and len(parts) >= 5 and set(parts[3]) != {'0'}:
+            blobs.add(parts[3])
+    return blobs
+
+
+def shipped_before(src, rel, t):
+    """True when some commit in the source's history shipped rel with exactly the target file's bytes."""
+    blob = git(src, 'hash-object', '--no-filters', '--', t, check=False)
+    return bool(blob) and blob in history_blobs(src, rel)
+
+
+def classify(rel, src, target, base, src_git=False):
+    """(kind, base): the recorded base, or for an adopted legacy file the history version it matched."""
     s = os.path.join(src, rel) if src else None
     t = os.path.join(target, rel)
     if os.path.islink(t):
-        return 'symlink'
+        return 'symlink', base
     s_hash = sha(s) if s else None
     t_hash = sha(t) if os.path.isfile(t) else None
     if s_hash is None:  # in the base, gone from the source
         if t_hash is None:
-            return 'gone'
-        return 'obsolete' if t_hash == base else 'obsolete_edited'
+            return 'gone', base
+        return ('obsolete' if t_hash == base else 'obsolete_edited'), base
     if t_hash is None:
-        return 'removed_locally' if base else 'added'
+        return ('removed_locally' if base else 'added'), base
     if t_hash == s_hash:
-        return 'identical'
+        return 'identical', base
     if base is None:
-        return 'differs'
+        if src_git and shipped_before(src, rel, t):
+            # The matched blob holds the target's exact bytes (--no-filters), so its content hash is t_hash.
+            return 'adopted', t_hash
+        return 'differs', base
     if t_hash == base:
-        return 'outdated'
+        return 'outdated', base
     if s_hash == base:
-        return 'local_edit'
-    return 'conflict'
+        return 'local_edit', base
+    return 'conflict', base
+
+
+def section(text):
+    """The lines of the How-work-happens-here section, heading included, up to the next heading; or None."""
+    lines, start, fence = text.splitlines(), None, False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(('```', '~~~')):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        if start is None:
+            if line.rstrip() == SECTION:
+                start = i
+        elif line.startswith(('# ', '## ')):
+            return lines[start:i]
+    return lines[start:] if start is not None else None
+
+
+def normalized(lines):
+    """The section without the marker, trailing spaces and runs of blank lines, so only its wording counts."""
+    out = []
+    for l in lines:
+        l = l.rstrip()
+        if MARKER in l or (not l and (not out or not out[-1])):
+            continue
+        out.append(l)
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def read_text(path):
+    with open(path, encoding='utf-8', errors='replace') as f:
+        return f.read()
+
+
+def claude_md(src, target):
+    """Compare the target's CLAUDE.md base section with the source's template. Reads only."""
+    r = {'path': CLAUDE_MD, 'template': CLAUDE_MD_TEMPLATE, 'status': 'no_template', 'added': 0, 'removed': 0,
+         'diff': ''}
+    tpl = os.path.join(src, CLAUDE_MD_TEMPLATE)
+    want = section(read_text(tpl)) if os.path.isfile(tpl) and not os.path.islink(tpl) else None
+    if want is None:
+        return r
+    t = os.path.join(target, CLAUDE_MD)
+    have = section(read_text(t)) if os.path.isfile(t) and not os.path.islink(t) else None
+    if have is None:
+        r['status'] = 'missing'
+        return r
+    a, b = normalized(have), normalized(want)
+    if a == b:
+        r['status'] = 'current'
+        return r
+    r['status'] = 'differs' if any(MARKER in l for l in have) else 'unmarked'
+    diff = list(difflib.unified_diff(a, b, CLAUDE_MD, CLAUDE_MD_TEMPLATE, lineterm=''))
+    r['added'] = sum(1 for l in diff[2:] if l.startswith('+'))
+    r['removed'] = sum(1 for l in diff[2:] if l.startswith('-'))
+    r['diff'] = '\n'.join(diff)
+    return r
 
 
 def sync(a):
@@ -166,13 +273,18 @@ def sync(a):
         if a.source:
             src = os.path.abspath(a.source)
             repo = git(src, 'remote', 'get-url', 'origin', check=False) if is_git(src) else None
-            ref = a.ref or (git(src, 'rev-parse', '--abbrev-ref', 'HEAD', check=False) if is_git(src) else None)
+            ref = a.ref
+            if not ref and is_git(src):
+                # The branch, else the release tag a detached checkout sits on (a clone of --branch <tag>).
+                ref = (git(src, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False)
+                       or git(src, 'describe', '--tags', '--exact-match', 'HEAD', check=False))
         else:
             repo = a.repo or prev.get('repo') or DEFAULT_REPO
             ref = a.ref or prev.get('ref') or DEFAULT_REF
             tmpdir = tempfile.mkdtemp(prefix='pipeline-sync-')
             src = os.path.join(tmpdir, 'src')
-            r = subprocess.run(['git', 'clone', '--quiet', '--depth', '1', '--branch', ref, repo, src],
+            # Full history without file contents: fast, and enough to adopt a legacy install (see classify).
+            r = subprocess.run(['git', 'clone', '--quiet', '--filter=blob:none', '--branch', ref, repo, src],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if r.returncode != 0:
                 raise Fail('git clone %s at %s failed: %s' % (repo, ref, r.stderr.strip()))
@@ -180,10 +292,13 @@ def sync(a):
         if missing:
             raise Fail('%s is not a pipeline source: missing %s' % (src, ', '.join(missing)))
         same = os.path.realpath(src) == os.path.realpath(target)
-        commit = git(src, 'rev-parse', 'HEAD', check=False) if is_git(src) else None
+        src_git = is_git(src)
+        commit = git(src, 'rev-parse', 'HEAD', check=False) if src_git else None
         dirty = []
         if is_git(src) and not tmpdir:
-            st = git(src, 'status', '--porcelain', '--', *['.claude/' + d for d in DIRS], check=False) or ''
+            # Unstripped: the first line's status column can start with a space (" M path").
+            st = git(src, 'status', '--porcelain', '--', *['.claude/' + d for d in DIRS], check=False,
+                     strip=False) or ''
             dirty = [l[3:] for l in st.splitlines() if l]
 
         files = [] if same else source_files(src)
@@ -193,12 +308,15 @@ def sync(a):
             files = source_files(src)
         report = {k: [] for k in ('added', 'identical', 'outdated', 'updated', 'local_edit', 'conflict',
                                   'differs', 'removed_locally', 'obsolete', 'deleted', 'obsolete_edited',
-                                  'symlink')}
+                                  'symlink', 'adopted')}
         new_bases = {}
         write = not (a.dry_run or a.check)
         for rel in files:
             base = bases.get(rel)
-            kind = 'identical' if same else classify(rel, src, target, base)
+            kind, base = ('identical', base) if same else classify(rel, src, target, base, src_git)
+            if kind == 'adopted':
+                report['adopted'].append(rel)
+                kind = 'outdated'
             s_hash = sha(os.path.join(src, rel))
             take = (kind == 'added' or (a.update and kind in ('outdated', 'differs'))
                     or (a.update and a.force and kind == 'conflict'))
@@ -217,7 +335,7 @@ def sync(a):
                     new_bases[rel] = base
         if not same:
             for rel in sorted(set(bases) - set(files)):
-                kind = classify(rel, None, target, bases[rel])
+                kind, _ = classify(rel, None, target, bases[rel])
                 if kind == 'obsolete' and a.update:
                     if write:
                         os.remove(os.path.join(target, rel))
@@ -240,12 +358,15 @@ def sync(a):
         # Work still left: before writing (check, dry-run), every change; after writing, what was kept back.
         pending = [k for k in ('added', 'updated', 'deleted') + PENDING[1:] if report[k]
                    and (not write or k in PENDING[1:])]
+        cmd = claude_md(src, target)
+        if a.check_claude_md and cmd['status'] == 'differs':
+            pending.append('claude_md')
         out = {
             'target': target, 'source': {'path': None if tmpdir else src, 'repo': repo, 'ref': ref,
                                          'commit': commit, 'uncommitted': dirty},
             'previous_commit': prev.get('commit'), 'same_dir': same, 'mode': 'check' if a.check else
             'dry-run' if a.dry_run else 'update' if a.update else 'install',
-            'settings_json_copied': settings_copied, 'pending': pending,
+            'settings_json_copied': settings_copied, 'pending': pending, 'claude_md': cmd,
             **{k: v for k, v in report.items()},
         }
         return out
@@ -274,6 +395,18 @@ def human(r):
             lines.append('  %s: %d' % (label, len(r[key])))
             lines += ['    %s' % p for p in r[key]]
     lines.append('  identical: %d' % len(r['identical']))
+    if r['adopted']:
+        lines.append('  adopted (no install record, but an unedited older upstream version): %d'
+                     % len(r['adopted']))
+        lines += ['    %s' % p for p in r['adopted']]
+    c = r['claude_md']
+    if c['status'] in ('differs', 'unmarked'):
+        lines.append('  CLAUDE.md "%s" differs from %s (+%d -%d lines; never edited here: apply by hand)%s'
+                     % (SECTION, c['template'], c['added'], c['removed'],
+                        '' if c['status'] == 'differs' else '; unmarked: no /seed marker'))
+        lines += ['    %s' % l for l in c['diff'].splitlines()]
+    elif c['status'] in ('current', 'missing'):
+        lines.append('  CLAUDE.md "%s": %s' % (SECTION, c['status']))
     if r['settings_json_copied']:
         lines.append('  .claude/settings.json copied (the target had none)')
     if r['source']['uncommitted']:
@@ -295,6 +428,8 @@ def main(argv=None):
     p.add_argument('--force', action='store_true', help='with --update: also take the source\'s version of conflicts')
     p.add_argument('--dry-run', action='store_true', help='change nothing; report what would happen')
     p.add_argument('--check', action='store_true', help='change nothing; exit 1 when anything is pending')
+    p.add_argument('--check-claude-md', action='store_true',
+                   help='count a /seed-marked CLAUDE.md section that differs from the template as pending')
     p.add_argument('--json', action='store_true', help='print the report as JSON')
     a = p.parse_args(argv)
     if a.force and not a.update:
