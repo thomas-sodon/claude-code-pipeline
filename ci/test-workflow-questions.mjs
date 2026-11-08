@@ -404,4 +404,15 @@ await test('bug-fix-backlog: an intake answer runs the confirmed lanes, and reac
   await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'yes please' }] }, bfb()), /must be 'accept' or a JSON array/)
 })
 
+await test('bug-fix-backlog: lanes a person edited are validated before any branch is named', async () => {
+  const lanes = async given => run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: JSON.stringify(given) }] }, bfb())
+  for (const bad of [[{ key: 'a', issues: '12' }], [{ key: 'a', issues: 12 }], [{ key: 'a', issues: [] }], [{ key: 'a', issues: [0] }], [{ key: 'a', issues: ['x'] }], [{ key: 'a' }]]) {
+    await assert.rejects(lanes(bad), /needs issues as a non-empty array of issue numbers/, JSON.stringify(bad))
+  }
+  const { calls } = await lanes([{ key: 'Auth session', issues: ['12'] }, { issues: [13] }])
+  const triage = calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
+  assert.deepEqual(triage, ['triage:auth-session', 'triage:bug-13'], 'keys are slugged, a missing key is named after its first issue')
+  await assert.rejects(lanes([{ key: 'A b', issues: [1] }, { key: 'a-b', issues: [2] }]), /share key a-b/)
+})
+
 process.exit(failed ? 1 : 0)

@@ -237,7 +237,12 @@ if (INTAKE) {
     if (given && !Array.isArray(given) && Array.isArray(given.lanes)) given = given.lanes
     if (!Array.isArray(given)) throw new Error(`bug-fix-backlog: answer intake.q1 must be 'accept' or a JSON array of lanes ({ key, issues })`)
     // Only what a lane is; the Intake's notes (code_site, why) are not lane args.
-    LANES = given.map(l => ({ key: l && l.key, issues: l && l.issues, ...(l && l.branch ? { branch: l.branch } : {}), ...(l && l.dir ? { dir: l.dir } : {}) }))
+    // A person may have edited them: issue numbers must be positive integers, and the key becomes a branch name.
+    LANES = given.map(l => {
+      const issues = Array.isArray(l && l.issues) ? l.issues.map(Number) : []
+      if (!issues.length || issues.some(n => !Number.isInteger(n) || n <= 0)) throw new Error(`bug-fix-backlog: confirmed lane ${(l && l.key) || '?'} needs issues as a non-empty array of issue numbers`)
+      return { key: slug(l.key) || `bug-${issues[0]}`, issues, ...(l.branch ? { branch: l.branch } : {}), ...(l.dir ? { dir: l.dir } : {}) }
+    })
     log(`Intake: running the ${LANES.length} lane(s) the person confirmed`)
   } else {
     phase('Intake')

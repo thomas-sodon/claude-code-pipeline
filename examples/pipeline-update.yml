@@ -59,8 +59,13 @@ jobs:
           echo "sha=$(git -C "$RUNNER_TEMP/ccp" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           # The manifest records the upstream commit on every run, so an upstream commit that changes no pipeline
           # file still rewrites it: count it only when it is new here (a first adoption), never on its own.
+          # Files kept back because they were edited here (a conflict, or edited and removed upstream) change
+          # nothing on disk, so ask a read-only --check for them: they still need a PR that lists them.
+          check=$(python3 "$sync" --target . --from "$RUNNER_TEMP/ccp" --ref "$PIPELINE_REF" --check --json || true)
+          kept=$(jq '(.conflict // []) + (.obsolete_edited // []) | length' <<<"$check")
           if [ -n "$(git status --porcelain -- .claude ':(exclude).claude/pipeline-manifest.json')" ] ||
-             ! git ls-files --error-unmatch .claude/pipeline-manifest.json >/dev/null 2>&1; then
+             ! git ls-files --error-unmatch .claude/pipeline-manifest.json >/dev/null 2>&1 ||
+             [ "${kept:-0}" -gt 0 ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Open a pull request
@@ -98,8 +103,10 @@ jobs:
             --title "Update the pipeline to $SHA" --body-file "$RUNNER_TEMP/body.md")
           echo "opened $url"
           # Close the older update PRs this one supersedes (branches named after earlier upstream commits).
-          gh pr list --state open --limit 100 --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"pipeline/update-\")) | select(.headRefName != \"$branch\") | .number" |
+          # Only the update PRs this workflow opened: branches in this repository, aimed at the same base.
+          gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository,baseRefName \
+            --jq ".[] | select(.isCrossRepository | not) | select(.baseRefName == \"$base\")
+                  | select(.headRefName | startswith(\"pipeline/update-\")) | select(.headRefName != \"$branch\") | .number" |
           while read -r old; do
             gh pr close "$old" --comment "Superseded by $url, which updates the pipeline to a newer upstream commit."
           done
