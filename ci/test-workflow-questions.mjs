@@ -428,6 +428,10 @@ await test('bug-fix-backlog: an intake answer runs the confirmed lanes, and reac
   assert.ok(!bare.calls.some(c => c.label.startsWith('triage:')), 'no lane runs on a bare accept')
   const none = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: '[]' }] }, bfb())
   assert.deepEqual(none.result, [])
+  // The same answer as a JSON value, not a string: still "run nothing", never a re-asked Intake.
+  const noneValue = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: [] }] }, bfb())
+  assert.deepEqual(noneValue.result, [])
+  assert.ok(!noneValue.calls.some(c => c.label === 'intake'), 'an empty-array answer is an answer')
   await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'yes please' }] }, bfb()), /must be 'accept' or a JSON array/)
 })
 

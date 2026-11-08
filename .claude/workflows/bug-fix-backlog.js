@@ -206,7 +206,8 @@ const INTAKE_SCHEMA = {
 }
 const INTAKE_DIR = A.dir || ''
 const LABELS = (Array.isArray(A.labels) && A.labels.length ? A.labels : ['bug']).map(String)
-const INTAKE_ANSWER = ANSWERS.find(a => a.id === 'intake.q1' && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
+// An answer may be a string or a JSON value; an empty array ('run nothing') is an answer, not a missing one.
+const INTAKE_ANSWER = ANSWERS.find(a => a.id === 'intake.q1' && a.answer !== undefined && a.answer !== null && (typeof a.answer !== 'string' || a.answer.trim() !== ''))
 const INTAKE = A.intake === true || (A.intake !== false && (!A.lanes || !A.lanes.length))
 if (!INTAKE && (!A.lanes || !A.lanes.length)) throw new Error('bug-fix-backlog: args.lanes is required with intake: false (see the pipeline README)')
 const slug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
