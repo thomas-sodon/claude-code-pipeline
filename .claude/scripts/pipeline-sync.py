@@ -318,6 +318,10 @@ def sync(a):
     target = git(os.path.abspath(a.target), 'rev-parse', '--show-toplevel', check=False)
     if not target:
         raise Fail('%s is not a git repository' % a.target)
+    # .claude itself linked outside the repository (to ~/.claude, say): every write would land there, the manifest
+    # and settings.json included, so nothing is synced at all.
+    if os.path.lexists(os.path.join(target, '.claude')) and not inside(target, MANIFEST):
+        raise Fail('%s/.claude resolves outside the repository (a symlink?): not syncing into it' % target)
     manifest = load_manifest(target)
     prev = (manifest or {}).get('source') or {}
     tmpdir = None
@@ -435,7 +439,7 @@ def sync(a):
         settings = os.path.join('.claude', 'settings.json')
         settings_copied = (not same and os.path.isfile(os.path.join(src, settings))
                            and not os.path.lexists(os.path.join(target, settings)))
-        if settings_copied and write:
+        if settings_copied and write and inside(target, settings):
             atomic_copy(os.path.join(src, settings), os.path.join(target, settings))
         if write:
             write_manifest(target, {

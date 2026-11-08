@@ -348,6 +348,16 @@ class SyncTest(Fixture):
         self.assertIn('.claude/scripts/new.sh', m['files'])
         self.assertEqual(m['files']['.claude/commands/plan.md'], base_plan)
 
+    def test_a_claude_dir_linked_outside_the_repo_is_refused(self):
+        # .claude -> a directory outside the repository (a user's global ~/.claude, say): nothing is written there,
+        # not the manifest and not settings.json.
+        outside = os.path.join(self.tmp, 'global-claude')
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(self.dst, '.claude'))
+        r = self.run_sync('--update', code=2)
+        self.assertIn('resolves outside the repository', r['error'])
+        self.assertEqual(os.listdir(outside), [])
+
     def test_a_symlinked_file_keeps_its_base(self):
         self.run_sync()
         before = json.loads(read(self.dst, MANIFEST))['files']['.claude/commands/plan.md']
