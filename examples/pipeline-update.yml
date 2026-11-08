@@ -11,8 +11,8 @@
 # Stale PRs: there is one branch, and one PR, per upstream commit (pipeline/update-<sha>). When upstream
 # moves on before you merge, the next run opens a PR for the newer commit and closes the older open
 # pipeline/update-* PRs with a comment pointing to it; their branches are left in place. A branch that
-# exists already is never pushed to again: one with a PR (even one you closed) is left alone until upstream
-# changes; one without a PR (an earlier gh pr create failed) gets its PR opened.
+# had a PR (open, merged, or one you closed, whether or not its branch was deleted) is left alone until
+# upstream changes; a pushed branch without a PR (an earlier gh pr create failed) gets its PR opened.
 #
 # Setup:
 # - Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests".
@@ -78,13 +78,14 @@ jobs:
         run: |
           set -euo pipefail
           branch="pipeline/update-$SHA"
+          # Any PR ever opened for this upstream commit (open, merged, or closed on purpose, its branch deleted
+          # or not) means it was handled: never open a second one.
+          if [ "$(gh pr list --head "$branch" --state all --json number --jq length)" != "0" ]; then
+            echo "$branch already has a PR (open, merged, or closed on purpose)"; exit 0
+          fi
           pushed=
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            # A branch with a PR (open, or closed on purpose) is done. One without is an earlier run whose
-            # gh pr create failed after the push (e.g. Actions not yet allowed to create PRs): open it now.
-            if [ "$(gh pr list --head "$branch" --state all --json number --jq length)" != "0" ]; then
-              echo "$branch already has a PR (open, or closed on purpose)"; exit 0
-            fi
+            # Pushed by an earlier run whose gh pr create failed (e.g. Actions not yet allowed to create PRs).
             echo "$branch was pushed but has no PR: opening it"
             pushed=1
           fi

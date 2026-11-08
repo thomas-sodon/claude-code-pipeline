@@ -471,6 +471,9 @@ await test('bug-fix-backlog: lanes a person edited are validated before any bran
   const triage = calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
   assert.deepEqual(triage, ['triage:auth-session', 'triage:bug-13'], 'keys are slugged, a missing key is named after its first issue')
   await assert.rejects(lanes([{ key: 'A b', issues: [1] }, { key: 'a-b', issues: [2] }]), /share key a-b/)
+  // An issue in two edited lanes would get two triages and two 'Fixes #12' PRs: refused before anything runs.
+  const dup = lanes([{ key: 'a', issues: [12] }, { key: 'b', issues: [12, 14] }])
+  await assert.rejects(dup, /issue #12 is in lanes a and b/)
 })
 
 process.exit(failed ? 1 : 0)
