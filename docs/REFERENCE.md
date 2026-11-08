@@ -37,14 +37,13 @@ Steps:
 ```sh
 git clone https://github.com/thomas-sodon/claude-code-pipeline /tmp/ccp
 cd your-project
-mkdir -p .claude
-cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scripts .claude/
+python3 /tmp/ccp/.claude/scripts/pipeline-sync.py --from /tmp/ccp
 ```
 
 Then add a `## Pipeline config` section to your project's root `CLAUDE.md` (see
 [`examples/CLAUDE.pipeline-config.md`](../examples/CLAUDE.pipeline-config.md)).
 
-Or, instead of `cp -r`, open Claude Code in the pipeline checkout
+Or open Claude Code in the pipeline checkout
 (`cd /tmp/ccp && claude`) and run `/seed /abs/path/to/your-project`. The project
 must be a git repository with an `origin` remote and no uncommitted changes to
 tracked files. `/seed` copies the same directories (plus `.claude/skills/` when the
@@ -54,6 +53,27 @@ appends to an existing one the sections it lacks: `## How work happens here` and
 `## Pipeline config` with `MAIN_BRANCH` and `PROPOSALS_DIR` but no `QUALITY_GATES`.
 It commits nothing: on an existing project, land the files with `/create-pr`.
 `brief-to-proposals` runs `/seed` as its first phase.
+
+**Updating.** `.claude/scripts/pipeline-sync.py` installs and updates the
+pipeline's files; `/seed` runs it. It records the source (repo, ref, commit) and
+the sha256 of each file as installed in `.claude/pipeline-manifest.json`; commit
+that file with the rest of `.claude/`.
+
+```
+pipeline-sync.py [--target DIR] [--from DIR | --repo URL] [--ref REF]
+                 [--update] [--force] [--dry-run] [--check] [--json]
+```
+
+With no `--from`, it clones `--repo` at `--ref` (default: the manifest's, else this
+repository at `main`). Without `--update` it only adds missing files. `--update`
+replaces files unedited since install, deletes unedited files the source no longer
+ships, and keeps local edits (`local_edit`) and files changed on both sides
+(`conflict`; `--force` takes the source's). A file a person deleted stays deleted.
+`--check` changes nothing and exits 1 when anything is pending; `--dry-run` reports
+without writing; exit 2 is a usage error, a source that is not a pipeline, or a git
+failure. `CLAUDE.md` is never touched: compare its `## How work happens here` with
+`/seed`'s template after a large update. [`examples/pipeline-update.yml`](../examples/pipeline-update.yml)
+runs it weekly in GitHub Actions and opens a PR.
 
 On an existing project, add `QUALITY_GATES` yourself (`/seed` reports the commands
 your CI runs as the candidate value). On a greenfield project, `/bootstrap`

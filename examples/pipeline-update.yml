@@ -1,0 +1,81 @@
+# Keep the pipeline's .claude files current: copy this file to .github/workflows/pipeline-update.yml
+# in a repository the pipeline is installed in (by /seed or pipeline-sync.py).
+#
+# Once a week (or on demand) it clones the pipeline at PIPELINE_REF, runs its pipeline-sync.py --update
+# against this repository and, when anything changed, opens a pull request on a branch named after the
+# upstream commit. It never pushes to the default branch and never merges: you review and merge the PR,
+# like every other change. Files you edited in .claude/ are kept and listed as conflicts in the PR body.
+#
+# Setup:
+# - Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests".
+# - Optional but recommended: a fine-grained token (contents + pull requests: read/write on this repo)
+#   saved as the secret PIPELINE_UPDATE_TOKEN. A PR opened with the default GITHUB_TOKEN does not start
+#   your CI (GitHub's rule against recursive runs): close and reopen it, or push to it, to run the checks.
+# - Pin PIPELINE_REF to a release tag or commit once the pipeline publishes them; `main` tracks the tip.
+name: pipeline-update
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pipeline-update
+  cancel-in-progress: false
+
+env:
+  PIPELINE_REPO: https://github.com/thomas-sodon/claude-code-pipeline
+  PIPELINE_REF: main
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PIPELINE_UPDATE_TOKEN || github.token }}
+      - name: Fetch the pipeline
+        run: git clone --quiet --depth 1 --branch "$PIPELINE_REF" "$PIPELINE_REPO" "$RUNNER_TEMP/ccp"
+      - name: Sync the pipeline files
+        id: sync
+        run: |
+          set -euo pipefail
+          sync="$RUNNER_TEMP/ccp/.claude/scripts/pipeline-sync.py"
+          python3 "$sync" --target . --from "$RUNNER_TEMP/ccp" --update | tee "$RUNNER_TEMP/report.txt"
+          echo "sha=$(git -C "$RUNNER_TEMP/ccp" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          if [ -n "$(git status --porcelain -- .claude)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Open a pull request
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PIPELINE_UPDATE_TOKEN || github.token }}
+          SHA: ${{ steps.sync.outputs.sha }}
+        run: |
+          set -euo pipefail
+          branch="pipeline/update-$SHA"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch already exists: its PR is open or was closed on purpose"; exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add -- .claude
+          git commit -q -m "Update the pipeline to $SHA" -m "From $PIPELINE_REPO at $PIPELINE_REF, by pipeline-sync.py --update."
+          git push -q -u origin "$branch"
+          {
+            echo "Updates the pipeline's \`.claude\` files to [\`$SHA\`]($PIPELINE_REPO/commit/$SHA) ($PIPELINE_REF)."
+            echo
+            echo "Files edited in this repository are kept; any listed as a **conflict** changed upstream too:"
+            echo "merge them by hand, or run \`python3 .claude/scripts/pipeline-sync.py --update --force\` to take upstream's."
+            echo "Check the pipeline's README for changes to \`CLAUDE.md\`'s base sections, which sync never edits."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "Update the pipeline to $SHA" --body-file "$RUNNER_TEMP/body.md"

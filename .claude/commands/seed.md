@@ -8,10 +8,11 @@ This command is the **first step for a new idea**: run it in the clean repositor
 
 - `<target>` — the repository to seed (default: the working directory).
 - `--from=<dir>` — the pipeline source: a directory whose `.claude/` holds the pipeline (a checkout of the pipeline, or a project that has it installed). Default: the working directory. It must contain `.claude/workflows/brief-to-proposals.js` and `.claude/scripts/proposal-lint.py` → else `error=no_source`, naming what is missing and asking for `--from`. Files are copied as they are on disk; when the source is a git checkout with uncommitted changes (modified or untracked files) in what is copied, the report lists them (the target then gets an unreleased version).
-- `--update` — also replace pipeline files in the target that differ from the source (upgrading an installed pipeline). Never touches `CLAUDE.md`.
+- `--update` — upgrade an installed pipeline: replace pipeline files the target has not edited since they were installed, and delete ones the source no longer ships (see *Copy the pipeline files*). Never touches `CLAUDE.md`.
+- `--force` — with `--update`: also take the source's version of a file edited both in the target and in the source (a *conflict*).
 - `--dry-run` — print what would be copied, kept and written; write nothing.
 
-An unrecognized `--`-prefixed token or a second target → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: *Check the target* and *Write CLAUDE.md* still run; only *Copy the pipeline files* is skipped.
+An unrecognized `--`-prefixed token, a second target, or `--force` without `--update` → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: *Check the target* and *Write CLAUDE.md* still run; only *Copy the pipeline files* is skipped.
 
 ## Check the target
 
@@ -22,13 +23,21 @@ An unrecognized `--`-prefixed token or a second target → `error=invalid_argume
 
 ## Copy the pipeline files
 
-For each of `.claude/commands/`, `.claude/skills/` (when the source has it), `.claude/workflows/` and `.claude/scripts/`, every regular file under it in the source, to the same path in the target. When the source is a git checkout, the files are the ones `git -C <source> ls-files --cached --others --exclude-standard -- <dir>` lists, so caches and anything else the source ignores never ship; otherwise skip `__pycache__/` and `*.pyc`. Never follow a symlink.
+Run the deterministic installer from the source, never by hand when it exists:
 
-- **Absent** in the target → copy it, keeping its file mode.
+    python3 <source>/.claude/scripts/pipeline-sync.py --target <target> --from <source> --json [--update [--force]] [--dry-run]
+
+It copies, for each of `.claude/commands/`, `.claude/skills/` (when the source has it), `.claude/workflows/` and `.claude/scripts/`, every regular file under it in the source to the same path in the target (when the source is a git checkout, the files `git ls-files --cached --others --exclude-standard` lists, so caches and anything else the source ignores never ship; otherwise skipping `__pycache__/` and `*.pyc`; never following a symlink), keeping file modes, and `.claude/settings.json` only when the target has none. It records what it installed in `.claude/pipeline-manifest.json` (the source's repo, ref and commit, and the sha256 of each file as the source shipped it), so a later `--update` compares three ways:
+
+- **Absent** in the target → copied (*added*), unless the manifest shows it was installed and someone deleted it (*removed_locally*: kept deleted).
 - **Identical** → nothing to do.
-- **Different** → keep the target's version and list it as *differs*; under `--update`, replace it and list it as *updated*.
+- **Unedited since install, changed in the source** → *outdated*; under `--update`, replaced (*updated*).
+- **Edited in the target, unchanged in the source** → *local_edit*: kept.
+- **Edited in both** → *conflict*: kept; under `--update --force`, replaced.
+- **Different, with no install record** (a pipeline copied by hand, before the manifest) → *differs*: kept; under `--update`, replaced.
+- **Recorded, but no longer in the source** → *obsolete*; under `--update`, deleted when unedited (*deleted*), else kept (*obsolete_edited*).
 
-Never delete a target file, and copy nothing else (no `settings.local.json`, no source `CLAUDE.md`, no caches such as `__pycache__/`). Copy `.claude/settings.json` only when the target has none.
+Exit 2 (`error`) → stop and report it. When the source has no `pipeline-sync.py` (an older pipeline), apply the same rules by hand without a manifest: copy what is absent, keep what differs unless `--update`, delete nothing.
 
 ## Write CLAUDE.md
 
@@ -65,7 +74,7 @@ Never delete a target file, and copy nothing else (no `settings.local.json`, no 
 
     Seeded: <target> from <source>
 
-Then: files copied, identical, differing (kept) or updated, per directory; whether `CLAUDE.md` was written, appended to or left alone; the candidate `QUALITY_GATES` for an existing repository. Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
+Then: files added, identical, updated, deleted, and those kept back (outdated, differs, local edits, conflicts, obsolete) per directory, and the source commit installed (and the one it replaced); whether `CLAUDE.md` was written, appended to or left alone; the candidate `QUALITY_GATES` for an existing repository. Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
 
 ## What to skip
 
@@ -75,5 +84,5 @@ Then: files copied, identical, differing (kept) or updated, per directory; wheth
 
 ## Safety
 
-- Never overwrite a target file without `--update`, never overwrite `CLAUDE.md` content, never delete anything.
+- Never overwrite a target file without `--update`, never overwrite an edited one without `--update --force`, never overwrite `CLAUDE.md` content. The only deletions are `--update`'s: pipeline files the manifest recorded, that the source no longer ships and nobody edited.
 - Copy only the pipeline directories named above and, when the target has none, `.claude/settings.json`; never copy secrets, `.env` files or `settings.local.json`.

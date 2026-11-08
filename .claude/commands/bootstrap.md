@@ -120,7 +120,7 @@ Only when the final full `QUALITY_GATES` run is green.
 1. **Stage by explicit name** — never `git add -A` or `git add .`:
    - every file this command created, and the lockfiles, and `CLAUDE.md`;
    - the design docs in `$PROPOSALS_DIR` (never the brief the architecture's `Source:` names: briefs often hold business detail the person may not want in a public repository — list it as left out, and say how to add it in a later PR if they want it);
-   - the pipeline's `.claude/commands/`, `.claude/skills/` (when present), `.claude/workflows/`, `.claude/scripts/`, and `.claude/settings.json` when present.
+   - the pipeline's `.claude/commands/`, `.claude/skills/` (when present), `.claude/workflows/`, `.claude/scripts/`, `.claude/pipeline-manifest.json`, and `.claude/settings.json` when present.
 
    Every other pre-existing file stays unstaged and is listed in the report.
 2. **Check the index.** `git diff --cached --name-only` holds only the files above; no `.env` or other secret-looking file (keys, keystores, credentials, tokens); no large binary. Scan `git diff --cached` for credential patterns (private-key headers, cloud and API key prefixes, `Bearer ` tokens, `password=`) and for personal data (emails, phone or account numbers outside obvious placeholders). A hit → stop with `error=secret_in_commit` before committing, naming the file and line, never the value.

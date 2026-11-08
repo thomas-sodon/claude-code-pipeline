@@ -24,6 +24,8 @@ jobs:
         run: node ci/test-workflow-questions.mjs
       - name: proposal-lint tests
         run: python3 ci/test_proposal_lint.py
+      - name: pipeline-sync tests
+        run: python3 ci/test_pipeline_sync.py
       - name: Valid fixtures lint clean
         run: |
           for f in ci/fixtures/valid-*.md; do

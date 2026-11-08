@@ -60,8 +60,8 @@ The clone may be empty or hold just the README and licence a host creates.
 
 ```sh
 git clone https://github.com/thomas-sodon/claude-code-pipeline /tmp/ccp
-cd your-project && mkdir -p .claude
-cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scripts .claude/
+cd your-project
+python3 /tmp/ccp/.claude/scripts/pipeline-sync.py --from /tmp/ccp   # copies .claude/, records a manifest
 printf '\n## Pipeline config\n\nQUALITY_GATES: npm test\n' >> CLAUDE.md   # your gate command
 claude   # then: "Run the plan-to-merged-pr workflow with { concern: '<what to change>' }"
 ```
@@ -72,6 +72,27 @@ and a base `## Pipeline config` it lacks, and, when that config has no
 `QUALITY_GATES`, reports the commands your CI runs as the candidate value, for you
 to add once they pass locally. Land the seeded files with `/create-pr` before you
 build: lanes are cut from `origin` and need the commands there.
+
+### Keeping the pipeline up to date
+
+`/seed` and `.claude/scripts/pipeline-sync.py` record what they installed in
+`.claude/pipeline-manifest.json` (the source commit and a hash per file), so an
+update can tell an upstream change from your own edit. From your repository:
+
+```sh
+python3 .claude/scripts/pipeline-sync.py --check     # exit 1 when the pipeline's main has changes for you
+python3 .claude/scripts/pipeline-sync.py --update    # take them; then land .claude/ through a PR
+```
+
+It clones the pipeline (the manifest's repo and ref, `--repo` / `--ref` to change
+them, or `--from <checkout>`), replaces the files you have not edited, deletes the
+ones upstream removed, and keeps your edits: a file changed on both sides is listed
+as a `conflict` (`--update --force` takes upstream's). It never touches `CLAUDE.md`
+and never commits. To have it come to you, copy
+[`examples/pipeline-update.yml`](examples/pipeline-update.yml) to
+`.github/workflows/`: once a week it opens a PR with the update and the sync report.
+A pipeline copied with `cp -r` has no manifest yet; the first `--update` adopts it
+(files that differ are replaced, so commit any local edits first and re-apply them).
 
 For a brief or a change too big for one PR, run `brief-to-proposals` with
 `{ brief }` or `{ concern }` and `dir` (no `pipeline`: the repo holds it now). It
@@ -100,6 +121,9 @@ build each proposal with `proposal-build-chain`.
              grounded    tests first      + fixer until no   gates green,       conflicts, comments
              plan                         bug or concern     /create-pr         until it settles
 ```
+
+The full process, every hand-off between you and the workflows, and the gaps
+in it are drawn in [docs/PROCESS.md](docs/PROCESS.md).
 
 ## How it works
 
@@ -175,11 +199,14 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
   scripts/
     proposal-lint.py          design-doc lint, lane derivation and step ticking
     gate-slot.sh              optional host-wide semaphore for gate runs
+    pipeline-sync.py          install / update the pipeline's files in a repo (3-way, via a manifest)
 docs/
+  PROCESS.md                  the end-to-end process diagram, and the known gaps in the flow
   PROPOSALS.md                the design-doc format: architecture, roadmap, proposals
   REFERENCE.md                args, statuses, configuration, state outside the repo
 examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
+  pipeline-update.yml         a scheduled GitHub Action that opens a PR updating the pipeline
 ci/                           checks: workflow syntax; every skill and flag the workflows call
                               exists; the workflows stop on blocking questions and route the
                               answers; the lint's tests and fixtures; every example design doc
