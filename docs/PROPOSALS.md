@@ -68,6 +68,15 @@ blocks every lane of it (`proposal_not_accepted`, `Status: missing`) unless
 `--allow-draft`. In `plan-to-merged-pr` the check is `/plan --proposal`'s, so a run
 given `plan_text`, or a `planner` other than `plan`, builds without it.
 
+A proposal is grounded in the tree as it was when it was written. When
+`brief-to-proposals` writes several milestones' proposals at once, the earlier
+milestones change that tree before the later ones build, so accept them one at a
+time: before accepting each after the first, once the milestones before it have
+merged, re-run `/review-proposal <doc>` (a `Files:` path or interface that no
+longer matches the tree is a `concern`) and `/propose --revise <doc>` on its
+findings. For a long roadmap, propose only the next milestone (`max_milestones: 1`)
+and the rest with `/propose --milestone=N` as each comes up.
+
 ## Steps and milestones
 
 A proposal's `## Steps` and a roadmap's `## Milestones` share one grammar:
