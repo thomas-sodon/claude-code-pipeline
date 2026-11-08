@@ -6,15 +6,19 @@ on:
   # Re-check reply coverage when a finding is answered, so the gate turns green
   # without another push. Only the replies job runs on this event.
   pull_request_review_comment:
-    types: [created, edited]
+    types: [created, edited, deleted]
 
 permissions:
   contents: read
 
 jobs:
-  # Fail while earlier findings are still unanswered (no Claude call, no credential).
+  # Fail while findings are unanswered (no Claude call, no credential). Runs
+  # after the review so this push's own findings count: comments posted with
+  # GITHUB_TOKEN start no workflow, so nothing else would re-run the gate.
   replies:
     name: Reply coverage
+    needs: review
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,8 +32,8 @@ jobs:
         with:
           mode: replies
 
-  # Review the diff with Claude and post findings. Runs whether or not the
-  # replies gate passes, so pushes that address findings still get reviewed.
+  # Review the diff with Claude and post findings. The gate does not gate it,
+  # so pushes that address findings still get reviewed.
   # Skipped on fork PRs: they get no secrets and a read-only token.
   review:
     name: Review
