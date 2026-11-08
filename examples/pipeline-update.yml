@@ -87,7 +87,9 @@ jobs:
             cat "$RUNNER_TEMP/report.txt"
             echo '```'
           } > "$RUNNER_TEMP/body.md"
-          url=$(gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+          # A schedule event's payload has no repository field, so ask the API for the default branch.
+          base=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)
+          url=$(gh pr create --base "$base" --head "$branch" \
             --title "Update the pipeline to $SHA" --body-file "$RUNNER_TEMP/body.md")
           echo "opened $url"
           # Close the older update PRs this one supersedes (branches named after earlier upstream commits).
