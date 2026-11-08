@@ -389,10 +389,17 @@ def sync(a):
             # conflict, only --force replaces it.
             take = (kind == 'added' or (a.update and kind == 'outdated')
                     or (a.update and a.force and kind in ('conflict', 'differs')))
+            # Anything an update would write (so --check and --dry-run judge it too) must stay inside the repository.
+            would_write = kind in ('added', 'outdated') or (a.force and kind in ('conflict', 'differs'))
+            if would_write and not inside(target, rel):
+                # Resolves outside the repository (a symlinked directory): skipped, as a removal there is, in every
+                # mode, so --check and --dry-run report what a real run does, and the rest of the run goes on.
+                report['symlink'].append(rel)
+                if base:
+                    new_bases[rel] = base
+                continue
             if take:
                 if write:
-                    if not inside(target, rel):
-                        raise Fail('%s resolves outside %s (a symlinked directory?): not writing it' % (rel, target))
                     atomic_copy(os.path.join(src, rel), os.path.join(target, rel))
                 report['added' if kind == 'added' else 'updated'].append(rel)
                 new_bases[rel] = s_hash
@@ -402,7 +409,7 @@ def sync(a):
                 # source's; a kept edit or conflict keeps the old base, so it stays an edit on the next run.
                 if kind == 'identical':
                     new_bases[rel] = s_hash
-                elif kind in ('local_edit', 'conflict', 'outdated', 'removed_locally'):
+                elif kind in ('local_edit', 'conflict', 'outdated', 'removed_locally', 'symlink'):
                     new_bases[rel] = base
         if not same:
             for rel in sorted(set(bases) - set(files)):

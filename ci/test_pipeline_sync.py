@@ -321,6 +321,40 @@ class SyncTest(Fixture):
         self.assertEqual(r['deleted'], [])
         self.assertTrue(os.path.exists(os.path.join(elsewhere, 'old.md')))
 
+    def test_paths_outside_the_repo_are_skipped_and_the_run_finishes(self):
+        self.run_sync()
+        base_plan = json.loads(read(self.dst, MANIFEST))['files']['.claude/commands/plan.md']
+        elsewhere = os.path.join(self.tmp, 'elsewhere')
+        shutil.copytree(os.path.join(self.dst, '.claude/commands'), elsewhere)
+        shutil.rmtree(os.path.join(self.dst, '.claude/commands'))
+        os.symlink(elsewhere, os.path.join(self.dst, '.claude/commands'))
+        write(self.src, '.claude/commands/plan.md', 'plan v2\n')
+        write(self.src, '.claude/scripts/new.sh', 'echo new\n')
+        self.commit_src('v2')
+        # --check reports what the real run does: plan.md skipped, not "to update".
+        r = self.run_sync('--check', code=1)
+        self.assertIn('.claude/commands/plan.md', r['symlink'])
+        self.assertNotIn('.claude/commands/plan.md', r['updated'] + r['outdated'])
+        # The real run finishes: the other files sync and the manifest is written, plan.md's base kept.
+        r = self.run_sync('--update')
+        self.assertIn('.claude/scripts/new.sh', r['added'])
+        self.assertIn('.claude/commands/plan.md', r['symlink'])
+        self.assertEqual(read(elsewhere, 'plan.md'), 'plan v1\n', 'nothing written outside the repo')
+        m = json.loads(read(self.dst, MANIFEST))
+        self.assertIn('.claude/scripts/new.sh', m['files'])
+        self.assertEqual(m['files']['.claude/commands/plan.md'], base_plan)
+
+    def test_a_symlinked_file_keeps_its_base(self):
+        self.run_sync()
+        before = json.loads(read(self.dst, MANIFEST))['files']['.claude/commands/plan.md']
+        real = os.path.join(self.tmp, 'plan-real.md')
+        shutil.copyfile(os.path.join(self.dst, '.claude/commands/plan.md'), real)
+        os.remove(os.path.join(self.dst, '.claude/commands/plan.md'))
+        os.symlink(real, os.path.join(self.dst, '.claude/commands/plan.md'))
+        r = self.run_sync()
+        self.assertIn('.claude/commands/plan.md', r['symlink'])
+        self.assertEqual(json.loads(read(self.dst, MANIFEST))['files'].get('.claude/commands/plan.md'), before)
+
     def test_legacy_install_adopted_from_history(self):
         # A cp -r of v1, before the manifest: plan.md is an unedited older upstream version, old.md was edited.
         write(self.dst, '.claude/commands/plan.md', 'plan v1\n')
