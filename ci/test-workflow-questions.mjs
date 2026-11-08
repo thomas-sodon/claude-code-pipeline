@@ -1,4 +1,5 @@
-// Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing.
+// Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing, and how
+// plan-to-merged-pr hands a PR back to the person (resume_monitor, closeout).
 // Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every
 // prompt is recorded so the tests can check which stages saw which answers.
 import { readFileSync } from 'node:fs'
@@ -101,6 +102,45 @@ await test('plan-to-merged-pr: on_question assume tells stages to proceed and co
   assert.match(prompt('plan'), /proceed on assumptions/)
   assert.doesNotMatch(prompt('plan'), /return every such question/)
   assert.deepEqual(result.assumptions, [{ stage: 'plan', assumption: 'per process -> taken' }])
+})
+
+// ---- plan-to-merged-pr: the monitor's hand-off (resume_monitor) and the close-out check after a merge
+const OBS = { pr_state: 'OPEN', head_sha: 'abcdef1234', ai_review_done_on_head: true, ci_state: 'green', ci_configured: true }
+const MON = { pr: 7, branch: 'feat/x', dir: '/w/x', plan_text: 'the plan', main_branch: 'trunk' }
+await test('plan-to-merged-pr: a settled hand-off carries the monitor-only args and a one-line handoff', async () => {
+  const { result, calls } = await run('plan-to-merged-pr', MON, label => label.startsWith('observe') ? OBS : {})
+  assert.equal(result.status, 'OPEN')
+  assert.deepEqual(result.resume_monitor, MON)
+  assert.match(result.handoff, /settled/)
+  assert.match(result.handoff, /monitor-only/)
+  assert.doesNotMatch(result.handoff, /\n/)
+  assert.ok(!calls.some(c => c.label === 'closeout'))
+})
+
+await test('plan-to-merged-pr: red CI not ours and the round cap both hand off with resume_monitor', async () => {
+  const red = await run('plan-to-merged-pr', MON, label => label.startsWith('observe') ? { ...OBS, ci_state: 'red' } : {})
+  assert.match(red.result.handoff, /outside this PR/)
+  assert.equal(red.result.resume_monitor.pr, 7)
+  const cap = await run('plan-to-merged-pr', { ...MON, max_monitor_rounds: 2 }, label => label.startsWith('observe') ? { ...OBS, ci_state: 'pending' } : {})
+  assert.match(cap.result.handoff, /2-round cap/)
+  assert.equal(cap.result.resume_monitor.max_monitor_rounds, 2)
+})
+
+await test('plan-to-merged-pr: a merged PR with a proposal reports the close-out edits without making them', async () => {
+  const edits = [{ file: 'docs/design/x.md', line: 3, before: 'Status: in-progress', after: 'Status: done' }]
+  const respond = label => label.startsWith('observe') ? { ...OBS, pr_state: 'MERGED' }
+    : label === 'closeout' ? { checked: true, proposal_complete: true, edits, next_milestone: [{ n: 3, title: 'Go / no-go' }], roadmap: 'docs/design/roadmap.md' } : {}
+  const { result, prompt } = await run('plan-to-merged-pr', { ...MON, proposal: 'docs/design/x.md' }, respond)
+  assert.equal(result.status, 'MERGED')
+  assert.deepEqual(result.closeout, { proposal_complete: true, edits, next_milestone: [{ n: 3, title: 'Go / no-go' }], roadmap: 'docs/design/roadmap.md' })
+  assert.equal(result.resume_monitor, undefined)
+  assert.match(prompt('closeout'), /WITHOUT making any of them/)
+  assert.match(prompt('closeout'), /origin\/trunk/)
+  const partial = await run('plan-to-merged-pr', { ...MON, proposal: 'docs/design/x.md' },
+    label => label === 'closeout' ? { checked: true, proposal_complete: false, pending_steps: [4] } : respond(label))
+  assert.deepEqual(partial.result.closeout, { proposal_complete: false, pending_steps: [4] })
+  const none = await run('plan-to-merged-pr', MON, respond)
+  assert.ok(!none.calls.some(c => c.label === 'closeout'), 'no proposal, no close-out check')
 })
 
 // ---- brief-to-proposals
