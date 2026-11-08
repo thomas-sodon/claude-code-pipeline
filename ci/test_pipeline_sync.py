@@ -99,6 +99,21 @@ class SyncTest(Fixture):
         self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan v2\n')
         self.run_sync('--check')
 
+    def test_a_mode_only_change_upstream_is_applied(self):
+        # Upstream makes a script executable without touching its contents: --check flags it, --update applies it.
+        self.run_sync()
+        script = '.claude/commands/plan.md'
+        os.chmod(os.path.join(self.src, script), 0o755)
+        self.commit_src('chmod +x')
+        r = self.run_sync('--check', code=1)
+        self.assertEqual(r['mode'], [script])
+        self.assertIn('mode', r['pending'])
+        r = self.run_sync('--update')
+        self.assertEqual(r['updated'], [script])
+        self.assertTrue(os.access(os.path.join(self.dst, script), os.X_OK))
+        self.assertEqual(read(self.dst, script), 'plan v1\n')
+        self.run_sync('--check')
+
     def test_local_edit_is_kept_and_conflict_needs_force(self):
         self.run_sync()
         write(self.dst, '.claude/commands/plan.md', 'plan local\n')

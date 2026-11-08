@@ -73,6 +73,8 @@ only adds missing files. `--update`
 replaces files unedited since install, deletes unedited files the source no longer
 ships, and keeps local edits (`local_edit`) and files changed on both sides
 (`conflict`; `--force` takes the source's). A file a person deleted stays deleted.
+A file whose contents match but whose executable bit changed upstream is `mode`:
+pending, and `--update` applies the mode without rewriting the file.
 The manifest is an ordinary committed file, so its paths are not trusted: only
 normalized paths under `.claude/{commands,skills,workflows,scripts}/` that resolve
 inside the repository are compared, replaced or deleted; any other entry is left

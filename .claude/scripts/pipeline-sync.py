@@ -13,6 +13,7 @@ comparison on the next run, so an update can tell an upstream change from a loca
 edit:
 
   target == source                      identical    (nothing to do)
+  same contents, executable bit changed mode         -> mode applied with --update
   target absent, never installed        added        (copied)
   target absent, installed before       removed_locally (kept removed: you deleted it)
   target == base, source changed        outdated     -> updated with --update
@@ -76,7 +77,7 @@ DEFAULT_REF = 'main'
 # A pipeline source must hold these (the same check /seed makes).
 REQUIRED = (os.path.join('.claude', 'workflows', 'brief-to-proposals.js'),
             os.path.join('.claude', 'scripts', 'proposal-lint.py'))
-PENDING = ('added', 'outdated', 'conflict', 'differs', 'obsolete')
+PENDING = ('added', 'outdated', 'conflict', 'differs', 'obsolete', 'mode')
 CLAUDE_MD = 'CLAUDE.md'
 CLAUDE_MD_TEMPLATE = '.claude/scripts/claude-md-base.md'
 SECTION = '## How work happens here'
@@ -387,7 +388,7 @@ def sync(a):
             files = source_files(src)
         report = {k: [] for k in ('added', 'identical', 'outdated', 'updated', 'local_edit', 'conflict',
                                   'differs', 'removed_locally', 'obsolete', 'deleted', 'obsolete_edited',
-                                  'symlink', 'adopted')}
+                                  'symlink', 'adopted', 'mode')}
         new_bases = {}
         write = not (a.dry_run or a.check)
         for rel in files:
@@ -397,6 +398,18 @@ def sync(a):
                 report['adopted'].append(rel)
                 kind = 'outdated'
             s_hash = sha(os.path.join(src, rel))
+            # Same contents, but the executable bit changed upstream (a script made runnable): only the mode is
+            # applied, under --update; until then it is pending.
+            if (kind == 'identical' and not same and inside(target, rel)
+                    and (os.stat(os.path.join(src, rel)).st_mode ^ os.stat(os.path.join(target, rel)).st_mode) & 0o111):
+                if a.update:
+                    if write:
+                        shutil.copymode(os.path.join(src, rel), os.path.join(target, rel))
+                    report['updated'].append(rel)
+                else:
+                    report['mode'].append(rel)
+                new_bases[rel] = s_hash
+                continue
             # A file with no install record that matches no shipped version may hold someone's edits: like a
             # conflict, only --force replaces it.
             take = (kind == 'added' or (a.update and kind == 'outdated')
@@ -483,7 +496,8 @@ def human(r):
               ('local_edit', 'edited here, unchanged upstream (kept)'),
               ('obsolete', 'removed upstream (run with --update to delete)'),
               ('obsolete_edited', 'removed upstream but edited here (kept)'),
-              ('removed_locally', 'deleted here (kept deleted)'), ('symlink', 'symlink in the target (skipped)')]
+              ('removed_locally', 'deleted here (kept deleted)'), ('symlink', 'symlink in the target (skipped)'),
+              ('mode', 'executable bit changed upstream (run with --update)')]
     for key, label in labels:
         if r[key]:
             lines.append('  %s: %d' % (label, len(r[key])))
