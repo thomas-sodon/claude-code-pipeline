@@ -142,12 +142,22 @@ def load_manifest(target):
     return m
 
 
-_USERINFO = re.compile(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]*@')
+_USERINFO = re.compile(r'([a-zA-Z][a-zA-Z0-9+.-]*)://([^/@\s]*)@')
+
+
+def _redact_userinfo(m):
+    scheme, info = m.group(1), m.group(2)
+    if 'ssh' in scheme.lower():
+        # ssh://git@host: the user name is how the host knows whom to log in as, and no credential; only a password goes.
+        user = info.split(':', 1)[0]
+        return '%s://%s' % (scheme, user + '@' if user else '')
+    # http(s) and the rest: the user name itself may be the token (https://<token>@github.com/...), so all of it goes.
+    return '%s://' % scheme
 
 
 def redact_url(url):
-    """A URL without its user:password@ part, so a token in a remote never reaches the manifest or a report."""
-    return _USERINFO.sub(r'\1', url) if url else url
+    """A URL with no credential in it, so a token in a remote never reaches the manifest or a report."""
+    return _USERINFO.sub(_redact_userinfo, url) if url else url
 
 
 def is_pipeline_path(rel):

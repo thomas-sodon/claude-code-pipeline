@@ -226,7 +226,8 @@ class SyncTest(Fixture):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertNotIn('SECRET123', human.stdout + human.stderr)
         # redact_url itself (a remote's URL can be rewritten by git's insteadOf config, so test the function):
-        # only an URL's user:password@ goes; an scp-style remote has no secret and is kept as it is.
+        # http(s) user info goes whole (a token can be the user name); an ssh user name stays (it is no secret,
+        # and the host needs it), only its password goes; an scp-style remote has no secret and is kept as it is.
         import importlib.util
         spec = importlib.util.spec_from_file_location('pipeline_sync', SYNC)
         mod = importlib.util.module_from_spec(spec)
@@ -240,7 +241,10 @@ class SyncTest(Fixture):
             sys.dont_write_bytecode = dont_write
         for url, want in [('https://u:t0k@github.com/a/b.git', 'https://github.com/a/b.git'),
                           ('https://x-access-token:t0k@github.com/a/b', 'https://github.com/a/b'),
-                          ('ssh://git@host:22/a/b.git', 'ssh://host:22/a/b.git'),
+                          ('https://ghp_t0k@github.com/a/b', 'https://github.com/a/b'),
+                          ('ssh://git@host:22/a/b.git', 'ssh://git@host:22/a/b.git'),
+                          ('ssh://git:pw@host/a/b.git', 'ssh://git@host/a/b.git'),
+                          ('git+ssh://git@host/a/b.git', 'git+ssh://git@host/a/b.git'),
                           ('git@github.com:a/b.git', 'git@github.com:a/b.git'),
                           ('https://github.com/a/b', 'https://github.com/a/b'), (None, None)]:
             self.assertEqual(mod.redact_url(url), want, url)
