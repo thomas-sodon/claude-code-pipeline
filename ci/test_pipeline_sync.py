@@ -200,7 +200,14 @@ class SyncTest(Fixture):
         import importlib.util
         spec = importlib.util.spec_from_file_location('pipeline_sync', SYNC)
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        # No bytecode cache: .claude/scripts/__pycache__ would carry this machine's paths, which CI's
+        # project-agnostic grep over .claude/ rejects.
+        dont_write = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.dont_write_bytecode = dont_write
         for url, want in [('https://u:t0k@github.com/a/b.git', 'https://github.com/a/b.git'),
                           ('https://x-access-token:t0k@github.com/a/b', 'https://github.com/a/b'),
                           ('ssh://git@host:22/a/b.git', 'ssh://host:22/a/b.git'),
