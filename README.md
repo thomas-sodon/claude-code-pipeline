@@ -343,7 +343,11 @@ One concern from a sentence to a PR, then babysit it:
    the PR merges or closes, after two quiet rounds with green CI (on a repo with no
    CI, on the local gates), when CI is red for a reason outside the PR and nothing
    else is actionable, or after `max_monitor_rounds` (default 10). Merging is left
-   to a human.
+   to a human. A PR handed off still open comes back with `resume_monitor`, the
+   monitor-only args to re-run (or [schedule](docs/REFERENCE.md#watching-a-handed-off-pr))
+   when it may have moved; given `proposal`, a merged PR's result says in
+   `closeout` whether the proposal is now complete on `main` and which close-out
+   edits a person should make.
 
 Modes (full, build-only, ship-only, monitor-only) are listed in
 [docs/REFERENCE.md](docs/REFERENCE.md#plan-to-merged-pr-modes).

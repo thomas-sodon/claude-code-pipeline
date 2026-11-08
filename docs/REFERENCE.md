@@ -2,7 +2,7 @@
 
 Detailed reference for [claude-code-pipeline](../README.md): workflow modes and
 args, configuration, gate wrappers, the proposal lint, the state kept outside the
-repo, result statuses and resuming a stopped run. The design-doc format is in
+repo, result statuses, resuming a stopped run and watching a handed-off PR. The design-doc format is in
 [PROPOSALS.md](PROPOSALS.md).
 
 ## `plan-to-merged-pr` modes
@@ -12,7 +12,7 @@ repo, result statuses and resuming a stopped run. The design-doc format is in
 | full (default) | `{ concern }` | one concern from plan to a watched PR |
 | build-only | `{ concern, ship: false, branch, dir, bases }` | a stacked lane whose predecessors are not merged yet: everything up to the merge check, then push, no PR |
 | ship-only | `{ ship_only: true, branch, title \| existing_pr, dir?, predecessor_prs?, proposal?, plan_text? }` | open (or ready) the PR for a built branch (a lane, or the bootstrap branch) once every PR below it has merged, then monitor; `predecessor_prs` lists the PRs below a stacked lane (the chain's ship plan gives a placeholder for every lane after the first in its chain; `ship-chain` fills it in as each PR below merges), and nothing is opened or readied until each reads `MERGED`. A run given `bases` that opens or readies a PR is refused without it |
-| monitor-only | `{ pr, branch, dir?, plan_text? }` | babysit an existing PR |
+| monitor-only | `{ pr, branch, dir?, plan_text?, proposal? }` | babysit an existing PR; a run that hands it off returns these args as `resume_monitor` ([Watching a handed-off PR](#watching-a-handed-off-pr)) |
 
 ## Install and configuration
 
@@ -195,7 +195,7 @@ request that cannot be met; 2 = usage error or unreadable file. `--lanes`,
                                    // e.g. './.claude/scripts/gate-slot.sh' to force the semaphore
   commit_trailers: ['Co-Authored-By: Claude <noreply@anthropic.com>'],
   max_review_rounds: 5, max_polish: 6, max_monitor_rounds: 10,   // max_rounds is an alias of max_monitor_rounds
-  efforts: { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low' },
+  efforts: { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low', closeout: 'low' },
                                    // efforts.pr (unset) sets /create-pr's effort; unset keys inherit the session's
   on_question: 'stop',             // 'stop' = a blocking question ends the run with needs_input; 'assume' = take the
                                    // recommended option and list it in the result's assumptions
@@ -353,6 +353,30 @@ Every result carries a `status`.
 Every result also carries `assumptions`: each choice a stage made that its inputs
 did not settle, with the stage that made it.
 
+After monitoring, the result also carries:
+
+- `resume_monitor` and `handoff`, when the monitor hands off a PR that is still
+  open (`OPEN`: settled, the `max_monitor_rounds` cap hit, or red CI outside the
+  PR; or `monitor_failed`). `resume_monitor` is the exact monitor-only args,
+  `{ pr, branch, dir?, plan_text? }` plus whichever of `proposal`, `main_branch`,
+  `ai_review_check`, `required_checks`, `gate`, `commit_trailers`, `efforts`,
+  `on_question` and `max_monitor_rounds` the run was given; `handoff` is one line
+  saying why it stopped and how to re-run it. A `needs_input` result from the
+  `monitor` stage carries `resume_monitor` too.
+- `closeout`, when the run was given `proposal` and the PR reads `MERGED`. One
+  read-only agent (`efforts.closeout`, default low) lints the proposal as it is on
+  `origin/<main_branch>` (`proposal-lint.py --json`), and `--roadmap` on the
+  roadmap its `Source:` names, when that resolves. Every step ticked gives
+  `{ proposal_complete: true, edits, next_milestone, roadmap }`: `edits` lists
+  `{ file, line, before, after }` for the `Status:` → `Status: done` change and
+  the milestone's `[ ]` → `[x]` tick (an `- Outcome:` line too, only when the
+  milestone is a human gate: on a code milestone it is W `outcome_on_code_step`),
+  each left out when already made; `next_milestone` is `--roadmap`'s `next`, as
+  `[{ n, title }]` (empty without a roadmap). Steps left give
+  `{ proposal_complete: false, pending_steps }`. The run never makes these edits:
+  a person does, in a docs PR. No `closeout` means the check could not run (the
+  log says why).
+
 `proposal-build-chain`, explicit mode: an array of `{ lane, branch, steps, status, result }`,
 one per lane attempted, `status` being the lane's `plan-to-merged-pr` status (or
 `failed`); a `needs_input` lane also carries `questions` (each with its `lane`) and
@@ -459,7 +483,7 @@ stage, never an earlier one, so the stages before it replay from the record:
 
 - `plan-to-merged-pr`: stages run `plan` → `impl` → `fix` → `merge_check` → `monitor`.
   An answer to a `monitor` question (an incompatible conflict `/merge-main` would
-  not pick a side in) is given in monitor-only mode instead: `{ pr, branch, dir, answers }`.
+  not pick a side in) is given in monitor-only mode instead: the result's `resume_monitor` plus `answers`.
 - `brief-to-proposals`: `intake` → `architecture` → a milestone (`m<N>`; in concern
   mode `proposal`) → `consistency`. A milestone's answer reaches only that
   milestone's author, reviewers and revisers, and the Consistency phase.
@@ -494,6 +518,25 @@ args (and the same `date`) is often simpler than a resume: lanes already on orig
 come back `already_built` and are not rebuilt. `ship-chain` is the same: a fresh
 run with the same args skips lanes whose PR merged and picks up an open PR where it
 is.
+
+## Watching a handed-off PR
+
+Once the monitor hands a PR off, nothing watches it: a review comment, a conflict
+from `main` moving, or CI turning red is picked up only when monitor-only mode runs
+again. Re-run it with the hand-off result's `resume_monitor` as args. To have that
+happen on its own, re-run it on a schedule; no extra infrastructure is needed:
+
+- **In a session**, with `/loop`:
+  `/loop 2h Run the plan-to-merged-pr workflow with args <resume_monitor JSON>. Stop looping when its status is MERGED or CLOSED, or needs_input (then ask me its questions).`
+- **Unattended**, as a recurring scheduled task (Claude Code's scheduled tasks, or
+  your own cron running `claude -p`) with the same prompt and a fresh session per
+  run, in a checkout of the branch (`dir`).
+
+Each re-run is a full monitor of up to `max_monitor_rounds`; pass a small one (2 or
+3) so a quiet PR costs one or two observe rounds. Never run two monitors on one PR
+at once: both would push to its branch. A re-run that sees the PR `MERGED` with
+`proposal` set reports `closeout`, so the scheduled watch also prompts the close-out.
+Stop the schedule once the PR merges or closes.
 
 ## State outside the repo
 

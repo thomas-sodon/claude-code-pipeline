@@ -74,7 +74,7 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
    ```
    Keep the title under 70 characters. End the body with the attribution line the session uses for PRs.
 
-9. **Report.** Show the PR URL (new from Step 8, or the existing one from Step 6), its base, which issue, if any, auto-closes on merge, and whether deploy notes were included (from which plan).
+9. **Report.** Show the PR URL (new from Step 8, or the existing one from Step 6), its base, which issue, if any, auto-closes on merge, and whether deploy notes were included (from which plan). Unless a workflow that called this command monitors the PR itself, add that nothing watches it now: CI, review comments and conflicts are babysat by the `plan-to-merged-pr` workflow in monitor-only mode, `{ pr: <N>, branch: <branch>, dir: <this checkout> }`, re-run (or scheduled) whenever the PR may have moved.
 
 ## Safety
 
