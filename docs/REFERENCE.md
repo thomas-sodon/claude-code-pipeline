@@ -75,6 +75,19 @@ failure. `CLAUDE.md` is never touched: compare its `## How work happens here` wi
 `/seed`'s template after a large update. [`examples/pipeline-update.yml`](../examples/pipeline-update.yml)
 runs it weekly in GitHub Actions and opens a PR.
 
+**Linting the design docs in CI.** `/bootstrap` gives a new repository's CI a
+`docs` job: `proposal-lint.py` on every design doc in `PROPOSALS_DIR` (a `.md` file
+whose first `# ` heading is `# Proposal:`, `# Roadmap:` or `# Architecture:`; other
+files there are skipped), `--roadmap` on `roadmap.md`, and, when `CLAUDE.md` carries
+`/bootstrap`'s Pipeline config marker, `--claude-md CLAUDE.md` on `architecture.md`.
+For a repository bootstrapped before that, or an existing project, paste the job
+from [`examples/docs-lint-job.yml`](../examples/docs-lint-job.yml) under `jobs:` in
+your CI workflow, set its `PROPOSALS_DIR` and pin its checkout as your other jobs
+do, and once it has run require the `docs` check on `main` beside your gates check.
+Docs PRs (accepting a doc, ticking a gate, writing an `Outcome:`) are then linted
+before they merge, instead of surfacing as `proposal_lint_errors` when a build
+starts.
+
 On an existing project, add `QUALITY_GATES` yourself (`/seed` reports the commands
 your CI runs as the candidate value). On a greenfield project, `/bootstrap`
 completes the section from the accepted architecture, adding `QUALITY_GATES`,
@@ -129,6 +142,7 @@ proposal-lint.py DOC --lanes [--root DIR] [--date YYYYMMDD] [--branch-prefix fea
                              [--remote-heads FILE] [--repo DIR] [--allow-draft]
 proposal-lint.py DOC --tick N[,N...]
 proposal-lint.py ROADMAP --roadmap
+proposal-lint.py ARCHITECTURE --claude-md PATH [--json]
 ```
 
 - **Lint** (default): prints `path:line: E|W code: message` lines and a summary, or
@@ -160,9 +174,19 @@ proposal-lint.py ROADMAP --roadmap
   mode kept) and prints `{ticked, already, missing}`; any missing number ticks
   nothing (exit 1).
 - **`--roadmap`**: prints `{doc, kind, errors, warnings, milestones: [{n, title, done, human_gate, proposal, proposal_exists, progress: {done, total, gates_pending}, complete, satisfied, depends}], next}`.
+- **`--claude-md PATH`**: lints the architecture doc and checks that the `CLAUDE.md`
+  at PATH carries its `## Invariants` and `## Testing` bodies verbatim, as
+  `/bootstrap` copied them. Each section that differs, or is missing, is E
+  `claude_md_drift`, at the `CLAUDE.md` line of the first difference; the error
+  carries `path: PATH` (and plain output prints PATH). Blank lines at either end of a
+  body are ignored, and so is the one pointer line `/bootstrap` adds under
+  `## Invariants` (a first or last line of the body naming `architecture.md` that the
+  architecture's body lacks). A non-architecture DOC is E `not_an_architecture`.
+  Output as in lint mode (`--json` for JSON).
 
-Exit 0 = no errors (warnings allowed); 1 = lint errors, or a `--tick` / `--lanes`
-request that cannot be met; 2 = usage error or unreadable file. `--lanes`,
+Exit 0 = no errors (warnings allowed); 1 = lint errors (`claude_md_drift` included),
+or a `--tick` / `--lanes` request that cannot be met; 2 = usage error or unreadable
+file (DOC, or `--claude-md`'s PATH). `--lanes`,
 `--roadmap` and `--tick` always print JSON.
 
 ## Workflow args

@@ -49,7 +49,7 @@ The clone may be empty or hold just the README and licence a host creates.
    ship-only run is skipped.)
 4. **Ship it** (you merge). `plan-to-merged-pr` with `{ ship_only: true, branch,
    title }` opens the bootstrap PR and babysits its CI; you merge it, protect `main`
-   and require its CI check, add the secrets by name and tick the roadmap's Bootstrap
+   and require its CI checks (the gates and `docs`, which lints the design docs), add the secrets by name and tick the roadmap's Bootstrap
    gate with its `Outcome:` through a docs PR: `/bootstrap` prints the steps.
 5. **Build, milestone by milestone.** You do the human gates the next milestone
    waits on; `proposal-build-chain` builds its proposal's lanes; you ship each lane
@@ -71,7 +71,11 @@ copies the same files, appends to `CLAUDE.md` whichever of `## How work happens 
 and a base `## Pipeline config` it lacks, and, when that config has no
 `QUALITY_GATES`, reports the commands your CI runs as the candidate value, for you
 to add once they pass locally. Land the seeded files with `/create-pr` before you
-build: lanes are cut from `origin` and need the commands there.
+build: lanes are cut from `origin` and need the commands there. To lint your design
+docs in CI, as `/bootstrap` sets up on a new repository, paste the `docs` job from
+[`examples/docs-lint-job.yml`](examples/docs-lint-job.yml) into your CI workflow and
+require its check on `main`
+([how](docs/REFERENCE.md#install-and-configuration)).
 
 ### Keeping the pipeline up to date
 
@@ -197,7 +201,7 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
     plan.md  impl.md  review-changes.md  polish.md  create-pr.md
     process-comments.md  merge-main.md  quality-gates.md  bug-fix.md
   scripts/
-    proposal-lint.py          design-doc lint, lane derivation and step ticking
+    proposal-lint.py          design-doc lint, lane derivation, step ticking, CLAUDE.md drift check
     gate-slot.sh              optional host-wide semaphore for gate runs
     pipeline-sync.py          install / update the pipeline's files in a repo (3-way, via a manifest)
 docs/
@@ -207,6 +211,7 @@ docs/
 examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
   pipeline-update.yml         a scheduled GitHub Action that opens a PR updating the pipeline
+  docs-lint-job.yml           the CI job /bootstrap writes to lint the design docs, for an existing repo
 ci/                           checks: workflow syntax; every skill and flag the workflows call
                               exists; the workflows stop on blocking questions and route the
                               answers; the lint's tests and fixtures; every example design doc

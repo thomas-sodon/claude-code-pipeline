@@ -12,11 +12,14 @@ Usage:
                                [--remote-heads FILE] [--repo DIR] [--allow-draft]
   proposal-lint.py DOC --tick N[,N...]
   proposal-lint.py ROADMAP --roadmap
+  proposal-lint.py ARCHITECTURE --claude-md PATH [--json]
 
 Exit status: 0 = no errors (warnings allowed); 1 = lint errors, or a --tick /
 --lanes request that cannot be met; 2 = usage error or unreadable DOC.
---lanes, --roadmap and --tick always print JSON. The script never runs git and
-never touches the network: it reads only the files it is given.
+--lanes, --roadmap and --tick always print JSON. --claude-md lints ARCHITECTURE and checks
+that CLAUDE.md at PATH carries its ## Invariants and ## Testing bodies verbatim
+(claude_md_drift). The script never runs git and never touches the
+network: it reads only the files it is given.
 """
 
 import argparse
@@ -52,6 +55,7 @@ PROPOSAL_SECTIONS = ('Context', 'Goals', 'Non-goals', 'Current state', 'Design',
 ARCH_SECTIONS = ('Context', 'System overview', 'Components', 'Data model', 'Decisions',
                  'Security and privacy', 'Invariants', 'Repository layout', 'Quality gates',
                  'Environments and deployment', 'Testing', 'Risks and open questions')
+CLAUDE_MD_SECTIONS = ('Invariants', 'Testing')   # /bootstrap copies these bodies verbatim
 MAX_FILES = 8
 MAX_SENTENCES = 7
 
@@ -68,8 +72,11 @@ class Doc(object):
         self.errors = []
         self.warnings = []
 
-    def err(self, line, code, msg):
-        self.errors.append({'line': line, 'code': code, 'message': msg})
+    def err(self, line, code, msg, path=None):
+        e = {'line': line, 'code': code, 'message': msg}
+        if path is not None:
+            e['path'] = path    # the error is in another file than DOC (--claude-md)
+        self.errors.append(e)
 
     def warn(self, line, code, msg):
         self.warnings.append({'line': line, 'code': code, 'message': msg})
@@ -735,6 +742,89 @@ def tick(path, numbers):
     return 0, {'ticked': ticked, 'already': already, 'missing': []}
 
 
+# ---- CLAUDE.md drift --------------------------------------------------------------------------
+
+def section_bodies(path):
+    """{lowercased H2 name: (heading line, [body lines])} outside code fences; a body ends at the next
+    # or ## heading. The first section of a name wins."""
+    out = {}
+    in_fence = False
+    cur = None
+    for i, raw in enumerate(read_lines(path), 1):
+        line = raw.rstrip('\r\n')
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and (line.startswith('# ') or line.startswith('## ')):
+            m = H2_RE.match(line)
+            name = m.group(1).lower() if m and line.startswith('## ') else None
+            cur = None
+            if name and name not in out:
+                out[name] = (i, [])
+                cur = out[name][1]
+            continue
+        if cur is not None:
+            cur.append((i, line))
+    return out
+
+
+def trim_blank(lines):
+    lo, hi = 0, len(lines)
+    while lo < hi and not lines[lo][1].strip():
+        lo += 1
+    while hi > lo and not lines[hi - 1][1].strip():
+        hi -= 1
+    return lines[lo:hi]
+
+
+def body_matches(mine, theirs):
+    """Compare CLAUDE.md's body with the architecture's, line by line. Returns None when they match, else
+    (CLAUDE.md line, architecture line) of the first difference (0 when one side ran out)."""
+    a, b = [t for _i, t in mine], [t for _i, t in theirs]
+    if a == b:
+        return None
+    k = 0
+    while k < len(a) and k < len(b) and a[k] == b[k]:
+        k += 1
+    return (mine[k][0] if k < len(mine) else 0, theirs[k][0] if k < len(theirs) else 0)
+
+
+def check_claude_md(doc, claude_path):
+    """claude_md_drift for each CLAUDE_MD_SECTIONS body in CLAUDE.md that differs from the architecture's.
+    Blank lines at either end are ignored, and so, under ## Invariants, is the one pointer line /bootstrap
+    adds: the first or last line of the body, when it names architecture.md and the architecture's body
+    does not have it."""
+    arch = section_bodies(doc.path)
+    mine = section_bodies(claude_path)
+    rel = doc.path
+    for name in CLAUDE_MD_SECTIONS:
+        key = name.lower()
+        if key not in arch:
+            continue    # the architecture lint already reports missing_section
+        theirs = trim_blank(arch[key][1])
+        if key not in mine:
+            doc.err(1, 'claude_md_drift', '%s has no "## %s" section; copy %s\'s body into it verbatim'
+                    % (claude_path, name, rel), path=claude_path)
+            continue
+        head, body = mine[key][0], trim_blank(mine[key][1])
+        diff = body_matches(body, theirs)
+        if diff and key == 'invariants':
+            texts = set(t for _i, t in theirs)
+            for idx in (0, len(body) - 1):
+                if body and 'architecture.md' in body[idx][1] and body[idx][1] not in texts:
+                    rest = trim_blank(body[:idx] + body[idx + 1:])
+                    if body_matches(rest, theirs) is None:
+                        diff = None
+                        break
+        if diff:
+            at_mine, at_arch = diff
+            where = ('first difference at %s line %d' % (claude_path, at_mine) if at_mine else
+                     '%s ends early' % claude_path) + (', %s line %d' % (rel, at_arch) if at_arch else
+                                                       ', %s ends early' % rel)
+            doc.err(at_mine or head, 'claude_md_drift', '"## %s" in %s differs from %s\'s (%s); the two '
+                    'change together: copy the architecture\'s body verbatim' % (name, claude_path, rel, where),
+                    path=claude_path)
+
+
 # ---- main -------------------------------------------------------------------------------------
 
 def main(argv=None):
@@ -749,6 +839,8 @@ def main(argv=None):
     mode.add_argument('--lanes', action='store_true', help='derive build lanes and chains (JSON)')
     mode.add_argument('--tick', metavar='N[,N...]', help='tick these steps in place (JSON)')
     mode.add_argument('--roadmap', action='store_true', help='report roadmap progress (JSON)')
+    mode.add_argument('--claude-md', metavar='PATH', help='lint an architecture doc and check that CLAUDE.md at PATH '
+                      'carries its ## Invariants and ## Testing bodies verbatim')
     p.add_argument('--root', help='--lanes: directory for lane worktrees')
     p.add_argument('--date', help='--lanes: branch name suffix, e.g. 20261104 (default "undated")')
     p.add_argument('--branch-prefix', default='feat/', help='--lanes: branch prefix (default feat/)')
@@ -775,6 +867,9 @@ def main(argv=None):
         doc = parse(a.doc)
         if a.as_path:
             doc.ref_dir = os.path.dirname(a.as_path)
+        if a.claude_md is not None and not os.path.isfile(a.claude_md):
+            print('proposal-lint: cannot read %s' % a.claude_md, file=sys.stderr)
+            return 2
         if a.remote_heads and not os.path.isfile(a.remote_heads):
             print('proposal-lint: cannot read %s' % a.remote_heads, file=sys.stderr)
             return 2
@@ -798,13 +893,19 @@ def main(argv=None):
             out = roadmap_report(doc, cache)
             print(json.dumps(out, indent=1))
             return 1 if doc.errors else 0
+        if a.claude_md is not None:
+            if doc.kind != 'architecture':
+                doc.err(1, 'not_an_architecture', '--claude-md needs an architecture doc ("# Architecture: ..."), '
+                        'not a %s' % doc.kind)
+            else:
+                check_claude_md(doc, a.claude_md)
         if a.json:
             print(json.dumps({'doc': doc.path, 'kind': doc.kind, 'title': doc.title, 'header': doc.header,
                               'errors': doc.errors, 'warnings': doc.warnings,
                               'steps': [public_step(s) for s in doc.steps]}, indent=1))
         else:
-            for e in sorted(doc.errors, key=lambda x: x['line']):
-                print('%s:%d: E %s: %s' % (doc.path, e['line'], e['code'], e['message']))
+            for e in sorted(doc.errors, key=lambda x: (x.get('path', ''), x['line'])):
+                print('%s:%d: E %s: %s' % (e.get('path', doc.path), e['line'], e['code'], e['message']))
             for w in sorted(doc.warnings, key=lambda x: x['line']):
                 print('%s:%d: W %s: %s' % (doc.path, w['line'], w['code'], w['message']))
             print('%s: %s, %d steps, %d errors, %d warnings' % (doc.path, doc.kind, len(doc.steps),

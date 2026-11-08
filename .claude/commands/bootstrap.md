@@ -1,13 +1,13 @@
 Bootstrap a greenfield repository from the accepted architecture doc `$ARGUMENTS`: a skeleton whose quality gates pass, `CLAUDE.md`, CI, and one commit: on a `bootstrap/<date>` branch, shipped as an ordinary PR that a person merges, or, when the remote has no commits, the root commit on local `main`, which a person pushes.
 
-This command turns `architecture.md` (written by `/roadmap`, accepted by a person) into the smallest repository the rest of the pipeline can build on: manifests, lint / typecheck / test config, one smoke test per package, a CI workflow running `QUALITY_GATES`, a `CLAUDE.md` carrying the pipeline config and the architecture's invariants, a licence, `.gitignore` and README. It installs dependencies, runs the gates until green, and makes **one commit** that also holds the design docs and the pipeline's `.claude` files: on a `bootstrap/<YYYYMMDD>` branch cut from `origin/main`, so the skeleton reaches `main` through a PR like every other change, or, when the remote has no commits at all, as the root commit on local `main`, which a person pushes. It assumes the repository already exists — a clean clone with an `origin` remote, typically a newly created one — and never creates a repository or a remote, never pushes, and commits to `main` only as that root commit. No feature code: the roadmap's milestones build that.
+This command turns `architecture.md` (written by `/roadmap`, accepted by a person) into the smallest repository the rest of the pipeline can build on: manifests, lint / typecheck / test config, one smoke test per package, a CI workflow running `QUALITY_GATES` and linting the design docs, a `CLAUDE.md` carrying the pipeline config and the architecture's invariants, a licence, `.gitignore` and README. It installs dependencies, runs the gates until green, and makes **one commit** that also holds the design docs and the pipeline's `.claude` files: on a `bootstrap/<YYYYMMDD>` branch cut from `origin/main`, so the skeleton reaches `main` through a PR like every other change, or, when the remote has no commits at all, as the root commit on local `main`, which a person pushes. It assumes the repository already exists — a clean clone with an `origin` remote, typically a newly created one — and never creates a repository or a remote, never pushes, and commits to `main` only as that root commit. No feature code: the roadmap's milestones build that.
 
 ## Configuration
 
 A greenfield repository has at most the base `## Pipeline config` that `/seed` wrote (`MAIN_BRANCH`, `PROPOSALS_DIR`, marked `<!-- Pipeline config written by /seed -->`): this command **completes** it from the architecture, or writes it when absent. Values it uses:
 
 - `QUALITY_GATES` / `QUALITY_GATES_FAST` / CI job name — from the architecture's `## Quality gates` lines (``- QUALITY_GATES: `<command>` ``, ``- QUALITY_GATES_FAST: `<command>` ``, ``- CI job: `<name>` ``; job name default `gates`).
-- Required checks — the optional fourth line ``- Required checks: `<check>`, `<check>` `` (default: none): CI checks beyond the gates job that must be green to merge, such as a mobile build on a macOS runner or a cross-OS matrix. The skeleton still writes only the gates job; proposal steps add these jobs, and the next steps say when to require them.
+- Required checks — the optional fourth line ``- Required checks: `<check>`, `<check>` `` (default: none): CI checks beyond the gates job that must be green to merge, such as a mobile build on a macOS runner or a cross-OS matrix. The skeleton still writes only the gates and `docs` jobs; proposal steps add these jobs, and the next steps say when to require them.
 - `MAIN_BRANCH` — always `main`.
 - `PROPOSALS_DIR` — the directory holding the architecture doc, relative to the repo root.
 - `TEST_GUIDELINES` — `CLAUDE.md#testing`.
@@ -56,7 +56,7 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
 1. **Manifests and lockfiles.** Exactly the manifest each package in `## Repository layout` names (none for an entry marked `(from milestone N)`), per the stack the Decisions chose, with each runtime's version pinned (an engines field, `.nvmrc`, `.python-version`, toolchain file) and the licence's SPDX id in the licence field. Take dependency versions from the registry (`npm view <pkg> version`, `pip index versions <pkg>`, …), never from memory; the lockfile comes from the install.
 2. **Gate tooling.** Config for every tool the gate commands call (linter, formatter, type checker, test runner, coverage threshold from `## Testing`), and every script name they invoke (`npm run lint` needs a `lint` script). Rules strict from the start: no disabled rules, no thresholds of zero.
 3. **One smoke test per package.** The entry file the layout names, minimal (no feature code), and a test that imports it and asserts real behaviour (its exported name or version, a health function's result) — never `assert true`. Follow the architecture's `## Testing`.
-4. **CI workflow.** For GitHub Actions, `.github/workflows/ci.yml` (another provider named in the architecture → its equivalent file). A Node stack is shown; other stacks use their own setup action and lockfile install, and the one gates job sets up every runtime the layout's packages need, each from its pin file. A gate the architecture runs across a matrix goes in a matrix job under another name, and the job named as the CI job aggregates it (`needs:` the matrix job, `if: always()`, a step that fails unless its result is `success`), so branch protection requires one name:
+4. **CI workflow.** For GitHub Actions, `.github/workflows/ci.yml` (another provider named in the architecture → its equivalent file). Two jobs. The gates job: a Node stack is shown; other stacks use their own setup action and lockfile install, and the one gates job sets up every runtime the layout's packages need, each from its pin file. A gate the architecture runs across a matrix goes in a matrix job under another name, and the job named as the CI job aggregates it (`needs:` the matrix job, `if: always()`, a step that fails unless its result is `success`), so branch protection requires one name. The `docs` job (the architecture's CI job is itself named `docs` → name this one `design-docs`) lints the design docs, so a docs PR — accepting a doc, ticking a gate, writing an `Outcome:` — is checked before it merges: `$LINT` on every design doc in `PROPOSALS_DIR` (a `.md` file whose first `# ` heading is `# Proposal:`, `# Roadmap:` or `# Architecture:`; a README, brief or notes beside them are skipped), `--roadmap` on the roadmap, and `--claude-md CLAUDE.md` on the architecture, which fails with `claude_md_drift` when `CLAUDE.md`'s `## Invariants` or `## Testing` body no longer matches the architecture's (step 6). Copy its `run:` script verbatim; only `PROPOSALS_DIR` and the action pin change:
 
    ```yaml
    name: ci
@@ -77,9 +77,33 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
              node-version-file: .nvmrc
          - run: npm ci
          - run: <QUALITY_GATES, verbatim>
+     docs:
+       runs-on: ubuntu-latest
+       timeout-minutes: 5
+       env:
+         PROPOSALS_DIR: <PROPOSALS_DIR>
+       steps:
+         - uses: actions/checkout@<commit sha> # v<x.y.z>
+         - name: Lint design docs
+           run: |
+             set -u
+             lint=.claude/scripts/proposal-lint.py
+             rc=0
+             for f in "$PROPOSALS_DIR"/*.md; do
+               [ -f "$f" ] || continue
+               awk '/^# /{d = /^# (Proposal|Roadmap|Architecture):/; exit} END{exit !d}' "$f" || continue
+               python3 "$lint" "$f" || rc=1
+             done
+             if [ -f "$PROPOSALS_DIR/roadmap.md" ]; then
+               python3 "$lint" "$PROPOSALS_DIR/roadmap.md" --roadmap || rc=1
+             fi
+             if [ -f "$PROPOSALS_DIR/architecture.md" ] && grep -qF '<!-- Pipeline config written by /bootstrap -->' CLAUDE.md 2>/dev/null; then
+               python3 "$lint" "$PROPOSALS_DIR/architecture.md" --claude-md CLAUDE.md || rc=1
+             fi
+             exit $rc
    ```
 
-   Pin every action to a full commit SHA with its release tag in a comment: take the latest release tag from `git ls-remote --tags https://github.com/<owner>/<action>` and use its peeled (`^{}`) SHA when present. No network → pin the exact release tag you know (`@v4.2.2`, never `@v4` or `@main`) and say so in the report; never invent a SHA. Install from the lockfile; the gates job reads no secrets.
+   Pin every action to a full commit SHA with its release tag in a comment: take the latest release tag from `git ls-remote --tags https://github.com/<owner>/<action>` and use its peeled (`^{}`) SHA when present. No network → pin the exact release tag you know (`@v4.2.2`, never `@v4` or `@main`) and say so in the report; never invent a SHA. Install from the lockfile; neither job reads a secret.
 5. **`.env.example`** — every env var and secret NAME from `## Environments and deployment`, with an empty value and a comment naming its environments and where the real value lives. Never a value. Deploy workflows, infrastructure and hosting config are not part of the skeleton: proposals build them.
 6. **`CLAUDE.md`** — the file `/seed` wrote (the usual case): keep its content, replace its `## Pipeline config` section with the one below (same keys plus the gates; the `/bootstrap` marker replaces `/seed`'s), and append `## Invariants` and `## Testing`; another existing file: keep its content and append the sections below; no file: a `# <Product>` title and one paragraph from the architecture's `## Context` first. Then:
 
@@ -102,7 +126,7 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
    <the architecture's ## Testing body, verbatim>
    ```
 
-   Copy the two bodies byte for byte, then add one line under `## Invariants`: they come from `<PROPOSALS_DIR>/architecture.md` and change in both places together.
+   Copy the two bodies byte for byte, then add one line directly under the `## Invariants` heading: `These come from <PROPOSALS_DIR>/architecture.md and change in both places together; CI's docs job checks they match.` That pointer line is the one difference `$LINT <architecture.md> --claude-md CLAUDE.md` ignores (a first or last line of the body naming `architecture.md`); any other difference is `claude_md_drift`.
 7. **`LICENSE`** — the licence the architecture names. Fetch the canonical text from an authoritative source: the SPDX list (`https://raw.githubusercontent.com/spdx/license-list-data/main/text/<SPDX-ID>.txt`), `gh api licenses/<key> --jq .body`, or the licence steward's site. Fill only its placeholders (year, copyright holder from the architecture or brief; holder unknown → leave the placeholder and say so). Never paraphrase or retype a licence from memory. Cannot fetch → write a `LICENSE` holding only `SPDX-License-Identifier: <id>` and tell the person to replace it with the canonical text. An existing `LICENSE` is kept; report it when it differs from the architecture's choice.
 8. **`.gitignore`** — the stack's standard entries (dependency directories, build output, coverage, caches, OS and editor files), plus `.env`, `.env.*`, `!.env.example`, `.claude/settings.local.json`, and signing keys and keystores when anything is signed for release. An existing `.gitignore` is kept, with the missing entries appended.
 9. **`README.md`** — what the product is (from `## Context`), its status (pre-release), prerequisites (runtime versions), setup (install; copy `.env.example` to `.env`), how to run the gates, the repository layout in brief, links to the design docs, and the licence. An existing README is kept.
@@ -110,12 +134,12 @@ Write each file atomically (`<path>.tmp.<pid>`, then rename). Create a directory
 ## Install and run the gates
 
 1. Install dependencies with the stack's lockfile-producing command (`npm install`, `uv lock && uv sync`, …), project-local.
-2. Run `QUALITY_GATES` in the **foreground** with a long Bash timeout (e.g. `600000`), never in the background. Then run `QUALITY_GATES_FAST` once: it must work too.
+2. Run `QUALITY_GATES` in the **foreground** with a long Bash timeout (e.g. `600000`), never in the background. Then run `QUALITY_GATES_FAST` once: it must work too. Then run the `docs` job's `run:` script from the repo root (with `PROPOSALS_DIR` set): it must exit 0; a `claude_md_drift` means step 6's copy is wrong — fix `CLAUDE.md`, never the architecture.
 3. Fix failures at the root, upstream first (lint → types → tests → coverage): no suppressions, skips, lowered thresholds or disabled rules. After each fix re-run the narrowest gate that covers it, and finish with one full `QUALITY_GATES` run. **Three fix rounds per failure class**, then stop with `error=gates_red`: nothing is committed, the files stay for the person (a re-run resumes), and the report names the failing stage and its errors.
 
 ## Commit
 
-Only when the final full `QUALITY_GATES` run is green.
+Only when the final full `QUALITY_GATES` run and the `docs` script are green.
 
 1. **Stage by explicit name** — never `git add -A` or `git add .`:
    - every file this command created, and the lockfiles, and `CLAUDE.md`;
@@ -134,8 +158,8 @@ Only when the final full `QUALITY_GATES` run is green.
 Then:
 
 - **Skeleton** — files created, grouped (manifests and lockfiles, gate config, smoke tests, CI, `CLAUDE.md`, `LICENSE`, `.gitignore`, `.env.example`, README); files kept or merged instead; each layout entry skipped as `(from milestone N)`, with the milestone whose proposal adds it.
-- **Quality gates** — each stage `PASS`, and how many fix rounds were needed.
-- **CI** — workflow path, the check name (`<job name>`; with a matrix, the job aggregating it), and each action's pin (SHA or tag only, with why); each `Required checks` name the architecture lists, as not yet created (a proposal step adds its job).
+- **Quality gates** — each stage `PASS`, how many fix rounds were needed, and the `docs` script `PASS`.
+- **CI** — workflow path, the check names (`<job name>`, with a matrix the job aggregating it, and `docs`), and each action's pin (SHA or tag only, with why); each `Required checks` name the architecture lists, as not yet created (a proposal step adds its job).
 - **Licence** — SPDX id and where the text came from, or `SPDX id only: replace with the canonical text`.
 - **Committed / left out** — design docs and `.claude` files committed; pre-existing files left unstaged.
 
@@ -143,7 +167,7 @@ Then:
 
 1. Review the commit: `git show --stat HEAD`.
 2. Ship it. Branch mode: run the `plan-to-merged-pr` workflow with `{ ship_only: true, branch: 'bootstrap/<date>', title: 'Bootstrap repository' }` — it re-runs the gates, opens the PR and babysits its CI (the skeleton's own workflow runs on it) — or `/create-pr` to just open it; a person merges it. Root mode: `git push -u origin main` — the one push to `main` a person makes by hand, since an empty repository has no base for a PR.
-3. Protect `main` (on GitHub's free plan, branch protection and rulesets apply to public repositories only; for a private one on that plan, say so and rely on the pipeline never pushing to `main`): require a pull request before merging, require the status check `<job name>` (it is offered after the first CI run), block force pushes and deletion, and enforce the rules for administrators too — on a solo repository the pipeline's `gh` and `git` run on the owner's admin token, so an admin exemption would let an agent push past the rule. Under Settings → Rules (a ruleset with no bypass actors), or `gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input <file>` with `{"required_status_checks":{"strict":true,"contexts":["<job name>"]},"enforce_admins":true,"required_pull_request_reviews":{"required_approving_review_count":0},"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}`. Add each of the architecture's `Required checks` (`<check>`, …) to the required checks once the proposal step that creates its job has merged — required before its job exists, it blocks every PR.
+3. Protect `main` (on GitHub's free plan, branch protection and rulesets apply to public repositories only; for a private one on that plan, say so and rely on the pipeline never pushing to `main`): require a pull request before merging, require the status checks `<job name>` and `docs` (they are offered after the first CI run; `docs` keeps a docs PR from merging a malformed doc or a `CLAUDE.md` whose invariants drifted from the architecture), block force pushes and deletion, and enforce the rules for administrators too — on a solo repository the pipeline's `gh` and `git` run on the owner's admin token, so an admin exemption would let an agent push past the rule. Under Settings → Rules (a ruleset with no bypass actors), or `gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input <file>` with `{"required_status_checks":{"strict":true,"contexts":["<job name>","docs"]},"enforce_admins":true,"required_pull_request_reviews":{"required_approving_review_count":0},"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}`. Add each of the architecture's `Required checks` (`<check>`, …) to the required checks once the proposal step that creates its job has merged — required before its job exists, it blocks every PR.
 4. Add each secret by NAME — `gh secret set <NAME> [--env <environment>]` (it prompts for the value; never paste a value into a chat or a file) for CI secrets, and the host's secret manager for runtime ones. List every NAME from `## Environments and deployment` grouped by where it lives, marking those a later roadmap `ops` milestone provisions.
 5. Once it is merged and CI is green on `main` (`gh run list --branch main --limit 1`), tick the roadmap's Bootstrap gate (milestone `<N>` of `<roadmap path>`): add `   - Outcome: CI green at <sha>; main protected` under it, run `$LINT <roadmap path> --tick <N>`, and land the change through a docs PR.
 6. Next: `/propose --milestone=<first code milestone> <roadmap path>` for each milestone without a proposal; once a proposal is accepted and on `main`, build it with `proposal-build-chain`.
