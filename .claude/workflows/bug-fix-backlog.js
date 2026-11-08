@@ -27,8 +27,9 @@ export const meta = {
 //             on_question and ship: false are passed through to plan-to-merged-pr; no other key is
 //   answers — [{ lane, id, answer }]: answers to the questions a lane's needs_input result returned; each lane gets only its own.
 //             The Intake's question is answered with [{ id: 'intake.q1', answer }] and no lane: the confirmed lanes as JSON
-//             (an array of Lane: the recommended answer or the person's edit of it; '[]' runs nothing), or 'accept', which
-//             takes the lanes the Intake proposes on the re-run (pass it with resumeFromRunId, so that Intake replays)
+//             (an array of Lane: the recommended answer or the person's edit of it; '[]' runs nothing), or the accept
+//             option ('accept <fingerprint> …'), which runs the re-run's proposal only when it fingerprints the same as
+//             the one the person saw (a resumeFromRunId replay does); otherwise the run stops again with the new proposal
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
@@ -51,7 +52,7 @@ const RELAY = `Ask the person these questions yourself, all at once, each with i
 const INTAKE_RELAY = `Ask the person this question yourself: show the proposed lanes (the recommended answer, also in proposed_lanes), the issues left out (unlaned) and the red CI runs (ci_red); ` +
   `never confirm or edit the lanes on their behalf, and file no issue for a red run yourself: whether one becomes an issue is the person's call. ` +
   `Then re-run bug-fix-backlog with the same args (the same date, still without lanes) plus answers: [{ id: 'intake.q1', answer: <the lanes JSON the person confirmed or edited> }] ` +
-  `('[]' runs nothing; 'accept' takes the lanes the Intake proposes on the re-run, so pass it only with resumeFromRunId set to this run's id, which replays this Intake).`
+  `('[]' runs nothing; the accept option, passed back exactly as offered with its fingerprint, runs the proposal only if the re-run's Intake proposes the very same lanes — set resumeFromRunId to this run's id so it replays; a changed proposal stops for confirmation again).`
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
 const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
@@ -227,6 +228,14 @@ function proposeLanes(r) {
   for (const i of r.issues) if (!left.has(i.number) && !placed.has(i.number)) add(`bug-${i.number}`, [i.number], { code_site: (i.code_sites || [])[0] || '', why: 'not grouped by the Intake' })
   return out
 }
+// A short, deterministic fingerprint of a lane proposal (FNV-1a over its canonical JSON), so an 'accept' can name exactly
+// the lanes the person saw.
+function fingerprint(lanes) {
+  const canon = JSON.stringify(lanes.map(l => ({ key: l.key, issues: [...l.issues].sort((a, b) => a - b) })).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)))
+  let h = 0x811c9dc5
+  for (let i = 0; i < canon.length; i++) { h ^= canon.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h.toString(16).padStart(8, '0')
+}
 let LANES = A.lanes || []
 if (INTAKE) {
   if (!ROOT) throw new Error('bug-fix-backlog: args.root is required with the Intake (its lanes give no dir)')
@@ -234,6 +243,8 @@ if (INTAKE) {
   // (bare, or inside a sentence).
   const text = INTAKE_ANSWER && typeof INTAKE_ANSWER.answer === 'string' ? INTAKE_ANSWER.answer.trim() : null
   const accept = !!text && /^accept\b/i.test(text)
+  // The accept option carries a fingerprint of the lanes the person saw; only that exact proposal is ever run.
+  const acceptedFp = accept ? ((text.match(/^accept\s+([0-9a-f]{8})\b/i) || [])[1] || '').toLowerCase() : ''
   if (INTAKE_ANSWER && !accept) {
     let given = INTAKE_ANSWER.answer
     if (text !== null) {
@@ -275,17 +286,21 @@ if (INTAKE) {
     if (!r) return { status: 'failed_at_intake' }
     const proposed = proposeLanes(r)
     const lanesOnly = proposed.map(({ key, issues }) => ({ key, issues }))
-    if (accept) { LANES = lanesOnly; log(`Intake: running the ${LANES.length} proposed lane(s) the person accepted`) }
+    const fp = fingerprint(lanesOnly)
+    if (accept && acceptedFp === fp) { LANES = lanesOnly; log(`Intake: running the ${LANES.length} proposed lane(s) the person accepted (${fp})`) }
     else {
+      if (accept) log(acceptedFp
+        ? `Intake: accepted proposal ${acceptedFp} differs from this run's ${fp} (issues regrouped or new ones) — stopping to confirm again`
+        : `Intake: 'accept' carried no fingerprint, so it cannot name the lanes the person saw — stopping to confirm again`)
       log(`Intake: ${r.issues.length} open issue(s) labelled ${LABELS.join(' or ')}, ${proposed.length} proposed lane(s), ${r.unlaned.length} left out, ${r.ci_red.length} red CI run(s) on ${MAIN} — stopping for the person to confirm the lanes (status needs_input)`)
       const question = {
         id: 'intake.q1', stage: 'intake',
         question: `Run these ${proposed.length} bug lane(s)? Confirm the grouping, or edit it (regroup issues, drop or add some).`,
         why: 'each lane becomes one branch and one PR fixing its issues together; issues that share a code site belong in one lane, unrelated ones in separate lanes',
-        options: ['accept (the proposed lanes as listed)', 'the edited lanes, as a JSON array of { key, issues }', 'none: [] (run nothing)'],
+        options: [`accept ${fp} (the proposed lanes as listed)`, 'the edited lanes, as a JSON array of { key, issues }', 'none: [] (run nothing)'],
         recommended: JSON.stringify(lanesOnly),
       }
-      return { status: 'needs_input', stage: 'intake', questions: [question], relay: INTAKE_RELAY, labels: LABELS, proposed_lanes: proposed, unlaned: r.unlaned, ci_red: r.ci_red, issues: r.issues }
+      return { status: 'needs_input', stage: 'intake', ...(accept ? { accept_not_applied: acceptedFp ? 'proposal_changed' : 'no_fingerprint' } : {}), questions: [question], relay: INTAKE_RELAY, labels: LABELS, proposed_lanes: proposed, unlaned: r.unlaned, ci_red: r.ci_red, issues: r.issues }
     }
   }
   if (!LANES.length) { log('Intake: no lanes to run'); return [] }

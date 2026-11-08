@@ -421,8 +421,11 @@ await test('bug-fix-backlog: an intake answer runs the confirmed lanes, and reac
   assert.ok(!calls.some(c => c.label === 'intake'), 'a lanes answer needs no Intake')
   assert.deepEqual(result.map(r => [r.lane, r.status]), [['edited', 'pushed']])
   assert.equal(seen[0].answers, undefined, 'the intake answer is not passed to a lane')
-  const accepted = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'accept' }] }, bfb())
-  assert.deepEqual(accepted.calls.map(c => c.label).filter(l => l === 'intake' || l.startsWith('triage:')).sort(), ['intake', 'triage:auth-login', 'triage:auth-login-2'])
+  // A bare 'accept' names no proposal: it stops again instead of building whatever this Intake proposes.
+  const bare = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'accept' }] }, bfb())
+  assert.equal(bare.result.status, 'needs_input')
+  assert.equal(bare.result.accept_not_applied, 'no_fingerprint')
+  assert.ok(!bare.calls.some(c => c.label.startsWith('triage:')), 'no lane runs on a bare accept')
   const none = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: '[]' }] }, bfb())
   assert.deepEqual(none.result, [])
   await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'yes please' }] }, bfb()), /must be 'accept' or a JSON array/)
@@ -440,6 +443,23 @@ await test('bug-fix-backlog: each intake option, relayed back as its own text, i
   const inline = await asked('the edited lanes: [{"key": "x", "issues": [11]}]')
   assert.deepEqual(triaged(inline.calls), ['triage:x'], 'lanes JSON inside a sentence')
   await assert.rejects(asked(opts.find(o => /JSON array/.test(o))), /must be 'accept' or a JSON array/, 'the template itself is no answer')
+})
+
+await test('bug-fix-backlog: accept runs only the very proposal the person saw', async () => {
+  const stop = await run('bug-fix-backlog', { root: '/w' }, bfb())
+  const acceptOpt = stop.result.questions[0].options[0]
+  assert.match(acceptOpt, /^accept [0-9a-f]{8} /, 'the accept option names its proposal')
+  const triaged = calls => calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
+  // Same proposal on the re-run (a replay, or an Intake that grouped the same way): it runs.
+  const same = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: acceptOpt }] }, bfb())
+  assert.deepEqual(triaged(same.calls), ['triage:auth-login', 'triage:auth-login-2'])
+  // The re-run's Intake grouped differently (or saw a new issue): nothing runs, the new proposal is asked again.
+  const regrouped = { ...INTAKE_REPLY, lanes: [{ key: 'auth', issues: INTAKE_REPLY.issues.map(i => i.number).filter(n => !(INTAKE_REPLY.unlaned || []).some(u => u.number === n)), code_site: 's', why: 'w' }] }
+  const changed = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: acceptOpt }] }, bfb({ intake: regrouped }))
+  assert.equal(changed.result.status, 'needs_input')
+  assert.equal(changed.result.accept_not_applied, 'proposal_changed')
+  assert.ok(!changed.calls.some(c => c.label.startsWith('triage:')), 'no lane runs on a changed proposal')
+  assert.notEqual(changed.result.questions[0].options[0], acceptOpt, 'the new proposal gets its own fingerprint')
 })
 
 await test('bug-fix-backlog: lanes a person edited are validated before any branch is named', async () => {

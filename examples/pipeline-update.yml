@@ -11,7 +11,8 @@
 # Stale PRs: there is one branch, and one PR, per upstream commit (pipeline/update-<sha>). When upstream
 # moves on before you merge, the next run opens a PR for the newer commit and closes the older open
 # pipeline/update-* PRs with a comment pointing to it; their branches are left in place. A branch that
-# exists already is never reused, so a PR you closed stays closed until upstream changes again.
+# exists already is never pushed to again: one with a PR (even one you closed) is left alone until upstream
+# changes; one without a PR (an earlier gh pr create failed) gets its PR opened.
 #
 # Setup:
 # - Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests".
@@ -77,18 +78,27 @@ jobs:
         run: |
           set -euo pipefail
           branch="pipeline/update-$SHA"
+          pushed=
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "$branch already exists: its PR is open or was closed on purpose"; exit 0
+            # A branch with a PR (open, or closed on purpose) is done. One without is an earlier run whose
+            # gh pr create failed after the push (e.g. Actions not yet allowed to create PRs): open it now.
+            if [ "$(gh pr list --head "$branch" --state all --json number --jq length)" != "0" ]; then
+              echo "$branch already has a PR (open, or closed on purpose)"; exit 0
+            fi
+            echo "$branch was pushed but has no PR: opening it"
+            pushed=1
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898+github-actions[bot]@users.noreply.github.com'
-          git switch -c "$branch"
-          git add -- .claude
-          # Only kept-back files and an unchanged manifest (their update PR for $SHA merged and its branch was
-          # deleted): they were reported already, and there is nothing to commit.
-          if git diff --cached --quiet; then echo "nothing to commit: kept-back files were already reported for $SHA"; exit 0; fi
-          git commit -q -m "Update the pipeline to $SHA" -m "From $PIPELINE_REPO at $PIPELINE_REF, by pipeline-sync.py --update."
-          git push -q -u origin "$branch"
+          if [ -z "$pushed" ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898+github-actions[bot]@users.noreply.github.com'
+            git switch -c "$branch"
+            git add -- .claude
+            # Only kept-back files and an unchanged manifest (their update PR for $SHA merged and its branch was
+            # deleted): they were reported already, and there is nothing to commit.
+            if git diff --cached --quiet; then echo "nothing to commit: kept-back files were already reported for $SHA"; exit 0; fi
+            git commit -q -m "Update the pipeline to $SHA" -m "From $PIPELINE_REPO at $PIPELINE_REF, by pipeline-sync.py --update."
+            git push -q -u origin "$branch"
+          fi
           {
             echo "Updates the pipeline's \`.claude\` files to [\`$SHA\`]($PIPELINE_REPO/commit/$SHA) ($PIPELINE_REF)."
             echo

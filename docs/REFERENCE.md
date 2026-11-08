@@ -309,9 +309,12 @@ question, `intake.q1`, has the proposed lanes as its `recommended` answer (JSON)
 Re-run with the same args (still without `lanes`) plus
 `answers: [{ id: 'intake.q1', answer }]`, where `answer` is the lanes the person
 confirmed or edited, as a JSON array of `{ key, issues }` (`'[]'` runs nothing), or
-`'accept'`, which takes the lanes the Intake proposes on that run, so pass it only
-with `resumeFromRunId` (the Intake then replays from the record). Any other answer
-throws. The intake answer reaches no lane. `intake: false` without `lanes` throws.
+the accept option exactly as offered, `accept <fingerprint> …`. The fingerprint names
+the proposal the person saw: the re-run runs the Intake's proposal only if it has the
+same fingerprint (a replay with `resumeFromRunId` does). A bare `accept`, or a
+proposal that changed in between (issues regrouped, new ones opened), stops again
+with `needs_input` and `accept_not_applied` (`no_fingerprint` / `proposal_changed`),
+never building lanes nobody confirmed. Any other answer throws. The intake answer reaches no lane. `intake: false` without `lanes` throws.
 Only `gate`, `main_branch`, `ai_review_check`, `commit_trailers`,
 `max_review_rounds`, `max_polish`, `max_monitor_rounds`, `efforts` (the whole
 object, so it may carry `plan-to-merged-pr`'s keys too), `on_question` and
