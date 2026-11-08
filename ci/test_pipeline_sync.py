@@ -317,6 +317,10 @@ class SyncTest(Fixture):
         os.symlink(elsewhere, os.path.join(self.dst, '.claude/commands'))
         os.remove(os.path.join(self.src, '.claude/commands/old.md'))
         self.commit_src('drop old')
+        # --check agrees with --update: no deletion is pending that no update would make.
+        r = self.run_sync('--check')
+        self.assertIn('.claude/commands/old.md', r['symlink'])
+        self.assertNotIn('obsolete', r['pending'])
         r = self.run_sync('--update')
         self.assertEqual(r['deleted'], [])
         self.assertTrue(os.path.exists(os.path.join(elsewhere, 'old.md')))
@@ -410,6 +414,13 @@ class SyncTest(Fixture):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(json.loads(r.stdout)['source']['ref'], 'v1.0.0')
+        # A tag only the checkout has (never pushed to its origin) is not recorded: a later clone of it would fail.
+        git(co, 'tag', 'local-only')
+        git(co, 'checkout', '-q', 'local-only')
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', co, '--json'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(json.loads(r.stdout)['source']['ref'])
 
 
 class ClaudeMdTest(Fixture):

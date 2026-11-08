@@ -331,8 +331,13 @@ def sync(a):
                 # the release tag a detached checkout sits on (a clone of --branch <tag>), else none (main later).
                 # Never a local branch name, which may not exist on origin.
                 up = git(src, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}', check=False)
-                ref = ((up[len('origin/'):] if up and up.startswith('origin/') else None)
-                       or git(src, 'describe', '--tags', '--exact-match', 'HEAD', check=False))
+                ref = up[len('origin/'):] if up and up.startswith('origin/') else None
+                if not ref:
+                    tag = git(src, 'describe', '--tags', '--exact-match', 'HEAD', check=False)
+                    # Only a tag origin has: a local-only one would make a later clone of it fail.
+                    if tag and git(src, 'ls-remote', '--exit-code', '--tags', 'origin', 'refs/tags/' + tag,
+                                   check=False) is not None:
+                        ref = tag
         else:
             repo = a.repo or prev.get('repo') or DEFAULT_REPO
             ref = a.ref or prev.get('ref') or DEFAULT_REF
@@ -414,7 +419,8 @@ def sync(a):
         if not same:
             for rel in sorted(set(bases) - set(files)):
                 kind, _ = classify(rel, None, target, bases[rel])
-                if kind == 'obsolete' and a.update and not inside(target, rel):
+                # In every mode, so --check never reports a deletion no --update would make.
+                if kind == 'obsolete' and not inside(target, rel):
                     report['symlink'].append(rel)
                     new_bases[rel] = bases[rel]
                 elif kind == 'obsolete' and a.update:
