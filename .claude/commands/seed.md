@@ -69,12 +69,13 @@ Exit 2 (`error`) → stop and report it. When the source has no `pipeline-sync.p
   No `QUALITY_GATES` yet: there is nothing to gate until `/bootstrap` writes the skeleton, and a placeholder would be run as a command. `/plan` and `/impl` say so until then.
 - **An existing `CLAUDE.md`** → keep every line, and append at the end of the file, each with its full body as above: the `## How work happens here` section if it has no such heading, then the `## Pipeline config` section if it has none. An existing Pipeline config is never edited.
 - **An existing repository** whose Pipeline config (old or new) has no `QUALITY_GATES`: report the commands its CI runs (from `.github/workflows/` or the equivalent) as the candidate value, for a person to add once they pass locally. A greenfield repository gets its gates from `/bootstrap`.
+- **An existing repository with no AI review check** (no CI workflow that reviews pull requests and posts comments — an action or app such as `answerable-ai-review`, `claude-code-action` or a code-review bot): report that the PR monitor will see only human comments and CI, and offer the pipeline's `examples/answerable-ai-review.yml` (at `<source>/examples/` when the source has it, else in the repository `.claude/pipeline-manifest.json` records): copy it to `.github/workflows/`, add the secret `CLAUDE_CODE_OAUTH_TOKEN` by NAME (`gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for the value; never write one down), pass `ai_review_check: 'Review'` to the workflows, and require the check `Reply coverage` to make unanswered findings block merge. A repository that has one: report its check name as the `ai_review_check` value. A greenfield repository gets the offer from `/bootstrap`'s next steps.
 
 ## Report
 
     Seeded: <target> from <source>
 
-Then: files added, identical, updated, deleted, and those kept back (outdated, differs, local edits, conflicts, obsolete) per directory, and the source commit installed (and the one it replaced); whether `CLAUDE.md` was written, appended to or left alone; the candidate `QUALITY_GATES` for an existing repository. Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
+Then: files added, identical, updated, deleted, and those kept back (outdated, differs, local edits, conflicts, obsolete) per directory, and the source commit installed (and the one it replaced); whether `CLAUDE.md` was written, appended to or left alone; the candidate `QUALITY_GATES` for an existing repository, and its AI review check (the `ai_review_check` value, or the offer above when it has none). Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
 
 ## What to skip
 

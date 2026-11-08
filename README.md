@@ -50,7 +50,8 @@ The clone may be empty or hold just the README and licence a host creates.
 4. **Ship it** (you merge). `plan-to-merged-pr` with `{ ship_only: true, branch,
    title }` opens the bootstrap PR and babysits its CI; you merge it, protect `main`
    and require its CI check, add the secrets by name and tick the roadmap's Bootstrap
-   gate with its `Outcome:` through a docs PR: `/bootstrap` prints the steps.
+   gate with its `Outcome:` through a docs PR: `/bootstrap` prints the steps. They
+   also offer an AI review for the monitor (see *AI review* below).
 5. **Build, milestone by milestone.** You do the human gates the next milestone
    waits on; `proposal-build-chain` builds its proposal's lanes; you ship each lane
    in merge order and merge. `python3 .claude/scripts/proposal-lint.py
@@ -72,6 +73,19 @@ and a base `## Pipeline config` it lacks, and, when that config has no
 `QUALITY_GATES`, reports the commands your CI runs as the candidate value, for you
 to add once they pass locally. Land the seeded files with `/create-pr` before you
 build: lanes are cut from `origin` and need the commands there.
+
+### AI review
+
+The PR monitor waits for an AI review check before counting comments, but none is
+installed by default: without one, the only independent review is `/review-changes`
+before the PR. [`examples/answerable-ai-review.yml`](examples/answerable-ai-review.yml)
+is the one this repository runs. Copy it to `.github/workflows/`, add the secret by
+name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for the value, from
+`claude setup-token`), and pass `ai_review_check: 'Review'` to the workflows. It
+posts findings as review comments (check `Review`) and fails `Reply coverage` while
+one has no reply; require `Reply coverage` on `main` if unanswered findings should
+block merge. `/bootstrap`'s next steps offer it, and `/seed` does on an existing
+repository with no AI review check.
 
 ### Keeping the pipeline up to date
 
@@ -207,6 +221,7 @@ docs/
 examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
   pipeline-update.yml         a scheduled GitHub Action that opens a PR updating the pipeline
+  answerable-ai-review.yml    an AI review GitHub Action for the PR monitor (ai_review_check: 'Review')
 ci/                           checks: workflow syntax; every skill and flag the workflows call
                               exists; the workflows stop on blocking questions and route the
                               answers; the lint's tests and fixtures; every example design doc
