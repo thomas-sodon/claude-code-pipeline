@@ -37,7 +37,8 @@ for (const e of C.order) {
 const keys = C.order.map(e => e.lane)
 if (new Set(keys).size !== keys.length) throw new Error('ship-chain: lane keys in chain.order must be unique')
 const CHAIN = C.chain || keys[0]
-const MAIN = A.main_branch || 'main'
+// proposal-build-chain's ship_chain_args carry main_branch inside each lane's args, not at the top level.
+const mainOf = e => A.main_branch || (e.args && e.args.main_branch) || 'main'
 const PREFIX = A.title_prefix || ''
 const MAX_WAIT = A.max_wait_rounds ?? 48
 const SHARED = {}
@@ -80,6 +81,7 @@ const WAIT_SCHEMA = {
 // Find any PR already opened for this lane (an earlier run), and settle its title.
 async function lookup(e) {
   const t = e.args.title
+  const MAIN = mainOf(e)
   const steps = stepsOf(e)
   const proposal = e.args.proposal
   const titleTask = isPlaceholder(t)

@@ -283,6 +283,17 @@ await test('ship-chain: ships each lane after the one below merged, with predece
   assert.deepEqual(result.closeout, CLOSEOUT)
 })
 
+await test('ship-chain: the lookup queries each lane\'s own main branch, as ship_chain_args carry it', async () => {
+  const dev = { chain: 's1', order: CHAIN.order.map(e => ({ ...e, args: { ...e.args, main_branch: 'develop', title: '<title for steps 1>' } })) }
+  const { prompt } = await run('ship-chain', { chain: dev }, sc(), { workflow: shipWf({}) })
+  assert.match(prompt('lookup-s1'), /--base develop /)
+  assert.doesNotMatch(prompt('lookup-s1'), /--base main /)
+  const top = await run('ship-chain', { chain: dev, main_branch: 'trunk' }, sc(), { workflow: shipWf({}) })
+  assert.match(top.prompt('lookup-s1'), /--base trunk /, 'a top-level main_branch still wins')
+  const plain = await run('ship-chain', { chain: CHAIN }, sc(), { workflow: shipWf({}) })
+  assert.match(plain.prompt('lookup-s1'), /--base main /, 'main by default')
+})
+
 await test('ship-chain: a placeholder title the lookup left empty stops the lane, even with a title_prefix', async () => {
   const seen = []
   const { result } = await run('ship-chain', { chain: CHAIN, title_prefix: '[p] ' }, sc({ 'lookup-s1': { state: 'NONE', pr_number: 0, title: '' } }), { workflow: shipWf({}, seen) })
