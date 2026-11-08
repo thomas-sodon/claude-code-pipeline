@@ -422,7 +422,11 @@ twice. With none, the lane runs `plan-to-merged-pr { ship_only: true }` with its
 above; numbers already given are kept). A run that ends `OPEN` is then waited on:
 an agent polls `gh pr view <n> --json state` with the Monitor tool until it reads
 `MERGED` or `CLOSED`. No stage merges, approves, closes or edits a PR, or enables
-auto-merge; the next lane's PR is opened only once the one below has merged.
+auto-merge; the next lane's PR is opened only once the one below has merged. Once
+the last lane's PR has merged, a lane given `proposal` gets the close-out check: the
+`closeout` of the last lane's own run when its monitor saw the merge, else one
+`plan-to-merged-pr` monitor-only round on that PR (`max_monitor_rounds: 1`), which
+sees it `MERGED` and runs the check.
 
 ## Result statuses
 
@@ -488,14 +492,16 @@ the `main_branch`, `ai_review_check`, `required_checks`, `gate` and
 lane after the first). Each `order` entry also lists the lane's `steps`, and each
 chain carries `ship_chain_args`, `{ chain }` for `ship-chain`.
 
-`ship-chain`: `{ status, chain, lanes, merged_prs, stopped_at?, not_shipped, questions?, relay? }`.
+`ship-chain`: `{ status, chain, lanes, merged_prs, stopped_at?, not_shipped, questions?, relay?, closeout? }`.
 `lanes` lists each lane reached, `{ lane, branch, title, pr, status, result }`, its
 `status` the PR's last state (`MERGED`, `OPEN`, `CLOSED`) or the lane's
 `plan-to-merged-pr` status (`failed` when it threw or returned nothing),
 `already_merged` on a lane skipped because its PR had merged, and `wait_notes` on
 one still open at the wait cap. `merged_prs` are the chain's merged PRs in order;
 `stopped_at` names the lane the run stopped at and why; `not_shipped` lists the
-lanes never reached. `status` is:
+lanes never reached; `closeout`, on a `merged` run whose lanes name a `proposal`, is
+`plan-to-merged-pr`'s (above), for the last lane's PR: whether the proposal is now
+complete on `main` and the edits a person makes. `status` is:
 
 - `merged` — every lane's PR reads `MERGED`
 - `needs_input` — a lane's run stopped with `needs_input`; `questions` lists them, each with its `lane`, and `relay` says what to do

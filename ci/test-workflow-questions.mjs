@@ -254,8 +254,11 @@ const sc = (over = {}) => (label, prompt) => {
   if (label.startsWith('wait-')) return { state: 'MERGED' }
   return {}
 }
+const CLOSEOUT = { proposal_complete: true, edits: [{ file: 'p.md', line: 3, before: 'Status: in-progress', after: 'Status: done' }], next_milestone: [], roadmap: '' }
 const shipWf = (byBranch, seen = []) => async (name, a) => {
   seen.push({ name, ...a })
+  // The close-out round: monitor-only on the last PR, which has merged.
+  if (a.pr && a.max_monitor_rounds === 1) return { status: 'MERGED', pr: { pr_number: a.pr }, closeout: CLOSEOUT }
   const f = byBranch[a.branch]
   return typeof f === 'function' ? f(a) : f
 }
@@ -268,13 +271,35 @@ await test('ship-chain: ships each lane after the one below merged, with predece
   assert.deepEqual(result.merged_prs, [10, 11])
   assert.deepEqual(calls.map(c => c.label), ['lookup-s1', 'wait-s1-1', 'lookup-s2', 'wait-s2-1'])
   assert.match(prompt('lookup-s1'), /steps 1 under "## Steps" in p\.md/)
-  assert.deepEqual(seen.map(s => s.name), ['plan-to-merged-pr', 'plan-to-merged-pr'])
+  assert.deepEqual(seen.map(s => s.name), ['plan-to-merged-pr', 'plan-to-merged-pr', 'plan-to-merged-pr'])
   assert.equal(seen[0].ship_only, true)
   assert.equal(seen[0].title, '[p] Title s1')
   assert.equal(seen[0].predecessor_prs, undefined)
   assert.equal(seen[0].ai_review_check, 'Review')
   assert.deepEqual(seen[1].predecessor_prs, [10])
   for (const l of ['lookup-s1', 'wait-s1-1']) assert.match(prompt(l), /Never merge/, l)
+  // The last PR merged while the run waited: one monitor-only round on it runs the proposal's close-out check.
+  assert.deepEqual([seen[2].pr, seen[2].branch, seen[2].proposal, seen[2].max_monitor_rounds, seen[2].ship_only], [11, 'feat/p-s2', 'p.md', 1, undefined])
+  assert.deepEqual(result.closeout, CLOSEOUT)
+})
+
+await test('ship-chain: a placeholder title the lookup left empty stops the lane, even with a title_prefix', async () => {
+  const seen = []
+  const { result } = await run('ship-chain', { chain: CHAIN, title_prefix: '[p] ' }, sc({ 'lookup-s1': { state: 'NONE', pr_number: 0, title: '' } }), { workflow: shipWf({}, seen) })
+  assert.equal(result.status, 'lane_failed')
+  assert.match(result.stopped_at.reason, /no PR title/)
+  assert.equal(seen.length, 0, 'no PR is opened with the prefix alone as its title')
+})
+
+await test('ship-chain: a closeout from the last lane\'s own run is kept, with no extra round; a stopped chain gets none', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s1': { status: 'MERGED', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'MERGED', pr: { pr_number: 11 }, closeout: { proposal_complete: false, pending_steps: [3] } } }, seen)
+  const { result } = await run('ship-chain', { chain: CHAIN }, sc(), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.equal(seen.length, 2)
+  assert.deepEqual(result.closeout, { proposal_complete: false, pending_steps: [3] })
+  const closed = await run('ship-chain', { chain: CHAIN }, sc({ 'wait-s1-1': { state: 'CLOSED' } }), { workflow: shipWf({ 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } } }) })
+  assert.equal(closed.result.closeout, undefined)
 })
 
 await test('ship-chain: a lane that needs input stops the chain, carries its questions tagged with the lane, and gets only its answers', async () => {
@@ -297,7 +322,7 @@ await test('ship-chain: a re-run skips merged lanes and monitors an already-open
   const over = { 'lookup-s1': { state: 'MERGED', pr_number: 10, title: 'x' }, 'lookup-s2': { state: 'OPEN', pr_number: 11, title: 'y' } }
   const { result } = await run('ship-chain', { chain: CHAIN }, sc(over), { workflow })
   assert.equal(result.status, 'merged')
-  assert.equal(seen.length, 1)
+  assert.equal(seen.length, 2, 'the open PR is monitored, then the close-out round runs on it')
   assert.equal(seen[0].pr, 11)
   assert.equal(seen[0].ship_only, undefined)
   assert.equal(seen[0].title, undefined)

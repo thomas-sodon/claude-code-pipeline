@@ -360,6 +360,9 @@ Lane by lane, in merge order:
 3. **Wait**: an agent polls the PR until it reads `MERGED`, at most
    `max_wait_rounds` rounds of about 30 minutes (default 48). It never merges,
    approves or enables auto-merge: you merge. Then the next lane ships.
+4. **Close-out**: once the last PR has merged, the result's `closeout` says whether
+   the proposal is now complete on `main` and lists the close-out edits
+   (`Status: done`, the milestone tick) for you to make in a docs PR.
 
 Anything other than `MERGED` stops the chain and names the lane and why: the PR was
 closed, it is still open at the wait cap (`not_merged`, with what holds it), the

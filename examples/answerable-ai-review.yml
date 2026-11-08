@@ -8,8 +8,8 @@
 # Setup:
 # - Add the secret CLAUDE_CODE_OAUTH_TOKEN by name: `gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for
 #   the value (from `claude setup-token`). Never paste the value into a chat, a file or a commit.
-# - Pass ai_review_check: 'Review' to plan-to-merged-pr, proposal-build-chain and bug-fix-backlog, so the
-#   monitor waits for this check (proposal-build-chain copies it into each lane's ship plan).
+# - Pass ai_review_check: 'Review' to plan-to-merged-pr, proposal-build-chain, ship-chain and bug-fix-backlog,
+#   so the monitor waits for this check (proposal-build-chain copies it into each lane's ship plan).
 # - To make unanswered findings block merge, require the status check `Reply coverage` on main
 #   (Settings -> Rules, or branch protection), next to your CI check. It is offered after its first run.
 # - Fork PRs get no secrets, so `Review` is skipped on them.

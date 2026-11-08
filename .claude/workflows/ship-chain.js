@@ -6,6 +6,7 @@ export const meta = {
     { title: 'Lookup', detail: 'per lane: any PR already open or merged for its branch; fill a placeholder title from its steps' },
     { title: 'Ship', detail: 'plan-to-merged-pr ship-only (or monitor-only for a PR already open), predecessor_prs filled with the merged PRs above' },
     { title: 'Wait', detail: 'poll the PR until it reads MERGED (a person merges it); stop on CLOSED or at the wait cap' },
+    { title: 'Close-out', detail: 'once the last lane merged, with a proposal: one plan-to-merged-pr monitor-only round reports the close-out edits (read-only)' },
   ],
 }
 
@@ -20,6 +21,8 @@ export const meta = {
 // A lane's placeholder title (empty, or '<...>' as the ship plan writes it) is written from its proposal steps (steps, or the
 // numbers in the placeholder), else from the branch's own commits. predecessor_prs placeholders are replaced by the PR numbers
 // of the lanes above, as merged; numbers already given are kept.
+// Once every lane has merged, a lane given a proposal gets the close-out check (plan-to-merged-pr's closeout, read-only): from the
+// last lane's own run when it saw the merge, else from one monitor-only round on the last PR, which sees MERGED and runs it.
 // Re-runs are safe: a lane whose branch already has a MERGED PR is skipped (its PR counts as merged), one with an OPEN PR is
 // monitored (plan-to-merged-pr monitor-only) and waited on, never opened twice. This workflow never merges, approves or
 // enables auto-merge: a person merges each PR.
@@ -101,7 +104,7 @@ async function waitRound(e, n, r) {
     `Wait for PR #${n} (branch ${e.branch}) to leave OPEN, round ${r}. Poll gh pr view ${n} --json state,mergedAt every ~60 seconds with the Monitor tool's until-loop ` +
     `(never a foreground sleep), for at most ~30 minutes, and stop polling as soon as state reads MERGED or CLOSED. ` +
     `If it is still OPEN at the end, report OPEN and, in notes, anything holding it: merge conflicts (gh pr view ${n} --json mergeable,mergeStateStatus), ` +
-    `red checks (gh pr checks ${n}), unresolved review threads or requested changes.`,
+    `red checks (gh pr checks ${n}), unresolved review threads, requested changes, or that it is a draft.`,
     { label: `wait-${e.lane}-${r}`, phase: 'Wait', effort: 'low', schema: WAIT_SCHEMA },
   )
 }
@@ -114,7 +117,9 @@ for (let i = 0; i < C.order.length && !stop; i++) {
   phase('Lookup')
   const found = await lookup(e)
   if (!found) { stop = { lane: e.lane, status: 'lane_failed', reason: 'the lookup stage did not report' }; lanes.push({ lane: e.lane, branch: e.branch, status: 'lookup_failed' }); break }
-  const title = prefixed(String(found.title || (isPlaceholder(e.args.title) ? '' : e.args.title)).trim())
+  // Prefix only a real title: an empty one must stay empty, so the check below catches it.
+  const bare = String(found.title || (isPlaceholder(e.args.title) ? '' : e.args.title) || '').trim()
+  const title = bare ? prefixed(bare) : ''
   if (found.state === 'MERGED' && found.pr_number) {
     log(`Lane ${e.lane}: PR #${found.pr_number} already merged — skipping`)
     merged.push(found.pr_number)
@@ -176,6 +181,24 @@ for (let i = 0; i < C.order.length && !stop; i++) {
     : { lane: e.lane, status: 'not_merged', reason: `PR #${pr.pr_number} is still open after ${MAX_WAIT} wait round(s)${notes ? `: ${notes}` : ''}; merge it, then re-run ship-chain with the same args` }
 }
 
+// ---- Close-out: the chain's last PR merged. Report whether the proposal is now complete on main and the edits a person makes.
+let closeout
+const lastE = C.order[C.order.length - 1]
+const lastL = lanes.find(l => l.lane === lastE.lane)
+if (!stop && lastE.args.proposal && lastL && lastL.pr && lastL.pr.pr_number) {
+  if (lastL.result && lastL.result.closeout) closeout = lastL.result.closeout
+  else {
+    phase('Close-out')
+    const { ship_only, ship, title: _t, predecessor_prs: _p, existing_pr: _x, pr: _pr, bases: _b, ...base } = lastE.args
+    let r = null
+    try {
+      r = await workflow('plan-to-merged-pr', { ...base, ...SHARED, branch: lastE.branch, pr: lastL.pr.pr_number, max_monitor_rounds: 1 })
+    } catch (err) { log(`Close-out: ${err && err.message ? err.message : err}`) }
+    if (r && r.closeout) closeout = r.closeout
+    else log(`Close-out check of ${lastE.args.proposal} did not run — check it by hand (proposal-lint.py --roadmap)`)
+  }
+}
+
 const shipped = lanes.map(l => l.lane)
 const questions = lanes.flatMap(l => l.questions || [])
 if (stop) log(`Chain ${CHAIN} stopped at lane ${stop.lane}: ${stop.reason}`)
@@ -186,5 +209,6 @@ return {
   merged_prs: merged,
   ...(stop ? { stopped_at: { lane: stop.lane, reason: stop.reason } } : {}),
   not_shipped: keys.filter(k => !shipped.includes(k)),
+  ...(closeout ? { closeout } : {}),
   ...(questions.length ? { questions, relay: RELAY } : {}),
 }
