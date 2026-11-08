@@ -18,7 +18,7 @@ edit:
   target == base, source changed        outdated     -> updated with --update
   target edited, source == base         local_edit   (kept)
   target edited, source changed too     conflict     (kept; --update --force takes the source's)
-  no base recorded, target differs      differs      (kept; --update takes the source's)
+  no base recorded, target differs      differs      (kept; --update --force takes the source's)
   no base, target is an older upstream  outdated     (adopted: a legacy cp -r install, see below)
   in base, gone from source, unedited   obsolete     -> deleted with --update
   in base, gone from source, edited     obsolete_edited (kept)
@@ -31,6 +31,8 @@ source is looked up in the source's git history (when the source is a git checko
 If some upstream commit shipped exactly that content, the file is an unedited older
 version: it is classified outdated (and listed under "adopted") with that version as
 its base, so --update replaces it and a later run tells edits from upstream changes.
+One that matches no shipped version may hold edits: it stays differs, and only
+--update --force replaces it.
 
 CLAUDE.md: the report's "claude_md" compares the target's "## How work happens here"
 section with the source's template (.claude/scripts/claude-md-base.md), ignoring the
@@ -466,7 +468,7 @@ def main(argv=None):
     g.add_argument('--repo', help='pipeline git URL to clone (default: the manifest\'s, else %s)' % DEFAULT_REPO)
     p.add_argument('--ref', help='branch or tag to clone (default: the manifest\'s, else %s)' % DEFAULT_REF)
     p.add_argument('--update', action='store_true', help='replace outdated files and delete obsolete ones')
-    p.add_argument('--force', action='store_true', help='with --update: also take the source\'s version of conflicts')
+    p.add_argument('--force', action='store_true', help='with --update: also take the source\'s version of conflicts and of differing files with no install record')
     p.add_argument('--dry-run', action='store_true', help='change nothing; report what would happen')
     p.add_argument('--check', action='store_true', help='change nothing; exit 1 when anything is pending')
     p.add_argument('--check-claude-md', action='store_true',
