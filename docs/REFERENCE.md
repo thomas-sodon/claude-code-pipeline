@@ -251,13 +251,33 @@ work instead of stopping at `failed_at_impl`. The monitor treats the branch's pl
 as design intent and ignores any one-time instruction in it to the implementer
 (deleting, reverting or cleaning up files): that already happened.
 
-`bug-fix-backlog`: `{ lanes: [{ key, issues, branch?, dir? }], root, date, ship, close, efforts: { triage, verify, close }, ... }`.
+`bug-fix-backlog`: `{ lanes: [{ key, issues, branch?, dir? }], intake, labels, dir, root, date, ship, close, efforts: { intake, triage, verify, close }, ... }`.
 `date` suffixes the default lane branch names (`bugfix/<key>-<issues>-<date>`;
 default `undated`). `root` is required unless every lane gives its own `dir`
-(default `<root>/fix-<issues>`, the issue numbers joined by `-`). `ship` and
+(default `<root>/fix-<issues>`, the issue numbers joined by `-`), and always with
+the Intake. `ship` and
 `close` default to true; `close: false` lists confirmed-fixed issues in
 `confirmed_fixed_unclosed` instead of closing them. `efforts` defaults to
-`{ triage: 'medium', verify: 'high', close: 'low' }`.
+`{ intake: 'medium', triage: 'medium', verify: 'high', close: 'low' }`.
+
+Without `lanes` (or with `intake: true`, which ignores any `lanes` given), the
+**Intake** runs first: one read-only agent in `dir` (default: the working
+directory) lists the open issues carrying any of `labels` (default `['bug']`),
+locates each one's code on `origin/<main_branch>`, groups issues that share a code
+site into one lane (every other issue is a lane of its own; an issue an open PR
+already closes, or that is not a bug report, is left out as `unlaned`), and lists
+the red CI runs (failure, timed out, startup failure) on the five newest commits of
+`origin/<main_branch>`. It reports only: it never files, edits, labels, comments on
+or closes an issue, and a red run becomes an issue only if the person files one.
+The run then stops with `needs_input` (stage `intake`) whatever `on_question` says,
+since which issues to work and how they group is the person's call. Its one
+question, `intake.q1`, has the proposed lanes as its `recommended` answer (JSON).
+Re-run with the same args (still without `lanes`) plus
+`answers: [{ id: 'intake.q1', answer }]`, where `answer` is the lanes the person
+confirmed or edited, as a JSON array of `{ key, issues }` (`'[]'` runs nothing), or
+`'accept'`, which takes the lanes the Intake proposes on that run, so pass it only
+with `resumeFromRunId` (the Intake then replays from the record). Any other answer
+throws. The intake answer reaches no lane. `intake: false` without `lanes` throws.
 Only `gate`, `main_branch`, `ai_review_check`, `commit_trailers`,
 `max_review_rounds`, `max_polish`, `max_monitor_rounds`, `efforts` (the whole
 object, so it may carry `plan-to-merged-pr`'s keys too), `on_question` and
@@ -281,7 +301,8 @@ object, so it may carry `plan-to-merged-pr`'s keys too), `on_question` and
   context: '...',                  // framing every author treats as binding: builder, budget, constraints the source omits
   panel: 3,                        // independent architecture sketches judged before /roadmap; 0 = no panel
   milestones: [2, 4],              // propose only these milestones (default: every pending code milestone)
-  max_milestones: 1,               // propose at most the first N of those, in roadmap order (try the flow on one)
+  max_milestones: 1,               // propose at most the first N of those, in roadmap order (try the flow on one; 1 is
+                                   // recommended for a long roadmap: later proposals go stale as earlier milestones land)
   force: false,                    // let /roadmap overwrite architecture.md / roadmap.md (never once a milestone is ticked)
   max_review_rounds: 3,            // revise rounds per doc
   efforts: { intake: 'medium', sketch: 'medium', judge: 'high', roadmap: 'high', propose: 'medium', review: 'high', revise: 'medium', consistency: 'high', lint: 'low' },
@@ -473,8 +494,17 @@ outcome, the consistency findings, revisions and re-reviews, the lint and lane
 summary, and `next_steps`. A review that reports only suggestions and nits is clean
 once a revise round has run, or once `max_review_rounds` is reached.
 
-`bug-fix-backlog`: an array, one entry per lane, `{ lane, status, ... }` with
-`lane` the lane's key. `status` is:
+`bug-fix-backlog`: a run that stops at the Intake returns one object, not an array:
+
+- `needs_input` — `stage: 'intake'`, `questions` (the one `intake.q1`), `relay`,
+  `labels`, `proposed_lanes` (each `{ key, issues, code_site, why }`), `unlaned`
+  (`{ number, reason }`), `ci_red` (`{ workflow, url, sha, conclusion,
+  failing_jobs, summary, tracked_by }`, report only) and `issues` (each listed
+  issue with its `code_sites`)
+- `failed_at_intake` — the Intake failed to report; nothing else
+
+An intake answer of `'[]'` returns `[]`. Otherwise the result is an array, one
+entry per lane, `{ lane, status, ... }` with `lane` the lane's key. `status` is:
 
 - `failed_at_triage` — the triage stage failed to report; `branch_mismatch` — the
   lane's worktree is on a branch other than the lane's (it is never switched). Both
@@ -530,6 +560,8 @@ stage, never an earlier one, so the stages before it replay from the record:
   question carried and goes to that lane only. Re-run with the same args (the same
   `date`): pushed lanes come back `already_built`, closed or shipped issues are
   re-checked and skipped, and the lane that asked builds again in its kept worktree.
+  `bug-fix-backlog`'s Intake question (`intake.q1`, no `lane`) is answered with the
+  confirmed lanes instead and reaches no lane ([args](#workflow-args)).
 - `ship-chain`: each answer keeps its `lane` and goes to that lane's
   `plan-to-merged-pr` run only. Re-run with the same args: lanes whose PR merged are
   skipped, and the lane that asked ships again (monitor-only, with its answers, when

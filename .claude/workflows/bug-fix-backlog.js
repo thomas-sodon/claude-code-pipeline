@@ -1,8 +1,9 @@
 export const meta = {
   name: 'bug-fix-backlog',
   description: 'Triage open bug issues with /bug-fix, adversarially verify each verdict (reproduce + refute), close the confirmed-fixed ones, and take each confirmed bug through plan-to-merged-pr',
-  whenToUse: 'Walking the open bug backlog: one lane per issue (or per group of issues that share a code site), each triaged, verified and shipped as its own PR. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
+  whenToUse: 'Walking the open bug backlog: one lane per issue (or per group of issues that share a code site), each triaged, verified and shipped as its own PR. Without lanes, an Intake proposes them from the open bug issues and stops for the person to confirm them. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
   phases: [
+    { title: 'Intake', detail: 'without lanes: list open bug issues and red CI on main, propose lanes, stop for the person to confirm them' },
     { title: 'Triage', detail: '/bug-fix <n> --dry-run per issue, in the lane worktree' },
     { title: 'Verify', detail: 'plan verdicts: failing regression test + skeptic; close verdicts: two refuters' },
     { title: 'Close', detail: 'close only the issues every refuter failed to keep open' },
@@ -10,35 +11,47 @@ export const meta = {
   ],
 }
 
-// args: { lanes: [Lane], root?, date?, gate?, main_branch?, ai_review_check?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, ship?, close? }
-//   root    — directory for lane worktrees (required unless every lane gives its own dir)
+// args: { lanes?: [Lane], intake?, labels?, dir?, root?, date?, gate?, main_branch?, ai_review_check?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, ship?, close? }
+//   intake  — run the Intake (read-only) instead of taking lanes: it lists the open issues carrying any of labels and the red
+//             CI runs on the latest commits of main (report only), groups issues that share a code site, and the run stops
+//             with status needs_input (stage intake): one question whose recommended answer is the proposed lanes.
+//             Default true when lanes is absent or empty (with intake: false, lanes is required). It never files, edits, labels, comments on or closes an issue.
+//   labels  — issue labels the Intake lists (default ['bug'])
+//   dir     — the checkout the Intake reads (default: the working directory)
+//   root    — directory for lane worktrees (required unless every lane gives its own dir; with the Intake, always)
 //   date    — suffix of the default lane branch names, e.g. '20261016' (default 'undated')
 //   ship    — default true; false = build only (push, no PR)
 //   close   — default true; false = report confirmed-fixed issues instead of closing them
-//   efforts — { triage, verify, close } for this workflow's stages; the whole object is also passed to plan-to-merged-pr
+//   efforts — { intake, triage, verify, close } for this workflow's stages; the whole object is also passed to plan-to-merged-pr
 //   gate, main_branch, ai_review_check, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds, efforts,
 //             on_question and ship: false are passed through to plan-to-merged-pr; no other key is
-//   answers — [{ lane, id, answer }]: answers to the questions a lane's needs_input result returned; each lane gets only its own
+//   answers — [{ lane, id, answer }]: answers to the questions a lane's needs_input result returned; each lane gets only its own.
+//             The Intake's question is answered with [{ id: 'intake.q1', answer }] and no lane: the confirmed lanes as JSON
+//             (an array of Lane: the recommended answer or the person's edit of it; '[]' runs nothing), or 'accept', which
+//             takes the lanes the Intake proposes on the re-run (pass it with resumeFromRunId, so that Intake replays)
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
 const A = args || {}
-if (!A.lanes || !A.lanes.length) throw new Error('bug-fix-backlog: args.lanes is required (see the pipeline README)')
-if (!A.root && A.lanes.some(l => !l.dir)) throw new Error('bug-fix-backlog: args.root is required unless every lane gives its own dir')
 const ROOT = A.root
 const DATE = A.date || 'undated'
 const MAIN = A.main_branch || 'main'
 const GATE = A.gate !== undefined ? A.gate : ''
-const EFF = { triage: 'medium', verify: 'high', close: 'low', ...(A.efforts || {}) }
+const EFF = { intake: 'medium', triage: 'medium', verify: 'high', close: 'low', ...(A.efforts || {}) }
 const SHARED = {}
 for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
 if (A.ship === false) SHARED.ship = false
-// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
+// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane); the Intake's goes to none.
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
-const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
+const isIntakeAnswer = a => String(a.id || '').split('.')[0] === 'intake'
+const laneAnswers = key => ANSWERS.filter(a => !isIntakeAnswer(a) && (!a.lane || a.lane === key)).map(({ lane, ...a }) => a)
 const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
   `Then re-run bug-fix-backlog with the same args (the same date) plus answers: each question's lane and id with the person's answer. ` +
   `Issues already closed or shipped are re-checked and skipped; the lane that asked runs again in its kept worktree with its answers.`
+const INTAKE_RELAY = `Ask the person this question yourself: show the proposed lanes (the recommended answer, also in proposed_lanes), the issues left out (unlaned) and the red CI runs (ci_red); ` +
+  `never confirm or edit the lanes on their behalf, and file no issue for a red run yourself: whether one becomes an issue is the person's call. ` +
+  `Then re-run bug-fix-backlog with the same args (the same date, still without lanes) plus answers: [{ id: 'intake.q1', answer: <the lanes JSON the person confirmed or edited> }] ` +
+  `('[]' runs nothing; 'accept' takes the lanes the Intake proposes on the re-run, so pass it only with resumeFromRunId set to this run's id, which replays this Intake).`
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
 const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
@@ -140,7 +153,129 @@ const CLEANUP_SCHEMA = {
   required: ['dirty', 'unresolved'],
 }
 
-const lanes = A.lanes.map(l => {
+// ---- Intake: without lanes, propose them from the open bug issues and stop for the person to confirm them.
+// Which issues to work, and how they group, is the person's call (on_question does not apply here), so the run never builds on a
+// proposal nobody confirmed. Read-only: nothing is filed, labelled, commented on or closed, and a red CI run is only reported.
+const INTAKE_SCHEMA = {
+  type: 'object',
+  properties: {
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          number: { type: 'integer' },
+          title: { type: 'string' },
+          labels: { type: 'array', items: { type: 'string' } },
+          code_sites: { type: 'array', items: { type: 'string' }, description: 'current path:symbol on origin/main the issue points at (empty when you could not locate one)' },
+        },
+        required: ['number', 'title', 'labels', 'code_sites'],
+      },
+      description: 'every open issue carrying any of the labels, once each',
+    },
+    lanes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'short lowercase slug naming the code site, e.g. "auth-session"' },
+          issues: { type: 'array', items: { type: 'integer' } },
+          code_site: { type: 'string', description: 'the shared path:symbol' },
+          why: { type: 'string', description: 'why these issues are fixed together (one line); for a single-issue lane, its code site' },
+        },
+        required: ['key', 'issues', 'code_site', 'why'],
+      },
+    },
+    unlaned: { type: 'array', items: { type: 'object', properties: { number: { type: 'integer' }, reason: { type: 'string' } }, required: ['number', 'reason'] }, description: 'listed issues left out of every lane: an open PR already closes it, it is not a bug report, it needs information only its reporter has' },
+    ci_red: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          workflow: { type: 'string' }, url: { type: 'string' }, sha: { type: 'string' }, conclusion: { type: 'string' },
+          failing_jobs: { type: 'array', items: { type: 'string' } },
+          summary: { type: 'string', description: 'one line: what fails, from the failing step\'s log' },
+          tracked_by: { type: 'array', items: { type: 'integer' }, description: 'listed issues that already describe this failure' },
+        },
+        required: ['workflow', 'url', 'sha', 'conclusion', 'failing_jobs', 'summary', 'tracked_by'],
+      },
+    },
+  },
+  required: ['issues', 'lanes', 'unlaned', 'ci_red'],
+}
+const INTAKE_DIR = A.dir || ''
+const LABELS = (Array.isArray(A.labels) && A.labels.length ? A.labels : ['bug']).map(String)
+const INTAKE_ANSWER = ANSWERS.find(a => a.id === 'intake.q1' && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
+const INTAKE = A.intake === true || (A.intake !== false && (!A.lanes || !A.lanes.length))
+if (!INTAKE && (!A.lanes || !A.lanes.length)) throw new Error('bug-fix-backlog: args.lanes is required with intake: false (see the pipeline README)')
+const slug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+// The agent's grouping, made safe to run: each listed issue in exactly one lane (an unplaced one gets its own), keys unique.
+function proposeLanes(r) {
+  const listed = new Set(r.issues.map(i => i.number))
+  const left = new Set(r.unlaned.map(u => u.number))
+  const placed = new Set(), keys = new Set(), out = []
+  const add = (key, issues, extra) => {
+    let k = slug(key) || `bug-${issues[0]}`
+    for (let n = 2; keys.has(k); n++) k = `${slug(key) || 'bug'}-${n}`
+    keys.add(k); for (const n of issues) placed.add(n)
+    out.push({ key: k, issues, ...extra })
+  }
+  for (const l of r.lanes) {
+    const issues = [...new Set((l.issues || []).filter(n => listed.has(n) && !left.has(n) && !placed.has(n)))]
+    if (issues.length) add(l.key, issues, { code_site: l.code_site, why: l.why })
+  }
+  for (const i of r.issues) if (!left.has(i.number) && !placed.has(i.number)) add(`bug-${i.number}`, [i.number], { code_site: (i.code_sites || [])[0] || '', why: 'not grouped by the Intake' })
+  return out
+}
+let LANES = A.lanes || []
+if (INTAKE) {
+  if (!ROOT) throw new Error('bug-fix-backlog: args.root is required with the Intake (its lanes give no dir)')
+  const accept = INTAKE_ANSWER && typeof INTAKE_ANSWER.answer === 'string' && INTAKE_ANSWER.answer.trim().toLowerCase() === 'accept'
+  if (INTAKE_ANSWER && !accept) {
+    let given = INTAKE_ANSWER.answer
+    try { if (typeof given === 'string') given = JSON.parse(given) } catch { given = null }
+    if (given && !Array.isArray(given) && Array.isArray(given.lanes)) given = given.lanes
+    if (!Array.isArray(given)) throw new Error(`bug-fix-backlog: answer intake.q1 must be 'accept' or a JSON array of lanes ({ key, issues })`)
+    // Only what a lane is; the Intake's notes (code_site, why) are not lane args.
+    LANES = given.map(l => ({ key: l && l.key, issues: l && l.issues, ...(l && l.branch ? { branch: l.branch } : {}), ...(l && l.dir ? { dir: l.dir } : {}) }))
+    log(`Intake: running the ${LANES.length} lane(s) the person confirmed`)
+  } else {
+    phase('Intake')
+    const r = await agent(
+      GUARD + AUTH + (INTAKE_DIR ? `Work in the git checkout ${INTAKE_DIR} (cd there / use absolute paths). ` : '') +
+      `Read-only: edit no file, change no branch and no worktree (git fetch origin is the only git write), and never create, edit, label, comment on, assign or close an issue or PR — even for a red CI run no issue tracks; you only report. ` +
+      `You are the intake for a bug-fix backlog run: propose the lanes a person will confirm.\n` +
+      `1. List every OPEN issue carrying any of the labels ${JSON.stringify(LABELS)}: gh issue list --state open --label <label> --limit 500 --json number,title,labels,body, once per label, merged so each issue appears once. ` +
+      `For each, locate the code it points at on origin/${MAIN} (git fetch origin, then git grep <pattern> origin/${MAIN} / git show origin/${MAIN}:<path>) and record it as code_sites (current path:symbol). ` +
+      `Leave out of every lane, in unlaned with the reason, an issue an open PR already closes (gh pr list --state open --search "<n> in:body" --json number,body, with a closing keyword for it), one that is not a bug report (a feature request, a question), or one that cannot be worked without information only its reporter has.\n` +
+      `2. Group the rest into lanes: issues whose fix edits the same code site (the same function or a tightly coupled pair) go in one lane, so one PR fixes them together; every other issue is a lane of its own. Never group by topic or label alone. ` +
+      `Each lane gets a short lowercase slug key naming its code site, its issues, the shared code_site and a one-line why.\n` +
+      `3. Report, never act on, red CI on ${MAIN}: take the 5 newest commits of origin/${MAIN} (git log -5 --format=%H origin/${MAIN}) and their runs (gh run list --branch ${MAIN} --limit 50 --json databaseId,headSha,workflowName,conclusion,url); ` +
+      `for each run on those commits whose conclusion is failure, timed_out or startup_failure, give its workflow, url, sha, conclusion, failing jobs (gh run view <id> --json jobs), a one-line summary from the failing step's log (gh run view <id> --log-failed), and tracked_by: the listed issues that already describe it. ` +
+      `Nothing to report → empty lists.`,
+      { label: 'intake', phase: 'Intake', effort: EFF.intake, schema: INTAKE_SCHEMA },
+    )
+    if (!r) return { status: 'failed_at_intake' }
+    const proposed = proposeLanes(r)
+    const lanesOnly = proposed.map(({ key, issues }) => ({ key, issues }))
+    if (accept) { LANES = lanesOnly; log(`Intake: running the ${LANES.length} proposed lane(s) the person accepted`) }
+    else {
+      log(`Intake: ${r.issues.length} open issue(s) labelled ${LABELS.join(' or ')}, ${proposed.length} proposed lane(s), ${r.unlaned.length} left out, ${r.ci_red.length} red CI run(s) on ${MAIN} — stopping for the person to confirm the lanes (status needs_input)`)
+      const question = {
+        id: 'intake.q1', stage: 'intake',
+        question: `Run these ${proposed.length} bug lane(s)? Confirm the grouping, or edit it (regroup issues, drop or add some).`,
+        why: 'each lane becomes one branch and one PR fixing its issues together; issues that share a code site belong in one lane, unrelated ones in separate lanes',
+        options: ['accept the proposed lanes as listed', 'the edited lanes, as a JSON array of { key, issues }', 'none: [] (run nothing)'],
+        recommended: JSON.stringify(lanesOnly),
+      }
+      return { status: 'needs_input', stage: 'intake', questions: [question], relay: INTAKE_RELAY, labels: LABELS, proposed_lanes: proposed, unlaned: r.unlaned, ci_red: r.ci_red, issues: r.issues }
+    }
+  }
+  if (!LANES.length) { log('Intake: no lanes to run'); return [] }
+}
+if (!A.root && LANES.some(l => !l.dir)) throw new Error('bug-fix-backlog: args.root is required unless every lane gives its own dir')
+
+const lanes = LANES.map(l => {
   if (!l.key || !l.issues || !l.issues.length) throw new Error(`bug-fix-backlog: lane ${l.key || '?'} needs key and issues`)
   const tag = l.issues.join('-')
   return { ...l, branch: l.branch || `bugfix/${l.key}-${tag}-${DATE}`, dir: l.dir || `${ROOT}/fix-${tag}` }

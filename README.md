@@ -298,6 +298,14 @@ On an existing one, land the seeded pipeline files, the `CLAUDE.md` changes and 
 accepted docs through an ordinary PR before building: lanes are cut from `main` and
 read the proposal and the commands there.
 
+Every proposal is grounded in the tree as it is when the run writes it, and each
+milestone that merges changes that tree. Accept them one milestone at a time:
+before accepting each proposal after the first, once the milestones before it have
+merged, re-run `/review-proposal <doc>`, which reports a `Files:` path or interface
+that no longer matches the tree as a `concern`, and revise on its findings. For a
+long roadmap, pass `max_milestones: 1` and propose each later milestone with
+`/propose --milestone=N` when it comes up.
+
 ### `proposal-build-chain`
 
 Builds an accepted proposal, one PR per lane; each lane runs `plan-to-merged-pr` in
@@ -375,7 +383,16 @@ Modes (full, build-only, ship-only, monitor-only) are listed in
 
 ### `bug-fix-backlog`
 
-One lane per issue, or per group of issues that share a code site. Each lane runs:
+One lane per issue, or per group of issues that share a code site. Give the lanes
+(`{ lanes: [{ key, issues }], root }`), or omit them for the **Intake**: one
+read-only agent lists the open issues labelled `bug` (`labels` to change that),
+locates the code each points at, groups issues that share a code site into one
+lane, and lists the red CI runs on `main`'s latest commits (report only: it never
+files, labels, comments on or closes an issue). The run then stops with
+`needs_input`, one question whose recommended answer is the proposed lanes; re-run
+with the lanes you confirmed or edited, as JSON, in
+`answers: [{ id: 'intake.q1', answer }]` to work them
+([details](docs/REFERENCE.md#workflow-args)). Each lane runs:
 
 1. **Triage**: `/bug-fix <n> --dry-run` in the lane's own worktree, then one
    combined fix plan for the lane.

@@ -200,6 +200,16 @@ await test('brief-to-proposals: a milestone answer reaches only that milestone a
   for (const l of ['propose:m2', 'review:m2-1', 'consistency']) assert.match(prompt(l), /ANSWER-M2/, l)
 })
 
+await test('brief-to-proposals: next steps say to re-review each later proposal before accepting it', async () => {
+  const { result } = await run('brief-to-proposals', BRIEF, btp())
+  const step = result.next_steps.find(s => s.includes('/review-proposal'))
+  assert.ok(step, 'a re-review step')
+  assert.match(step, /after the first \(docs\/design\/3\.md\)/)
+  assert.match(step, /max_milestones: 1/)
+  const one = await run('brief-to-proposals', { ...BRIEF, max_milestones: 1 }, btp())
+  assert.ok(!one.result.next_steps.some(s => s.includes('/review-proposal')), 'one proposal needs no re-review step')
+})
+
 await test('brief-to-proposals: a reviser that needs the person\'s call stops the architecture loop', async () => {
   const over = { 'review:architecture-1': { findings: [{ doc: 'docs/design/roadmap.md', severity: 'concern', description: 'brief is silent on X' }], completed: true },
     'revise:architecture-1': { questions: [Q] } }
@@ -318,6 +328,55 @@ await test('proposal-build-chain: each ship_plan chain carries ship_chain_args f
   const c = result.ship_plan[0]
   assert.deepEqual(c.ship_chain_args.chain.order.map(l => [l.lane, l.steps]), [['s1', [1]], ['s2', [2]]])
   assert.deepEqual(c.order[1].args.predecessor_prs, ['<PR numbers of the lanes above, once merged>'])
+})
+
+// ---- bug-fix-backlog: without lanes, the Intake proposes them and stops for the person to confirm
+const INTAKE_REPLY = {
+  issues: [{ number: 11, title: 'a', labels: ['bug'], code_sites: ['src/auth.js:login'] }, { number: 12, title: 'b', labels: ['bug'], code_sites: ['src/auth.js:login'] },
+    { number: 13, title: 'c', labels: ['bug'], code_sites: ['src/pay.js:charge'] }, { number: 14, title: 'd', labels: ['bug'], code_sites: [] }],
+  lanes: [{ key: 'Auth Login', issues: [11, 12, 99], code_site: 'src/auth.js:login', why: 'same function' }, { key: 'auth-login', issues: [12, 13], code_site: 'src/pay.js:charge', why: 'x' }],
+  unlaned: [{ number: 14, reason: 'an open PR already closes it' }],
+  ci_red: [{ workflow: 'ci', url: 'https://ci/1', sha: 'abc', conclusion: 'failure', failing_jobs: ['test'], summary: 'flaky', tracked_by: [] }],
+}
+const bfb = (over = {}) => label => over[label] !== undefined ? over[label] : label === 'intake' ? INTAKE_REPLY : {}
+
+await test('bug-fix-backlog: without lanes the Intake proposes lanes and stops with one question', async () => {
+  const { result, calls, prompt } = await run('bug-fix-backlog', { root: '/w', labels: ['bug', 'crash'] }, bfb())
+  assert.equal(result.status, 'needs_input')
+  assert.equal(result.stage, 'intake')
+  assert.deepEqual(calls.map(c => c.label), ['intake'])
+  assert.deepEqual(result.questions.map(q => q.id), ['intake.q1'])
+  // Each listed issue in one lane, out-of-list and unlaned issues dropped, keys unique slugs.
+  assert.deepEqual(JSON.parse(result.questions[0].recommended), [{ key: 'auth-login', issues: [11, 12] }, { key: 'auth-login-2', issues: [13] }])
+  assert.deepEqual(result.proposed_lanes.map(l => l.key), ['auth-login', 'auth-login-2'])
+  assert.equal(result.ci_red.length, 1)
+  assert.match(result.relay, /never confirm or edit the lanes on their behalf/)
+  assert.match(prompt('intake'), /\["bug","crash"\]/)
+  assert.match(prompt('intake'), /never create, edit, label, comment on, assign or close an issue/)
+})
+
+await test('bug-fix-backlog: the Intake stops even with on_question assume, and needs root', async () => {
+  const { result } = await run('bug-fix-backlog', { root: '/w', on_question: 'assume' }, bfb())
+  assert.equal(result.status, 'needs_input')
+  await assert.rejects(run('bug-fix-backlog', {}, bfb()), /root is required with the Intake/)
+  await assert.rejects(run('bug-fix-backlog', { root: '/w', intake: false }, bfb()), /lanes is required/)
+})
+
+await test('bug-fix-backlog: an intake answer runs the confirmed lanes, and reaches no lane', async () => {
+  const seen = []
+  const workflow = async (name, a) => { seen.push(a); return { status: 'pushed' } }
+  const triage = { branch: 'bugfix/edited-11-undated', ahead_of_main: 0, behind_main: 0, issues: [{ number: 11, title: 'a', verdict: 'plan', evidence: 'e' }], plan: 'p' }
+  const repro = { results: [{ number: 11, reproduced: true, behaviour_correct: false, tests: ['t.js::x'], failure_excerpt: '', notes: '' }] }
+  const answers = [{ id: 'intake.q1', answer: JSON.stringify([{ key: 'edited', issues: [11], code_site: 'ignored' }]) }]
+  const { result, calls } = await run('bug-fix-backlog', { root: '/w', answers }, bfb({ 'triage:edited': triage, 'reproduce:edited': repro }), { workflow })
+  assert.ok(!calls.some(c => c.label === 'intake'), 'a lanes answer needs no Intake')
+  assert.deepEqual(result.map(r => [r.lane, r.status]), [['edited', 'pushed']])
+  assert.equal(seen[0].answers, undefined, 'the intake answer is not passed to a lane')
+  const accepted = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'accept' }] }, bfb())
+  assert.deepEqual(accepted.calls.map(c => c.label).filter(l => l === 'intake' || l.startsWith('triage:')).sort(), ['intake', 'triage:auth-login', 'triage:auth-login-2'])
+  const none = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: '[]' }] }, bfb())
+  assert.deepEqual(none.result, [])
+  await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'yes please' }] }, bfb()), /must be 'accept' or a JSON array/)
 })
 
 process.exit(failed ? 1 : 0)
