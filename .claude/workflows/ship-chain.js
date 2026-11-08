@@ -64,11 +64,11 @@ const LOOKUP_SCHEMA = {
     state: { type: 'string', enum: ['NONE', 'OPEN', 'MERGED', 'CLOSED'], description: 'the branch\'s PR to the main branch: MERGED if any merged, else OPEN if one is open, else CLOSED if one was closed unmerged, else NONE' },
     pr_number: { type: 'integer', description: 'that PR\'s number (0 when NONE)' },
     url: { type: 'string' },
-    is_draft: { type: 'boolean', description: 'OPEN only: whether that PR is a draft' },
+    is_draft: { type: 'boolean', description: 'whether that PR is a draft (isDraft); false when there is no open PR' },
     title: { type: 'string', description: 'the PR title to use when none exists yet: the given title, or the one you wrote for a placeholder' },
     notes: { type: 'string' },
   },
-  required: ['state', 'pr_number', 'title'],
+  required: ['state', 'pr_number', 'title', 'is_draft'],
 }
 const WAIT_SCHEMA = {
   type: 'object',

@@ -344,6 +344,12 @@ def sync(a):
             dirty = [l[3:] for l in st.splitlines() if l]
 
         files = [] if same else source_files(src)
+        # A source whose git checkout ignores its .claude/ files (a project with the pipeline installed and ignored)
+        # lists nothing: syncing from it would add nothing, and --update would delete every installed file as obsolete.
+        unlisted = [p.replace(os.sep, '/') for p in REQUIRED if p.replace(os.sep, '/') not in files]
+        if not same and unlisted:
+            raise Fail('%s does not list %s (ignored by its git checkout?): not syncing from it'
+                       % (src, ', '.join(unlisted)))
         # The manifest is an ordinary committed file: trust none of its paths. Only pipeline paths are compared,
         # updated or deleted; anything else (absolute, '..', outside .claude/<dir>/) is ignored and reported.
         raw = (manifest or {}).get('files') or {}

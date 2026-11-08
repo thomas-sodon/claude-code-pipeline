@@ -192,6 +192,19 @@ class SyncTest(Fixture):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_a_source_that_ignores_its_pipeline_files_is_refused(self):
+        # A project with the pipeline installed but .claude/ ignored: its files exist on disk, yet git lists none.
+        self.run_sync()
+        with open(os.path.join(self.src, '.gitignore'), 'a', encoding='utf-8') as f:
+            f.write('.claude/\n')
+        git(self.src, 'rm', '-r', '-q', '--cached', '.claude')
+        self.commit_src('ignore .claude')
+        self.assertTrue(os.path.isfile(os.path.join(self.src, '.claude/scripts/proposal-lint.py')))
+        r = self.run_sync('--update', code=2)
+        self.assertIn('ignored by its git checkout', r['error'])
+        for rel in ('.claude/commands/plan.md', '.claude/commands/old.md', '.claude/scripts/proposal-lint.py'):
+            self.assertTrue(os.path.isfile(os.path.join(self.dst, rel)), rel + ' must not be deleted')
+
     def test_recorded_ref_exists_on_the_recorded_remote(self):
         # An unpushed local branch is never recorded: a later run would clone --branch <it> from origin and fail.
         git(self.src, 'switch', '-q', '-c', 'my-tweaks')
