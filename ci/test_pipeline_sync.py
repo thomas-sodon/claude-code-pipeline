@@ -39,7 +39,7 @@ def read(root, rel):
         return f.read()
 
 
-class SyncTest(unittest.TestCase):
+class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='sync-test-')
         self.src = os.path.join(self.tmp, 'src')
@@ -70,6 +70,8 @@ class SyncTest(unittest.TestCase):
         git(self.src, 'add', '-A')
         git(self.src, 'commit', '-qm', msg)
 
+
+class SyncTest(Fixture):
     def test_first_install_copies_and_records(self):
         r = self.run_sync()
         self.assertIn('.claude/commands/plan.md', r['added'])
@@ -180,6 +182,119 @@ class SyncTest(unittest.TestCase):
         r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--check'],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_legacy_install_adopted_from_history(self):
+        # A cp -r of v1, before the manifest: plan.md is an unedited older upstream version, old.md was edited.
+        write(self.dst, '.claude/commands/plan.md', 'plan v1\n')
+        write(self.dst, '.claude/commands/old.md', 'old v1, edited here\n')
+        write(self.src, '.claude/commands/plan.md', 'plan v2\n')
+        write(self.src, '.claude/commands/old.md', 'old v2\n')
+        self.commit_src('v2')
+        r = self.run_sync('--check', code=1)
+        self.assertEqual(r['outdated'], ['.claude/commands/plan.md'])
+        self.assertEqual(r['adopted'], ['.claude/commands/plan.md'])
+        self.assertEqual(r['differs'], ['.claude/commands/old.md'])
+        # Without --update the adopted file is kept, but its base is recorded: it stays outdated, not differs.
+        self.run_sync()
+        self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan v1\n')
+        r = self.run_sync('--check', code=1)
+        self.assertEqual(r['outdated'], ['.claude/commands/plan.md'])
+        self.assertEqual(r['adopted'], [])
+        r = self.run_sync('--update')
+        self.assertIn('.claude/commands/plan.md', r['updated'])
+        self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan v2\n')
+
+    def test_legacy_adoption_through_a_clone(self):
+        # The clone keeps the history (no --depth), so a cp -r of an older commit is still recognised.
+        write(self.dst, '.claude/commands/plan.md', 'plan v1\n')
+        write(self.src, '.claude/commands/plan.md', 'plan v2\n')
+        self.commit_src('v2')
+        branch = subprocess.run(['git', '-C', self.src, 'rev-parse', '--abbrev-ref', 'HEAD'],
+                                stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--repo', self.src, '--ref', branch,
+                            '--json', '--check'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)['adopted'], ['.claude/commands/plan.md'])
+
+    def test_release_tag_pins_the_ref(self):
+        git(self.src, 'tag', 'v1.0.0')
+        write(self.src, '.claude/commands/plan.md', 'plan v2\n')
+        self.commit_src('v2')
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--repo', self.src, '--ref', 'v1.0.0', '--json'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan v1\n')
+        self.assertEqual(json.loads(read(self.dst, MANIFEST))['source']['ref'], 'v1.0.0')
+        # The manifest keeps the tag: --check compares against it, not against the newer tip.
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--check'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # A detached checkout of the tag, passed with --from, records the tag as the ref too.
+        co = os.path.join(self.tmp, 'co')
+        subprocess.run(['git', 'clone', '-q', '--branch', 'v1.0.0', self.src, co], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', co, '--json'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)['source']['ref'], 'v1.0.0')
+
+
+class ClaudeMdTest(Fixture):
+    TEMPLATE = ('## How work happens here\n\n'
+                '<!-- How work happens here written by /seed: compared by pipeline-sync.py -->\n\n'
+                '- rule one\n- rule two\n')
+
+    def setUp(self):
+        super().setUp()
+        write(self.src, '.claude/scripts/claude-md-base.md', self.TEMPLATE)
+        self.commit_src('template')
+
+    def claude_md(self, text):
+        write(self.dst, 'CLAUDE.md', text)
+
+    def test_marked_section_current(self):
+        self.claude_md('# dst\n\nIntro.\n\n' + self.TEMPLATE + '\n## Pipeline config\n\nMAIN_BRANCH: main\n')
+        r = self.run_sync('--check-claude-md')
+        self.assertEqual(r['claude_md']['status'], 'current')
+        self.run_sync('--check', '--check-claude-md')
+
+    def test_marked_section_differs_is_reported_never_edited(self):
+        text = self.TEMPLATE.replace('- rule two\n', '- rule two, old wording\n') + '\n## Pipeline config\n'
+        self.claude_md(text)
+        r = self.run_sync()
+        c = r['claude_md']
+        self.assertEqual(c['status'], 'differs')
+        self.assertEqual((c['added'], c['removed']), (1, 1))
+        self.assertIn('+- rule two', c['diff'])
+        self.assertIn('-- rule two, old wording', c['diff'])
+        self.assertNotIn('claude_md', r['pending'])
+        self.assertEqual(read(self.dst, 'CLAUDE.md'), text)
+        # --check passes without the flag and counts the section as pending with it.
+        self.assertEqual(self.run_sync('--check')['pending'], [])
+        r = self.run_sync('--check', '--check-claude-md', code=1)
+        self.assertEqual(r['pending'], ['claude_md'])
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', self.src],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertIn('rule two, old wording', r.stdout)
+        self.assertEqual(read(self.dst, 'CLAUDE.md'), text)
+
+    def test_unmarked_and_missing_sections_are_not_pending(self):
+        # An older /seed wrote the section without the marker: reported with its diff, never pending.
+        self.claude_md('## How work happens here\n\n- rule one\n')
+        r = self.run_sync('--check-claude-md')
+        self.assertEqual(r['claude_md']['status'], 'unmarked')
+        self.assertNotIn('claude_md', r['pending'])
+        # The marker is ignored in the comparison: the same rules without it are current.
+        self.claude_md('## How work happens here\n- rule one\n- rule two\n```\n## not a heading\n```\n')
+        self.assertEqual(self.run_sync()['claude_md']['status'], 'unmarked')
+        self.claude_md('## How work happens here\n\n- rule one\n- rule two\n\n# Next\n')
+        self.assertEqual(self.run_sync()['claude_md']['status'], 'current')
+        self.claude_md('# dst\n')
+        self.assertEqual(self.run_sync()['claude_md']['status'], 'missing')
+        os.remove(os.path.join(self.src, '.claude/scripts/claude-md-base.md'))
+        self.commit_src('no template')
+        self.assertEqual(self.run_sync('--check-claude-md')['claude_md']['status'], 'no_template')
 
 
 if __name__ == '__main__':
