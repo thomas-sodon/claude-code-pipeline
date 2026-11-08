@@ -320,7 +320,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 ## Milestones
 
 1. [x] **Bootstrap the repository.** Green skeleton, CLAUDE.md and CI from architecture.md.
-   - Human gate: ops — run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` check
+   - Human gate: ops — run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` and `docs` checks
    - Depends on: none
    - Acceptance: CI green on main; main protected
    - Outcome: bootstrap PR merged; CI green at 3f2c1ab; main protected
@@ -351,11 +351,11 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 | `## Data model` | entities, key fields, data class, where each lives, retention |
 | `## Decisions` | D-records, each weighing two or more options |
 | `## Security and privacy` | data classes, encryption, auth, secrets, third parties, retention, threats, compliance items and the milestone that clears each |
-| `## Invariants` | bullets, each an enforceable rule; `/bootstrap` copies them verbatim into `CLAUDE.md` |
+| `## Invariants` | bullets, each an enforceable rule; `/bootstrap` copies them verbatim into `CLAUDE.md`, and `--claude-md` checks the copy |
 | `## Repository layout` | the directory tree `/bootstrap` scaffolds; an entry marked `(from milestone N)` is left to that milestone |
 | `## Quality gates` | the three lines below, which `/bootstrap` parses |
 | `## Environments and deployment` | environments, CI/CD, secrets and env vars by NAME, migrations, monitoring, backups, rollback, release process |
-| `## Testing` | layers, frameworks, mocking, coverage, fixture policy; copied verbatim into `CLAUDE.md` |
+| `## Testing` | layers, frameworks, mocking, coverage, fixture policy; copied verbatim into `CLAUDE.md`, and `--claude-md` checks the copy |
 | `## Risks and open questions` | each with impact, mitigation and the milestone that retires it |
 
 `## Quality gates` names the commands in this form (CI job default `gates`):
@@ -557,7 +557,8 @@ those checkboxes, byte for byte, and accepts gates and milestones too.
 | `missing_section`, `no_steps` | E / W | a required section, or the step list, is missing or empty (W for a proposal's other sections) |
 | `missing_proposal`, `gate_with_proposal`, `bad_proposal`, `files_in_roadmap` | E | roadmap milestone rules |
 | `lane_cycle` | E | `--lanes`: `Lane:` groups, dependencies and shared files form a cycle (over every lane, blocked or not) |
-| `not_a_proposal`, `not_a_roadmap` | E | `--lanes` on a non-proposal, `--roadmap` on a non-roadmap |
+| `not_a_proposal`, `not_a_roadmap`, `not_an_architecture` | E | `--lanes` on a non-proposal, `--roadmap` on a non-roadmap, `--claude-md` on a non-architecture |
+| `claude_md_drift` | E | `--claude-md`: `CLAUDE.md`'s `## Invariants` or `## Testing` body differs from the architecture's, or is missing (blank lines at either end, and one pointer line naming `architecture.md` first or last under `## Invariants`, are ignored) |
 | `no_kind`, `missing_status`, `unknown_key` | W | see *Common rules* and *Steps* |
 | `step_too_big` | W | more than 8 files or about 7 sentences |
 | `lane_mixed` | W | a lane mixes ticked and unticked steps |
