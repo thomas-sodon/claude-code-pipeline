@@ -302,8 +302,11 @@ def sync(a):
             repo = git(src, 'remote', 'get-url', 'origin', check=False) if is_git(src) else None
             ref = a.ref
             if not ref and is_git(src):
-                # The branch, else the release tag a detached checkout sits on (a clone of --branch <tag>).
-                ref = (git(src, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False)
+                # A ref a later run can clone from the recorded repo (origin): the branch's upstream on origin, else
+                # the release tag a detached checkout sits on (a clone of --branch <tag>), else none (main later).
+                # Never a local branch name, which may not exist on origin.
+                up = git(src, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}', check=False)
+                ref = ((up[len('origin/'):] if up and up.startswith('origin/') else None)
                        or git(src, 'describe', '--tags', '--exact-match', 'HEAD', check=False))
         else:
             repo = a.repo or prev.get('repo') or DEFAULT_REPO

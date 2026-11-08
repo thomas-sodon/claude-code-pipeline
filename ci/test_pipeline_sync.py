@@ -192,6 +192,27 @@ class SyncTest(Fixture):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_recorded_ref_exists_on_the_recorded_remote(self):
+        # An unpushed local branch is never recorded: a later run would clone --branch <it> from origin and fail.
+        git(self.src, 'switch', '-q', '-c', 'my-tweaks')
+        self.run_sync()
+        self.assertIsNone(json.loads(read(self.dst, MANIFEST))['source']['ref'])
+        # A local branch tracking origin/<x> records x, the name a clone from origin can use.
+        bare = os.path.join(self.tmp, 'remote.git')
+        subprocess.run(['git', 'clone', '-q', '--bare', self.src, bare], check=True)
+        work = os.path.join(self.tmp, 'work')
+        subprocess.run(['git', 'clone', '-q', '--branch', 'my-tweaks', bare, work], check=True)
+        git(work, 'switch', '-q', '-c', 'local-name', '--track', 'origin/my-tweaks')
+        p = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', work, '--json'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        src = json.loads(read(self.dst, MANIFEST))['source']
+        self.assertEqual(src['ref'], 'my-tweaks')
+        # ...and a later run with no --from can clone it back.
+        p = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--check'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
     def test_credentials_in_the_source_remote_are_never_written(self):
         # A token in the source checkout's origin URL must not reach the committed manifest or the report.
         git(self.src, 'remote', 'add', 'origin', 'https://someone:ghp_SECRET123@github.com/acme/ccp.git')
