@@ -23,9 +23,9 @@ Requirements:
 - `git` and an authenticated `gh` CLI, for the PR and issue stages.
 - `python3` (3.8+, standard library only), which `/review-changes` uses to read the
   session transcript and every design-doc command runs `proposal-lint.py` with.
-- A GitHub repository with CI. An AI review check is optional. The repository must
-  exist before any run (for a new product, a clean clone of a new repository with an
-  `origin` remote): the pipeline never creates one. A greenfield project needs no CI
+- A GitHub repository with CI. An AI review check is optional (see *AI review*
+  below). The repository must exist before any run (for a new product, a clean
+  clone of a new repository with an `origin` remote): the pipeline never creates one. A greenfield project needs no CI
   yet: `/bootstrap` writes it, on a `bootstrap/<date>` branch shipped as the first
   PR (or, when the remote has no commits at all, as the root commit on local `main`,
   which a person pushes by hand).
@@ -110,6 +110,21 @@ the name of a CI check that posts AI review comments (default none), which the
 monitor waits for before counting comments; and `gate`, a gate wrapper that
 the agents use instead of `GATE_WRAPPER`, never nesting the two (default `''`: the
 agents use `GATE_WRAPPER` when it is set, else run the gates directly).
+
+**AI review.** [`examples/answerable-ai-review.yml`](../examples/answerable-ai-review.yml)
+is a GitHub Action that reviews each PR push with Claude and posts findings as review
+comments. Copy it to `.github/workflows/` and add the secret `CLAUDE_CODE_OAUTH_TOKEN`
+by name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN`; never write the value down). Its
+checks:
+
+| Check | Does | Use |
+|---|---|---|
+| `Review` | reviews the diff and posts findings; skipped on fork PRs (no secrets) | pass `ai_review_check: 'Review'` |
+| `Reply coverage` | fails while a finding has no reply; re-runs on each review-comment reply | require it on `main` to block merge on unanswered findings |
+
+`/process-comments`, which the monitor runs, fixes or answers each finding, so
+`Reply coverage` turns green without another push. `/bootstrap`'s next steps offer
+it; `/seed` offers it on an existing repository with no AI review check.
 
 ## Gate wrappers
 

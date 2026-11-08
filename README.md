@@ -49,8 +49,10 @@ The clone may be empty or hold just the README and licence a host creates.
    ship-only run is skipped.)
 4. **Ship it** (you merge). `plan-to-merged-pr` with `{ ship_only: true, branch,
    title }` opens the bootstrap PR and babysits its CI; you merge it, protect `main`
-   and require its CI checks (the gates and `docs`, which lints the design docs), add the secrets by name and tick the roadmap's Bootstrap
-   gate with its `Outcome:` through a docs PR: `/bootstrap` prints the steps.
+   and require its CI checks (the gates and `docs`, which lints the design docs), add
+   the secrets by name and tick the roadmap's Bootstrap gate with its `Outcome:`
+   through a docs PR: `/bootstrap` prints the steps. They also offer an AI review for
+   the monitor (see *AI review* below).
 5. **Build, milestone by milestone.** You do the human gates the next milestone
    waits on; `proposal-build-chain` builds its proposal's lanes; `ship-chain` ships
    each chain's lanes in merge order, one PR at a time, and you merge each. `python3 .claude/scripts/proposal-lint.py
@@ -76,6 +78,19 @@ docs in CI, as `/bootstrap` sets up on a new repository, paste the `docs` job fr
 [`examples/docs-lint-job.yml`](examples/docs-lint-job.yml) into your CI workflow and
 require its check on `main`
 ([how](docs/REFERENCE.md#install-and-configuration)).
+
+### AI review
+
+The PR monitor waits for an AI review check before counting comments, but none is
+installed by default: without one, the only independent review is `/review-changes`
+before the PR. [`examples/answerable-ai-review.yml`](examples/answerable-ai-review.yml)
+is the one this repository runs. Copy it to `.github/workflows/`, add the secret by
+name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for the value, from
+`claude setup-token`), and pass `ai_review_check: 'Review'` to the workflows. It
+posts findings as review comments (check `Review`) and fails `Reply coverage` while
+one has no reply; require `Reply coverage` on `main` if unanswered findings should
+block merge. `/bootstrap`'s next steps offer it, and `/seed` does on an existing
+repository with no AI review check.
 
 ### Keeping the pipeline up to date
 
@@ -216,6 +231,7 @@ examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
   pipeline-update.yml         a scheduled GitHub Action that opens a PR updating the pipeline
   docs-lint-job.yml           the CI job /bootstrap writes to lint the design docs, for an existing repo
+  answerable-ai-review.yml    an AI review GitHub Action for the PR monitor (ai_review_check: 'Review')
 ci/                           checks: workflow syntax; every skill and flag the workflows call
                               exists; the workflows stop on blocking questions and route the
                               answers; the lint's tests and fixtures; every example design doc
