@@ -339,6 +339,19 @@ await test('ship-chain: a re-run skips merged lanes and monitors an already-open
   assert.equal(seen[0].title, undefined)
 })
 
+await test('ship-chain: an open draft PR is readied through ship-only with existing_pr, after the lanes below merged', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }, seen)
+  const over = { 'lookup-s1': { state: 'MERGED', pr_number: 10, title: 'x' }, 'lookup-s2': { state: 'OPEN', pr_number: 11, is_draft: true, title: 'y' } }
+  const { result } = await run('ship-chain', { chain: CHAIN }, sc(over), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.equal(seen[0].ship_only, true)
+  assert.equal(seen[0].existing_pr, 11)
+  assert.equal(seen[0].pr, undefined, 'not monitor-only: monitoring never readies a draft')
+  assert.deepEqual(seen[0].predecessor_prs, [10], 'readied only once the PR below reads MERGED')
+  assert.equal(seen[0].title, 'y')
+})
+
 await test('ship-chain: stops on a closed PR, a PR still open at the wait cap, or a lane that did not ship', async () => {
   const two = { 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }
   const closed = await run('ship-chain', { chain: CHAIN }, sc({ 'wait-s1-1': { state: 'CLOSED' } }), { workflow: shipWf(two) })

@@ -356,7 +356,8 @@ Lane by lane, in merge order:
    lane's proposal steps (with `title_prefix` in front).
 2. **Ship**: `plan-to-merged-pr` in ship-only mode, with `predecessor_prs` filled
    in with the PRs above it as merged: merge check, PR, monitor. A PR an earlier
-   run already opened is monitored (monitor-only) instead of opened again.
+   run already opened is monitored (monitor-only) instead of opened again; an open
+   draft is readied instead (ship-only with `existing_pr`), as nobody can merge one.
 3. **Wait**: an agent polls the PR until it reads `MERGED`, at most
    `max_wait_rounds` rounds of about 30 minutes (default 48). It never merges,
    approves or enables auto-merge: you merge. Then the next lane ships.

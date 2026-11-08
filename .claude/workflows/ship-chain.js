@@ -64,6 +64,7 @@ const LOOKUP_SCHEMA = {
     state: { type: 'string', enum: ['NONE', 'OPEN', 'MERGED', 'CLOSED'], description: 'the branch\'s PR to the main branch: MERGED if any merged, else OPEN if one is open, else CLOSED if one was closed unmerged, else NONE' },
     pr_number: { type: 'integer', description: 'that PR\'s number (0 when NONE)' },
     url: { type: 'string' },
+    is_draft: { type: 'boolean', description: 'OPEN only: whether that PR is a draft' },
     title: { type: 'string', description: 'the PR title to use when none exists yet: the given title, or the one you wrote for a placeholder' },
     notes: { type: 'string' },
   },
@@ -92,8 +93,8 @@ async function lookup(e) {
     : `Return the given title unchanged as title: ${JSON.stringify(String(t))}.`
   return agent(
     GUARD + AUTH + HANDS_OFF + `Work ONLY in the git checkout ${e.args.dir} (cd there); read-only: change no file and no git state beyond git fetch.\n` +
-    `1. git fetch origin. List the PRs for head branch ${e.branch}: gh pr list --head ${e.branch} --base ${MAIN} --state all --json number,state,url,title. ` +
-    `Report state MERGED with that PR if any merged, else OPEN if one is open, else CLOSED (the latest) if one was closed unmerged, else NONE with pr_number 0.\n` +
+    `1. git fetch origin. List the PRs for head branch ${e.branch}: gh pr list --head ${e.branch} --base ${MAIN} --state all --json number,state,url,title,isDraft. ` +
+    `Report state MERGED with that PR if any merged, else OPEN if one is open (with is_draft from isDraft), else CLOSED (the latest) if one was closed unmerged, else NONE with pr_number 0.\n` +
     `2. ${titleTask}`,
     { label: `lookup-${e.lane}`, phase: 'Lookup', effort: 'low', schema: LOOKUP_SCHEMA },
   )
@@ -144,9 +145,15 @@ for (let i = 0; i < C.order.length && !stop; i++) {
   // The lane's own args, minus the keys this run sets (bases belong to the build; ship-only needs predecessor_prs instead).
   const { ship_only, ship, title: _t, predecessor_prs: _p, existing_pr: _x, pr: _pr, bases: _b, ...base } = e.args
   const common = { ...base, ...SHARED, ...(answers.length ? { answers } : {}), branch: e.branch, ...(preds.length ? { predecessor_prs: preds } : {}) }
-  const shipArgs = found.state === 'OPEN' ? { ...common, pr: found.pr_number } : { ...common, ship_only: true, title }
-  log(found.state === 'OPEN'
+  // An open PR is monitored as it is; an open draft (a stacked lane's early PR) goes through ship-only with
+  // existing_pr, which checks the PRs below it merged and then readies it: nobody can merge a draft.
+  const draft = found.state === 'OPEN' && found.is_draft === true
+  const shipArgs = found.state === 'OPEN' && !draft ? { ...common, pr: found.pr_number }
+    : draft ? { ...common, ship_only: true, existing_pr: found.pr_number, title: title || found.title }
+    : { ...common, ship_only: true, title }
+  log(found.state === 'OPEN' && !draft
     ? `Lane ${e.lane}: PR #${found.pr_number} already open — monitoring it`
+    : draft ? `Lane ${e.lane}: PR #${found.pr_number} is an open draft — readying it${preds.length ? ` after ${preds.map(n => '#' + n).join(', ')}` : ''}`
     : `Lane ${e.lane}: shipping ${e.branch} as "${title}"${preds.length ? ` after ${preds.map(n => '#' + n).join(', ')}` : ''}`)
   let r = null
   try { r = await workflow('plan-to-merged-pr', shipArgs) } catch (err) { log(`Lane ${e.lane}: ${err && err.message ? err.message : err}`) }

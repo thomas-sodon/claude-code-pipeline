@@ -420,7 +420,8 @@ Per lane, a read-only agent first looks for a PR from the lane's branch to
 `main_branch` (`gh pr list --head <branch> --state all`). A `MERGED` one is skipped
 and counts as merged; a `CLOSED` one stops the chain; an `OPEN` one (an earlier run
 opened it) is monitored with `plan-to-merged-pr` monitor-only mode, never opened
-twice. With none, the lane runs `plan-to-merged-pr { ship_only: true }` with its
+twice; an `OPEN` draft (`isDraft`) instead runs ship-only with `existing_pr`, which
+checks `predecessor_prs` merged, then readies it, since a draft cannot be merged. With none, the lane runs `plan-to-merged-pr { ship_only: true }` with its
 `title` (a placeholder, empty or `<...>`, is written from the lane's proposal steps,
 `steps` or the numbers in the placeholder, else from the branch's commits) and
 `predecessor_prs` (placeholders replaced by the merged PR numbers of the lanes
