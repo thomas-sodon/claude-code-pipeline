@@ -106,7 +106,10 @@ def sha(path):
 
 
 def is_git(d):
-    return git(d, 'rev-parse', '--show-toplevel', check=False) is not None
+    """d is the top of its own git checkout: a plain copy that merely sits inside another repository (a dotfiles
+    home, a monorepo) is not, or that repository's origin, commit, history and ignore rules would be taken for it."""
+    top = git(d, 'rev-parse', '--show-toplevel', check=False)
+    return top is not None and os.path.realpath(top) == os.path.realpath(d)
 
 
 def source_files(src):

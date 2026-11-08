@@ -214,6 +214,28 @@ class SyncTest(Fixture):
         leftovers = [f for f in os.listdir(os.path.join(self.dst, '.claude/commands')) if '.tmp.' in f]
         self.assertEqual(leftovers, [])
 
+    def test_a_plain_copy_inside_another_repository_is_not_a_git_source(self):
+        # An unpacked pipeline under some other repository (a dotfiles home that ignores it): a plain directory,
+        # never that repository's origin, commit or ignore rules.
+        outer = os.path.join(self.tmp, 'home')
+        os.makedirs(outer)
+        git(outer, 'init', '-q')
+        git(outer, 'remote', 'add', 'origin', 'https://example.com/dotfiles.git')
+        write(outer, '.gitignore', 'ccp/\n')
+        write(outer, 'README', 'dotfiles\n')
+        git(outer, 'add', '-A')
+        git(outer, 'commit', '-qm', 'dotfiles')
+        plain = os.path.join(outer, 'ccp')
+        shutil.copytree(os.path.join(self.src, '.claude'), os.path.join(plain, '.claude'))
+        r = subprocess.run([sys.executable, SYNC, '--target', self.dst, '--from', plain, '--json'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertIn('.claude/commands/plan.md', out['added'])
+        self.assertNotIn('.claude/scripts/__pycache__/x.pyc', out['added'])
+        self.assertIsNone(out['source']['repo'])
+        self.assertIsNone(out['source']['commit'])
+
     def test_a_source_that_ignores_its_pipeline_files_is_refused(self):
         # A project with the pipeline installed but .claude/ ignored: its files exist on disk, yet git lists none.
         self.run_sync()
