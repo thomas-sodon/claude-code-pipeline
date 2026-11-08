@@ -59,10 +59,11 @@ jobs:
           echo "sha=$(git -C "$RUNNER_TEMP/ccp" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           # The manifest records the upstream commit on every run, so an upstream commit that changes no pipeline
           # file still rewrites it: count it only when it is new here (a first adoption), never on its own.
-          # Files kept back because they were edited here (a conflict, or edited and removed upstream) change
+          # Files kept back because they were edited here (a conflict, a differing file with no install record,
+          # or one edited here and removed upstream) change
           # nothing on disk, so ask a read-only --check for them: they still need a PR that lists them.
           check=$(python3 "$sync" --target . --from "$RUNNER_TEMP/ccp" --ref "$PIPELINE_REF" --check --json || true)
-          kept=$(jq '(.conflict // []) + (.obsolete_edited // []) | length' <<<"$check")
+          kept=$(jq '(.conflict // []) + (.differs // []) + (.obsolete_edited // []) | length' <<<"$check")
           if [ -n "$(git status --porcelain -- .claude ':(exclude).claude/pipeline-manifest.json')" ] ||
              ! git ls-files --error-unmatch .claude/pipeline-manifest.json >/dev/null 2>&1 ||
              [ "${kept:-0}" -gt 0 ]; then
@@ -91,7 +92,8 @@ jobs:
           {
             echo "Updates the pipeline's \`.claude\` files to [\`$SHA\`]($PIPELINE_REPO/commit/$SHA) ($PIPELINE_REF)."
             echo
-            echo "Files edited in this repository are kept; any listed as a **conflict** changed upstream too:"
+            echo "Files edited in this repository are kept; any listed as a **conflict** changed upstream too, and any"
+            echo "listed as **differs** has no install record and matches no version upstream ever shipped:"
             echo "merge them by hand, or run \`python3 .claude/scripts/pipeline-sync.py --update --force\` to take upstream's."
             echo "Sync never edits \`CLAUDE.md\`: if the report shows its \`## How work happens here\` differing from the"
             echo "pipeline's template, apply the change by hand (in this PR or another)."

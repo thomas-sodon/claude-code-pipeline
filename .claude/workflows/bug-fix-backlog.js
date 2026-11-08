@@ -230,10 +230,22 @@ function proposeLanes(r) {
 let LANES = A.lanes || []
 if (INTAKE) {
   if (!ROOT) throw new Error('bug-fix-backlog: args.root is required with the Intake (its lanes give no dir)')
-  const accept = INTAKE_ANSWER && typeof INTAKE_ANSWER.answer === 'string' && INTAKE_ANSWER.answer.trim().toLowerCase() === 'accept'
+  // The answer may be an option's own text, relayed back as given: 'accept …', 'none: [] …', or lanes JSON
+  // (bare, or inside a sentence).
+  const text = INTAKE_ANSWER && typeof INTAKE_ANSWER.answer === 'string' ? INTAKE_ANSWER.answer.trim() : null
+  const accept = !!text && /^accept\b/i.test(text)
   if (INTAKE_ANSWER && !accept) {
     let given = INTAKE_ANSWER.answer
-    try { if (typeof given === 'string') given = JSON.parse(given) } catch { given = null }
+    if (text !== null) {
+      given = null
+      if (/^none\b/i.test(text)) given = []
+      else {
+        try { given = JSON.parse(text) } catch {
+          const a = text.indexOf('['), b = text.lastIndexOf(']')
+          try { if (a >= 0 && b > a) given = JSON.parse(text.slice(a, b + 1)) } catch { given = null }
+        }
+      }
+    }
     if (given && !Array.isArray(given) && Array.isArray(given.lanes)) given = given.lanes
     if (!Array.isArray(given)) throw new Error(`bug-fix-backlog: answer intake.q1 must be 'accept' or a JSON array of lanes ({ key, issues })`)
     // Only what a lane is; the Intake's notes (code_site, why) are not lane args.
@@ -270,7 +282,7 @@ if (INTAKE) {
         id: 'intake.q1', stage: 'intake',
         question: `Run these ${proposed.length} bug lane(s)? Confirm the grouping, or edit it (regroup issues, drop or add some).`,
         why: 'each lane becomes one branch and one PR fixing its issues together; issues that share a code site belong in one lane, unrelated ones in separate lanes',
-        options: ['accept the proposed lanes as listed', 'the edited lanes, as a JSON array of { key, issues }', 'none: [] (run nothing)'],
+        options: ['accept (the proposed lanes as listed)', 'the edited lanes, as a JSON array of { key, issues }', 'none: [] (run nothing)'],
         recommended: JSON.stringify(lanesOnly),
       }
       return { status: 'needs_input', stage: 'intake', questions: [question], relay: INTAKE_RELAY, labels: LABELS, proposed_lanes: proposed, unlaned: r.unlaned, ci_red: r.ci_red, issues: r.issues }

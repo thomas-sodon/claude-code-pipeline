@@ -116,8 +116,8 @@ and never commits, but it compares `CLAUDE.md`'s `## How work happens here` (whi
 on a branch per upstream commit, and closes the older update PRs it supersedes.
 A pipeline copied with `cp -r` has no manifest yet; the first run adopts it: a file
 that matches some older upstream version is treated as unedited (`outdated`, listed
-under `adopted`), and one that matches none is `differs`, which `--update` replaces,
-so commit any local edits first and re-apply them.
+under `adopted`), and one that matches none is `differs`: it may hold your edits, so
+it is kept and reported like a conflict (`--update --force` takes upstream's).
 
 **Pinning a release.** `PIPELINE_REF` (in the Action) and `--ref` take a branch or
 a tag; the manifest records it, so later runs and `--check` compare against the

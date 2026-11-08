@@ -148,9 +148,18 @@ class SyncTest(Fixture):
         self.assertEqual(r['differs'], ['.claude/commands/plan.md'])
         self.assertFalse(r['settings_json_copied'])
         self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan from an old cp -r\n')
+        # It matches no version the source shipped, so it may hold edits: --update keeps it, like a conflict.
         r = self.run_sync('--update')
+        self.assertEqual(r['differs'], ['.claude/commands/plan.md'])
+        self.assertEqual(r['updated'], [])
+        self.assertIn('differs', r['pending'])
+        self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan from an old cp -r\n')
+        self.run_sync('--check', code=1)
+        r = self.run_sync('--update', '--force')
         self.assertEqual(r['updated'], ['.claude/commands/plan.md'])
+        self.assertEqual(read(self.dst, '.claude/commands/plan.md'), 'plan v1\n')
         self.assertEqual(read(self.dst, '.claude/settings.json'), '{"mine": true}\n')
+        self.run_sync('--check')
 
     def test_dry_run_and_check_write_nothing(self):
         self.run_sync('--dry-run')

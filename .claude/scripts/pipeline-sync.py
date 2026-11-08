@@ -349,8 +349,10 @@ def sync(a):
                 report['adopted'].append(rel)
                 kind = 'outdated'
             s_hash = sha(os.path.join(src, rel))
-            take = (kind == 'added' or (a.update and kind in ('outdated', 'differs'))
-                    or (a.update and a.force and kind == 'conflict'))
+            # A file with no install record that matches no shipped version may hold someone's edits: like a
+            # conflict, only --force replaces it.
+            take = (kind == 'added' or (a.update and kind == 'outdated')
+                    or (a.update and a.force and kind in ('conflict', 'differs')))
             if take:
                 if write:
                     if not inside(target, rel):
@@ -420,7 +422,7 @@ def human(r):
     if r['same_dir']:
         lines.append('  source and target are the same directory: nothing to copy; manifest recorded')
     labels = [('added', 'added'), ('updated', 'updated'), ('deleted', 'deleted (removed upstream)'),
-              ('outdated', 'outdated (run with --update)'), ('differs', 'differs, no install record (--update takes the source\'s)'),
+              ('outdated', 'outdated (run with --update)'), ('differs', 'differs, no install record and matches no shipped version (kept; --update --force takes the source\'s)'),
               ('conflict', 'conflict: edited here and upstream (kept; --update --force takes the source\'s)'),
               ('local_edit', 'edited here, unchanged upstream (kept)'),
               ('obsolete', 'removed upstream (run with --update to delete)'),

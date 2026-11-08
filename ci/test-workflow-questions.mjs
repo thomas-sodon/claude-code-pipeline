@@ -415,6 +415,20 @@ await test('bug-fix-backlog: an intake answer runs the confirmed lanes, and reac
   await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'yes please' }] }, bfb()), /must be 'accept' or a JSON array/)
 })
 
+await test('bug-fix-backlog: each intake option, relayed back as its own text, is understood', async () => {
+  const stop = await run('bug-fix-backlog', { root: '/w' }, bfb())
+  const opts = stop.result.questions[0].options
+  const asked = async answer => run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer }] }, bfb())
+  const triaged = calls => calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
+  const accepted = await asked(opts.find(o => /^accept/i.test(o)))
+  assert.deepEqual(triaged(accepted.calls), ['triage:auth-login', 'triage:auth-login-2'], 'accept runs the proposed lanes')
+  assert.deepEqual((await asked(opts.find(o => /^none/i.test(o)))).result, [], 'none runs nothing')
+  assert.deepEqual((await asked('Accept')).calls.some(c => c.label === 'intake'), true)
+  const inline = await asked('the edited lanes: [{"key": "x", "issues": [11]}]')
+  assert.deepEqual(triaged(inline.calls), ['triage:x'], 'lanes JSON inside a sentence')
+  await assert.rejects(asked(opts.find(o => /JSON array/.test(o))), /must be 'accept' or a JSON array/, 'the template itself is no answer')
+})
+
 await test('bug-fix-backlog: lanes a person edited are validated before any branch is named', async () => {
   const lanes = async given => run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: JSON.stringify(given) }] }, bfb())
   for (const bad of [[{ key: 'a', issues: '12' }], [{ key: 'a', issues: 12 }], [{ key: 'a', issues: [] }], [{ key: 'a', issues: [0] }], [{ key: 'a', issues: ['x'] }], [{ key: 'a' }]]) {

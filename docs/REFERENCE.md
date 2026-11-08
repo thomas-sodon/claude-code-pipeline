@@ -82,7 +82,8 @@ before the manifest) is looked up in the source's git history: when some commit
 shipped exactly its bytes (`git hash-object` against the blobs `git log --raw`
 lists for that path), it is an unedited older version, classified `outdated` and
 listed under `adopted`, with that version recorded as its base; otherwise it is
-`differs`, which `--update` replaces.
+`differs`: it may hold local edits, so it is kept like a conflict, and only
+`--update --force` replaces it.
 `--check` changes nothing and exits 1 when anything is pending; `--dry-run` reports
 without writing; exit 2 is a usage error, a source that is not a pipeline, or a git
 failure.

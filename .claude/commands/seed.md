@@ -9,7 +9,7 @@ This command is the **first step for a new idea**: run it in the clean repositor
 - `<target>` — the repository to seed (default: the working directory).
 - `--from=<dir>` — the pipeline source: a directory whose `.claude/` holds the pipeline (a checkout of the pipeline, or a project that has it installed). Default: the working directory. It must contain `.claude/workflows/brief-to-proposals.js` and `.claude/scripts/proposal-lint.py` → else `error=no_source`, naming what is missing and asking for `--from`. Files are copied as they are on disk; when the source is a git checkout with uncommitted changes (modified or untracked files) in what is copied, the report lists them (the target then gets an unreleased version).
 - `--update` — upgrade an installed pipeline: replace pipeline files the target has not edited since they were installed, and delete ones the source no longer ships (see *Copy the pipeline files*). Never touches `CLAUDE.md`.
-- `--force` — with `--update`: also take the source's version of a file edited both in the target and in the source (a *conflict*).
+- `--force` — with `--update`: also take the source's version of a file edited both in the target and in the source (a *conflict*), or of one that has no install record and matches no version the source ever shipped (*differs*).
 - `--dry-run` — print what would be copied, kept and written; write nothing.
 
 An unrecognized `--`-prefixed token, a second target, or `--force` without `--update` → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: *Check the target* and *Write CLAUDE.md* still run; only *Copy the pipeline files* is skipped.
@@ -34,7 +34,7 @@ It copies, for each of `.claude/commands/`, `.claude/skills/` (when the source h
 - **Unedited since install, changed in the source** → *outdated*; under `--update`, replaced (*updated*).
 - **Edited in the target, unchanged in the source** → *local_edit*: kept.
 - **Edited in both** → *conflict*: kept; under `--update --force`, replaced.
-- **Different, with no install record** (a pipeline copied by hand, before the manifest) → looked up in the source's git history: identical to a version some commit shipped → an unedited older version, *outdated* (and listed as *adopted*), with that version recorded as its base; else *differs*: kept; under `--update`, replaced.
+- **Different, with no install record** (a pipeline copied by hand, before the manifest) → looked up in the source's git history: identical to a version some commit shipped → an unedited older version, *outdated* (and listed as *adopted*), with that version recorded as its base; else *differs*: it may hold local edits, so it is kept, as a conflict is; under `--update --force`, replaced.
 - **Recorded, but no longer in the source** → *obsolete*; under `--update`, deleted when unedited (*deleted*), else kept (*obsolete_edited*).
 
 Exit 2 (`error`) → stop and report it. When the source has no `pipeline-sync.py` (an older pipeline), apply the same rules by hand without a manifest: copy what is absent, keep what differs unless `--update`, delete nothing.
