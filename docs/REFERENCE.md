@@ -11,7 +11,7 @@ repo, result statuses and resuming a stopped run. The design-doc format is in
 |---|---|---|
 | full (default) | `{ concern }` | one concern from plan to a watched PR |
 | build-only | `{ concern, ship: false, branch, dir, bases }` | a stacked lane whose predecessors are not merged yet: everything up to the merge check, then push, no PR |
-| ship-only | `{ ship_only: true, branch, title \| existing_pr, dir?, predecessor_prs?, proposal?, plan_text? }` | open (or ready) the PR for a built branch (a lane, or the bootstrap branch) once every PR below it has merged, then monitor; `predecessor_prs` lists the PRs below a stacked lane (the chain's ship plan gives a placeholder for every lane after the first in its chain), and nothing is opened or readied until each reads `MERGED`. A run given `bases` that opens or readies a PR is refused without it |
+| ship-only | `{ ship_only: true, branch, title \| existing_pr, dir?, predecessor_prs?, proposal?, plan_text? }` | open (or ready) the PR for a built branch (a lane, or the bootstrap branch) once every PR below it has merged, then monitor; `predecessor_prs` lists the PRs below a stacked lane (the chain's ship plan gives a placeholder for every lane after the first in its chain; `ship-chain` fills it in as each PR below merges), and nothing is opened or readied until each reads `MERGED`. A run given `bases` that opens or readies a PR is refused without it |
 | monitor-only | `{ pr, branch, dir?, plan_text? }` | babysit an existing PR |
 
 ## Install and configuration
@@ -306,6 +306,35 @@ on, so that the **last base contains the others** (the worktree is cut from it a
 the review is scoped against it). A lane's own `planner_args` goes to its custom
 planner.
 
+`ship-chain` ships one chain of a derive-mode `ship_plan`, in merge order:
+
+```js
+{
+  chain: { chain: 's1', order: [{ lane: 's1', branch: 'feat/x-s1-20261104', steps: [1], args: { ship_only: true, ... } }, ...] },
+                                   // one ship_plan entry (its ship_chain_args.chain); each lane's args are its
+                                   // plan-to-merged-pr ship-only args and must name its checkout as dir
+  title_prefix: '[status page] ',  // prepended to every lane's PR title, unless it already starts with it
+  max_wait_rounds: 48,             // wait rounds per PR, each polling up to ~30 minutes, before stopping with not_merged
+  main_branch: 'main', ai_review_check: '', required_checks: [], gate: '', commit_trailers: [...],
+  max_monitor_rounds: 10, efforts: {...}, on_question: 'stop',
+                                   // shared ship settings: each one given overrides the lanes' own args
+  answers: [{ lane: 's2', id: 'merge_check.q1', answer: '...' }],   // each to its own lane only
+}
+```
+
+Per lane, a read-only agent first looks for a PR from the lane's branch to
+`main_branch` (`gh pr list --head <branch> --state all`). A `MERGED` one is skipped
+and counts as merged; a `CLOSED` one stops the chain; an `OPEN` one (an earlier run
+opened it) is monitored with `plan-to-merged-pr` monitor-only mode, never opened
+twice. With none, the lane runs `plan-to-merged-pr { ship_only: true }` with its
+`title` (a placeholder, empty or `<...>`, is written from the lane's proposal steps,
+`steps` or the numbers in the placeholder, else from the branch's commits) and
+`predecessor_prs` (placeholders replaced by the merged PR numbers of the lanes
+above; numbers already given are kept). A run that ends `OPEN` is then waited on:
+an agent polls `gh pr view <n> --json state` with the Monitor tool until it reads
+`MERGED` or `CLOSED`. No stage merges, approves, closes or edits a PR, or enables
+auto-merge; the next lane's PR is opened only once the one below has merged.
+
 ## Result statuses
 
 Every result carries a `status`.
@@ -343,7 +372,23 @@ Each chain lists its lanes with a per-lane status (a `plan-to-merged-pr` status,
 `ship_only` args for each built lane (`branch`, `dir`, `proposal`, its `plan_text`,
 the `main_branch`, `ai_review_check`, `required_checks`, `gate` and
 `commit_trailers` given to the chain, and `predecessor_prs` placeholders for every
-lane after the first).
+lane after the first). Each `order` entry also lists the lane's `steps`, and each
+chain carries `ship_chain_args`, `{ chain }` for `ship-chain`.
+
+`ship-chain`: `{ status, chain, lanes, merged_prs, stopped_at?, not_shipped, questions?, relay? }`.
+`lanes` lists each lane reached, `{ lane, branch, title, pr, status, result }`, its
+`status` the PR's last state (`MERGED`, `OPEN`, `CLOSED`) or the lane's
+`plan-to-merged-pr` status (`failed` when it threw or returned nothing),
+`already_merged` on a lane skipped because its PR had merged, and `wait_notes` on
+one still open at the wait cap. `merged_prs` are the chain's merged PRs in order;
+`stopped_at` names the lane the run stopped at and why; `not_shipped` lists the
+lanes never reached. `status` is:
+
+- `merged` — every lane's PR reads `MERGED`
+- `needs_input` — a lane's run stopped with `needs_input`; `questions` lists them, each with its `lane`, and `relay` says what to do
+- `closed` — a lane's PR was closed without merging (by a person, or before this run)
+- `not_merged` — a lane's PR is still open after `max_wait_rounds`; `stopped_at.reason` carries what holds it (conflicts, red checks, review comments). Merge it (or act on it) and re-run with the same args
+- `lane_failed` — a lane's lookup did not report, or its `plan-to-merged-pr` run ended with any other status (`blocked_at_predecessors`, `blocked_at_merge_check`, `blocked_at_pr`, `monitor_failed`, ...); `stopped_at.reason` names it
 
 `brief-to-proposals`:
 
@@ -422,6 +467,10 @@ stage, never an earlier one, so the stages before it replay from the record:
   question carried and goes to that lane only. Re-run with the same args (the same
   `date`): pushed lanes come back `already_built`, closed or shipped issues are
   re-checked and skipped, and the lane that asked builds again in its kept worktree.
+- `ship-chain`: each answer keeps its `lane` and goes to that lane's
+  `plan-to-merged-pr` run only. Re-run with the same args: lanes whose PR merged are
+  skipped, and the lane that asked ships again (monitor-only, with its answers, when
+  its PR is already open, as a `monitor` question needs).
 
 `on_question: 'assume'` is for runs no one will answer: each blocking question is
 settled by its recommended option instead, and listed in the result's `assumptions`.
@@ -442,7 +491,9 @@ finished work: the lanes of `bug-fix-backlog`, the chains of `proposal-build-cha
 `brief-to-proposals`. `bug-fix-backlog`'s close and ship stages re-check the issue
 and PR state before acting. For `proposal-build-chain`, a fresh run with the same
 args (and the same `date`) is often simpler than a resume: lanes already on origin
-come back `already_built` and are not rebuilt.
+come back `already_built` and are not rebuilt. `ship-chain` is the same: a fresh
+run with the same args skips lanes whose PR merged and picks up an open PR where it
+is.
 
 ## State outside the repo
 

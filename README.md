@@ -52,8 +52,8 @@ The clone may be empty or hold just the README and licence a host creates.
    and require its CI check, add the secrets by name and tick the roadmap's Bootstrap
    gate with its `Outcome:` through a docs PR: `/bootstrap` prints the steps.
 5. **Build, milestone by milestone.** You do the human gates the next milestone
-   waits on; `proposal-build-chain` builds its proposal's lanes; you ship each lane
-   in merge order and merge. `python3 .claude/scripts/proposal-lint.py
+   waits on; `proposal-build-chain` builds its proposal's lanes; `ship-chain` ships
+   each chain's lanes in merge order, one PR at a time, and you merge each. `python3 .claude/scripts/proposal-lint.py
    docs/design/roadmap.md --roadmap` names the next milestone.
 
 ### An existing project
@@ -120,6 +120,9 @@ build each proposal with `proposal-build-chain`.
              /plan       /impl            /review-changes    /polish            CI, AI review,
              grounded    tests first      + fixer until no   gates green,       conflicts, comments
              plan                         bug or concern     /create-pr         until it settles
+
+ Ship: one chain of a proposal's built lanes, in merge order  (ship-chain runs this)
+ lane 1 ──> ship-only PR + monitor ──> merged (human) ──> lane 2, predecessor_prs filled ──> ... ──> last lane merged
 ```
 
 The full process, every hand-off between you and the workflows, and the gaps
@@ -190,6 +193,7 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
   workflows/
     brief-to-proposals.js     a brief to reviewed architecture, roadmap and proposals; no code
     proposal-build-chain.js   a proposal's lanes, derived from its steps, built as stacked chains
+    ship-chain.js             one built chain shipped in merge order, each PR once the one below merged
     plan-to-merged-pr.js      the engine: a concern, a lane or the bootstrap branch to a watched PR
     bug-fix-backlog.js        triage + adversarial verification + ship, per bug lane
   commands/
@@ -288,11 +292,34 @@ not rebuilt. The rules are in [docs/PROPOSALS.md](docs/PROPOSALS.md#lanes-and-ch
 To give the lanes by hand, pass `{ lanes }` ([REFERENCE.md](docs/REFERENCE.md#workflow-args)):
 they build in the order given, stopping at the first lane that does not push.
 
-Shipping stays in your hands, in merge order. A stacked lane's PR must not exist,
-not even as a draft, until every PR below it has merged, or a merge bot could merge
-the unmerged base commits it carries. Then run `plan-to-merged-pr` with
-`ship_only: true` and `predecessor_prs`; it opens nothing until each reads `MERGED`.
-A derive-mode result's `ship_plan` lists those args per chain, in merge order.
+Shipping goes in merge order. A stacked lane's PR must not exist, not even as a
+draft, until every PR below it has merged, or a merge bot could merge the unmerged
+base commits it carries. Then run `plan-to-merged-pr` with `ship_only: true` and
+`predecessor_prs`; it opens nothing until each reads `MERGED`. A derive-mode
+result's `ship_plan` lists those args per chain, in merge order, and each chain's
+`ship_chain_args` for `ship-chain`, below, which does the sequencing for you.
+
+### `ship-chain`
+
+Ships one chain of a `ship_plan`: pass the chain's `ship_chain_args` (`{ chain }`).
+Lane by lane, in merge order:
+
+1. **Lookup**: any PR already opened for the lane's branch. A merged one is
+   skipped, a closed one stops the chain; a placeholder title is written from the
+   lane's proposal steps (with `title_prefix` in front).
+2. **Ship**: `plan-to-merged-pr` in ship-only mode, with `predecessor_prs` filled
+   in with the PRs above it as merged: merge check, PR, monitor. A PR an earlier
+   run already opened is monitored (monitor-only) instead of opened again.
+3. **Wait**: an agent polls the PR until it reads `MERGED`, at most
+   `max_wait_rounds` rounds of about 30 minutes (default 48). It never merges,
+   approves or enables auto-merge: you merge. Then the next lane ships.
+
+Anything other than `MERGED` stops the chain and names the lane and why: the PR was
+closed, it is still open at the wait cap (`not_merged`, with what holds it), the
+lane did not ship (`lane_failed`), or a stage asked a question only you can answer
+(`needs_input`). Re-run with the same args once you have acted: merged lanes are
+skipped, an open PR is picked up where it is. Independent chains can ship at the
+same time, one `ship-chain` run each.
 
 ### `plan-to-merged-pr`
 
@@ -374,8 +401,9 @@ merge it, protect `main` and tick the Bootstrap gate.
 Step 2 (post and list incidents) depends on step 1 (store incidents), so they form
 the chain `s1 → s2`; step 3, the public page, shares no file with them, so it is its
 own chain and builds at the same time; step 6 (email subscribers) waits on the `ops`
-gate of step 5, which nobody has ticked yet, so it is reported blocked. Ship `s1`
-and `s3` with their `ship_plan` args; after `s1` merges, ship `s2` with
+gate of step 5, which nobody has ticked yet, so it is reported blocked. Run
+`ship-chain` once per chain with its `ship_chain_args`: chain `s3` opens its one PR;
+chain `s1` opens `s1`'s PR, waits until you merge it, then ships `s2` with
 `predecessor_prs: [<s1's PR>]`.
 
 **One concern**, on an existing TypeScript service whose Pipeline config has
