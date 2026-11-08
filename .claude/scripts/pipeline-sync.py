@@ -54,7 +54,7 @@ the template as pending ("claude_md"), so --check exits 1 on it.
 --dry-run: change nothing; report what would happen.
 
 Exit: 0 = done (or, with --check, up to date); 1 = --check found pending changes;
-2 = usage error, missing source, or a git failure.
+2 = any failure: usage error, missing or ignored source, malformed manifest, git or filesystem error.
 """
 
 import argparse
@@ -139,6 +139,11 @@ def load_manifest(target):
         raise Fail('%s is unreadable (%s): fix or delete it' % (MANIFEST, e))
     if not isinstance(m, dict) or not isinstance(m.get('files'), dict):
         raise Fail('%s has no "files" object: fix or delete it' % MANIFEST)
+    src = m.get('source')
+    if src is not None and (not isinstance(src, dict) or any(
+            src.get(k) is not None and not isinstance(src.get(k), str) for k in ('repo', 'ref', 'commit'))):
+        raise Fail('%s has a malformed "source" object (repo, ref and commit must be strings): fix or delete it'
+                   % MANIFEST)
     return m
 
 
@@ -178,19 +183,29 @@ def inside(target, rel):
 def atomic_copy(src, dst):
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     tmp = '%s.tmp.%d' % (dst, os.getpid())
-    shutil.copyfile(src, tmp)
-    shutil.copymode(src, tmp)
-    os.replace(tmp, dst)
+    try:
+        shutil.copyfile(src, tmp)
+        shutil.copymode(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def write_manifest(target, data):
     p = os.path.join(target, MANIFEST)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = '%s.tmp.%d' % (p, os.getpid())
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write('\n')
-    os.replace(tmp, p)
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.write('\n')
+        os.replace(tmp, p)
+    except BaseException:
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def history_blobs(src, rel):
@@ -498,7 +513,8 @@ def main(argv=None):
         p.error('--force needs --update')
     try:
         r = sync(a)
-    except Fail as e:
+    except (Fail, OSError) as e:
+        # Any failure is exit 2, never 1: under --check, 1 means "an update is pending".
         if a.json:
             print(json.dumps({'error': str(e)}))
         else:

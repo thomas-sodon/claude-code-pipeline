@@ -85,8 +85,9 @@ listed under `adopted`, with that version recorded as its base; otherwise it is
 `differs`: it may hold local edits, so it is kept like a conflict, and only
 `--update --force` replaces it.
 `--check` changes nothing and exits 1 when anything is pending; `--dry-run` reports
-without writing; exit 2 is a usage error, a source that is not a pipeline, or a git
-failure.
+without writing; exit 2 is any failure: a usage error, a source that is not a
+pipeline (or whose git checkout ignores its pipeline files), a malformed manifest, a
+git failure or a filesystem error. It is never 1, which `--check` keeps for pending.
 
 `CLAUDE.md` is never edited. The report's `claude_md` compares its
 `## How work happens here` section with the source's template,

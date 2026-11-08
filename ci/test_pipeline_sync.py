@@ -192,6 +192,28 @@ class SyncTest(Fixture):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_failures_exit_2_never_1(self):
+        # Under --check, exit 1 means "an update is pending": a broken manifest or an OS error must not read as one.
+        self.run_sync()
+        good = read(self.dst, MANIFEST)
+        for bad in ('"x"', '[]', '{"ref": 5}', '{"repo": {"u": 1}}', '{"commit": ["a"]}'):
+            m = json.loads(good)
+            m['source'] = json.loads(bad)
+            write(self.dst, MANIFEST, json.dumps(m))
+            r = self.run_sync('--check', code=2)
+            self.assertIn('malformed "source"', r['error'], bad)
+        write(self.dst, MANIFEST, good)
+        # A directory where a pipeline file belongs: the write fails with an OSError, which is exit 2, no temp left.
+        os.remove(os.path.join(self.dst, '.claude/commands/plan.md'))
+        m = json.loads(good)
+        del m['files']['.claude/commands/plan.md']
+        write(self.dst, MANIFEST, json.dumps(m))
+        os.makedirs(os.path.join(self.dst, '.claude/commands/plan.md/inside'))
+        r = self.run_sync('--update', code=2)
+        self.assertIn('error', r)
+        leftovers = [f for f in os.listdir(os.path.join(self.dst, '.claude/commands')) if '.tmp.' in f]
+        self.assertEqual(leftovers, [])
+
     def test_a_source_that_ignores_its_pipeline_files_is_refused(self):
         # A project with the pipeline installed but .claude/ ignored: its files exist on disk, yet git lists none.
         self.run_sync()
