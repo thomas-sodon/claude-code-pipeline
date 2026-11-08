@@ -57,7 +57,12 @@ jobs:
           sync="$RUNNER_TEMP/ccp/.claude/scripts/pipeline-sync.py"
           python3 "$sync" --target . --from "$RUNNER_TEMP/ccp" --ref "$PIPELINE_REF" --update | tee "$RUNNER_TEMP/report.txt"
           echo "sha=$(git -C "$RUNNER_TEMP/ccp" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
-          if [ -n "$(git status --porcelain -- .claude)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          # The manifest records the upstream commit on every run, so an upstream commit that changes no pipeline
+          # file still rewrites it: count it only when it is new here (a first adoption), never on its own.
+          if [ -n "$(git status --porcelain -- .claude ':(exclude).claude/pipeline-manifest.json')" ] ||
+             ! git ls-files --error-unmatch .claude/pipeline-manifest.json >/dev/null 2>&1; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Open a pull request
         if: steps.sync.outputs.changed == 'true'
         env:

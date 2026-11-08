@@ -73,6 +73,10 @@ only adds missing files. `--update`
 replaces files unedited since install, deletes unedited files the source no longer
 ships, and keeps local edits (`local_edit`) and files changed on both sides
 (`conflict`; `--force` takes the source's). A file a person deleted stays deleted.
+The manifest is an ordinary committed file, so its paths are not trusted: only
+normalized paths under `.claude/{commands,skills,workflows,scripts}/` that resolve
+inside the repository are compared, replaced or deleted; any other entry is left
+alone and listed in the report as `ignored_manifest_paths`.
 A file with no install record that differs from the source (a `cp -r` install,
 before the manifest) is looked up in the source's git history: when some commit
 shipped exactly its bytes (`git hash-object` against the blobs `git log --raw`

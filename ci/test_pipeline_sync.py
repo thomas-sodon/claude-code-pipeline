@@ -183,6 +183,43 @@ class SyncTest(Fixture):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_manifest_paths_outside_the_pipeline_are_never_touched(self):
+        # The manifest is a committed file anyone can edit: an obsolete-looking entry for a path outside
+        # .claude/<dir>/ must not be deleted, even when its recorded hash matches the file.
+        import hashlib
+        self.run_sync()
+        outside = os.path.join(self.tmp, 'outside.txt')
+        write(self.tmp, 'outside.txt', 'keep me\n')
+        write(self.dst, 'src/app.py', 'keep me\n')
+        write(self.dst, '.claude/notes.md', 'keep me\n')
+        h = hashlib.sha256(b'keep me\n').hexdigest()
+        m = json.loads(read(self.dst, MANIFEST))
+        evil = ['../outside.txt', outside, 'src/app.py', '.claude/notes.md',
+                '.claude/commands/../../src/app.py', './.claude/commands/x.md']
+        for k in evil:
+            m['files'][k] = h
+        write(self.dst, MANIFEST, json.dumps(m))
+        r = self.run_sync('--update')
+        self.assertEqual(r['deleted'], [])
+        self.assertEqual(sorted(r['ignored_manifest_paths']), sorted(evil))
+        self.assertTrue(os.path.exists(outside))
+        self.assertTrue(os.path.exists(os.path.join(self.dst, 'src/app.py')))
+        self.assertTrue(os.path.exists(os.path.join(self.dst, '.claude/notes.md')))
+        # The rewritten manifest drops them.
+        self.assertFalse(set(evil) & set(json.loads(read(self.dst, MANIFEST))['files']))
+
+    def test_symlinked_pipeline_directory_is_not_deleted_through(self):
+        self.run_sync()
+        elsewhere = os.path.join(self.tmp, 'elsewhere')
+        shutil.copytree(os.path.join(self.dst, '.claude/commands'), elsewhere)
+        shutil.rmtree(os.path.join(self.dst, '.claude/commands'))
+        os.symlink(elsewhere, os.path.join(self.dst, '.claude/commands'))
+        os.remove(os.path.join(self.src, '.claude/commands/old.md'))
+        self.commit_src('drop old')
+        r = self.run_sync('--update')
+        self.assertEqual(r['deleted'], [])
+        self.assertTrue(os.path.exists(os.path.join(elsewhere, 'old.md')))
+
     def test_legacy_install_adopted_from_history(self):
         # A cp -r of v1, before the manifest: plan.md is an unedited older upstream version, old.md was edited.
         write(self.dst, '.claude/commands/plan.md', 'plan v1\n')

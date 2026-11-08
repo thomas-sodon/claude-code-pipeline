@@ -60,6 +60,7 @@ import difflib
 import hashlib
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -136,6 +137,21 @@ def load_manifest(target):
     if not isinstance(m, dict) or not isinstance(m.get('files'), dict):
         raise Fail('%s has no "files" object: fix or delete it' % MANIFEST)
     return m
+
+
+def is_pipeline_path(rel):
+    """A normalized relative path under one of the pipeline directories, and nothing else."""
+    if not isinstance(rel, str) or not rel or '\\' in rel or posixpath.isabs(rel) or os.path.isabs(rel):
+        return False
+    parts = rel.split('/')
+    return (posixpath.normpath(rel) == rel and '..' not in parts and len(parts) >= 3
+            and parts[0] == '.claude' and parts[1] in DIRS)
+
+
+def inside(target, rel):
+    """The path rel resolves to (following symlinked directories) stays inside the target."""
+    root = os.path.realpath(target)
+    return os.path.realpath(os.path.join(target, rel)).startswith(root + os.sep)
 
 
 def atomic_copy(src, dst):
@@ -302,7 +318,11 @@ def sync(a):
             dirty = [l[3:] for l in st.splitlines() if l]
 
         files = [] if same else source_files(src)
-        bases = dict((manifest or {}).get('files') or {})
+        # The manifest is an ordinary committed file: trust none of its paths. Only pipeline paths are compared,
+        # updated or deleted; anything else (absolute, '..', outside .claude/<dir>/) is ignored and reported.
+        raw = (manifest or {}).get('files') or {}
+        bases = {k: v for k, v in raw.items() if is_pipeline_path(k) and isinstance(v, str)}
+        ignored_manifest = sorted(str(k) for k in raw if k not in bases)
         if same:
             # Nothing to copy: the target is the source. Record the files as they are.
             files = source_files(src)
@@ -322,6 +342,8 @@ def sync(a):
                     or (a.update and a.force and kind == 'conflict'))
             if take:
                 if write:
+                    if not inside(target, rel):
+                        raise Fail('%s resolves outside %s (a symlinked directory?): not writing it' % (rel, target))
                     atomic_copy(os.path.join(src, rel), os.path.join(target, rel))
                 report['added' if kind == 'added' else 'updated'].append(rel)
                 new_bases[rel] = s_hash
@@ -336,7 +358,10 @@ def sync(a):
         if not same:
             for rel in sorted(set(bases) - set(files)):
                 kind, _ = classify(rel, None, target, bases[rel])
-                if kind == 'obsolete' and a.update:
+                if kind == 'obsolete' and a.update and not inside(target, rel):
+                    report['symlink'].append(rel)
+                    new_bases[rel] = bases[rel]
+                elif kind == 'obsolete' and a.update:
                     if write:
                         os.remove(os.path.join(target, rel))
                     report['deleted'].append(rel)
@@ -366,7 +391,7 @@ def sync(a):
                                          'commit': commit, 'uncommitted': dirty},
             'previous_commit': prev.get('commit'), 'same_dir': same, 'mode': 'check' if a.check else
             'dry-run' if a.dry_run else 'update' if a.update else 'install',
-            'settings_json_copied': settings_copied, 'pending': pending, 'claude_md': cmd,
+            'settings_json_copied': settings_copied, 'ignored_manifest_paths': ignored_manifest, 'pending': pending, 'claude_md': cmd,
             **{k: v for k, v in report.items()},
         }
         return out
@@ -409,6 +434,9 @@ def human(r):
         lines.append('  CLAUDE.md "%s": %s' % (SECTION, c['status']))
     if r['settings_json_copied']:
         lines.append('  .claude/settings.json copied (the target had none)')
+    if r['ignored_manifest_paths']:
+        lines.append('  WARNING: ignored manifest paths outside the pipeline directories (never touched): %s'
+                     % ', '.join(r['ignored_manifest_paths']))
     if r['source']['uncommitted']:
         lines.append('  WARNING: the source has uncommitted changes (an unreleased version): %s'
                      % ', '.join(r['source']['uncommitted']))
