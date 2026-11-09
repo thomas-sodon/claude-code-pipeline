@@ -1,7 +1,7 @@
 export const meta = {
   name: 'proposal-build-chain',
   description: 'Build a proposal\'s lanes as stacked chains, each lane through plan-to-merged-pr in build-only mode (plan → /impl → review/fix until clean → polish → merge check → push, no PR); lanes come from args.lanes or are derived from the proposal\'s step list',
-  whenToUse: 'Implementing the steps of a proposal / design doc as stacked lanes; each lane is later shipped with plan-to-merged-pr {ship_only: true} once every PR below it has merged. Pass { proposal, dir, root, date } to derive the lanes from the doc, or { lanes } to give them by hand. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
+  whenToUse: 'Implementing the steps of a proposal / design doc as stacked lanes; each lane is later shipped with plan-to-merged-pr {ship_only: true} once every PR below it has merged, or a whole chain in merge order with ship-chain (ship_chain_args in its ship_plan). Pass { proposal, dir, root, date } to derive the lanes from the doc, or { lanes } to give them by hand. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
   phases: [
     { title: 'Derive', detail: 'proposal-lint.py --lanes on the proposal as it is on main (derive mode only)' },
     { title: 'Lanes', detail: 'one plan-to-merged-pr build per lane, in stack order; independent chains run at the same time' },
@@ -25,6 +25,8 @@ export const meta = {
 //   parallel_chains — default true: independent chains build at the same time; false = one chain after another
 //   allow_draft — build even when the proposal's Status is not accepted / in-progress (default false: a person accepts it first)
 //   ai_review_check, required_checks — not used to build; copied into the ship plan's args for the later ship-only runs
+//   The result's ship_plan lists, per chain in merge order, each lane's ship-only args, and ship_chain_args: the args of the
+//   ship-chain workflow, which ships the chain's lanes one at a time, each once the PR below it reads MERGED.
 //   The proposal must already be on origin/<main>: every lane worktree is cut from origin and reads it there.
 //   A lane that does not push stops only its own chain. A lane already pushed by an earlier run (its branch exists on
 //   origin) is not rebuilt; later lanes stack on it. Lanes waiting on a human-gated step, on an unfinished step of
@@ -161,10 +163,11 @@ const chains = A.parallel_chains === false
   : await parallel(L.chains.map(c => () => runChain(c)))
 
 // Ship plan: each chain in merge order; a stacked lane's PR waits until every PR below it has merged.
+// ship_chain_args is the whole chain as the ship-chain workflow takes it: it ships the lanes in this order and waits for each merge.
 const ship_plan = chains.filter(Boolean).map(c => {
   const lanes = (L.chains.find(x => x.key === c.chain) || { lanes: [] }).lanes
   const ok = c.lanes.filter(r => r.status === 'pushed' || r.status === 'already_built').map(r => r.lane)
-  return {
+  const entry = {
     chain: c.chain,
     order: lanes.filter(l => ok.includes(l.key)).map((l, i) => {
       const built = c.lanes.find(r => r.lane === l.key)
@@ -172,6 +175,7 @@ const ship_plan = chains.filter(Boolean).map(c => {
       return {
         lane: l.key,
         branch: l.branch,
+        steps: l.steps,
         // plan_text and proposal give the ship-only monitor this lane's own design context for comments and conflicts.
         args: {
           ...SHIP_SHARED, ship_only: true, branch: l.branch, dir: l.dir, title: `<title for steps ${l.steps.join(', ')}>`, proposal: A.proposal,
@@ -181,6 +185,7 @@ const ship_plan = chains.filter(Boolean).map(c => {
       }
     }),
   }
+  return { ...entry, ship_chain_args: { chain: entry } }
 })
 const built = chains.filter(Boolean).flatMap(c => c.lanes)
 const questions = built.flatMap(r => r.questions || [])

@@ -4,9 +4,12 @@
 Run from the repo root: python3 ci/test_proposal_lint.py
 
 The tests check the documented format (docs/PROPOSALS.md) and CLI, not the
-implementation: every error and warning code, --repo, --as, --tick, --lanes and
---roadmap. The script is always run as a subprocess, in temp directories.
-It also checks ci/lint-doc-examples.py finds the examples it must lint.
+implementation: every error and warning code, --repo, --as, --tick, --lanes,
+--roadmap and --claude-md. The script is always run as a subprocess, in temp
+directories.
+It also checks ci/lint-doc-examples.py finds the examples it must lint, and that the
+`docs` CI job script in /bootstrap's template and examples/docs-lint-job.yml is one
+script that works.
 Fixtures: ci/fixtures/valid-*.md lint clean; ci/fixtures/invalid/<code>[--variant].md
 must fail with <code>; ci/fixtures/warn/<code>[--variant].md must pass with warning <code>.
 """
@@ -44,6 +47,8 @@ WARNING_CODES = {'unknown_key', 'missing_acceptance', 'lane_mixed', 'step_too_bi
                  'xref_unreadable', 'proposal_in_steps', 'source_unresolved'}
 INLINE_WARNINGS = {'file_not_found', 'new_file_exists', 'missing_section', 'unexpected_steps',
                    'milestone_ticked_incomplete', 'milestone_complete_unticked'}
+# Errors only a mode reports (--lanes, --roadmap, --claude-md): each is exercised by a test below.
+MODE_ERRORS = {'lane_cycle', 'not_a_proposal', 'not_a_roadmap', 'not_an_architecture', 'claude_md_drift'}
 
 
 def run(*args, cwd=None):
@@ -227,6 +232,16 @@ class TestFixtures(Base):
         got_w = set(os.path.basename(p)[:-3].split('--')[0] for p in self.fixture_files('warn'))
         self.assertEqual(ERROR_CODES - got_e, set())
         self.assertEqual(WARNING_CODES - got_w, set())
+
+    def test_lint_codes_table_lists_exactly_the_known_codes(self):
+        with open(os.path.join(ROOT, 'docs', 'PROPOSALS.md'), encoding='utf-8') as f:
+            text = f.read()
+        table = text.split('## Lint codes', 1)[1]
+        documented = set()
+        for line in table.splitlines():
+            if line.startswith('| `'):
+                documented.update(re.findall(r'`([a-z_]+)`', line.split('|')[1]))
+        self.assertEqual(documented, ERROR_CODES | WARNING_CODES | INLINE_WARNINGS | MODE_ERRORS)
 
 
 # ---- output and exit codes ---------------------------------------------------------------------
@@ -970,6 +985,200 @@ class TestRoadmapMode(Base):
         rc, stdout, _ = run(self.write('roadmap.md', roadmap(milestone(1))), '--roadmap')
         self.assertEqual(rc, 1)
         self.assertIn('missing_proposal', codes(json.loads(stdout)['errors']))
+
+
+# ---- --claude-md ------------------------------------------------------------------------------
+
+INVARIANTS = '- Never log a secret.\n- Every parser change ships with a fixture.\n'
+TESTING = 'Unit tests per package; fixtures are synthetic.\n\n```sh\nnpm test\n```\n'
+POINTER = 'These come from `docs/design/architecture.md` and change in both places together.\n'
+
+
+def arch_with_rules(invariants=INVARIANTS, testing=TESTING):
+    text = architecture()
+    text = text.replace('## Invariants\n\nText.\n', '## Invariants\n\n' + invariants, 1)
+    return text.replace('## Testing\n\nText.\n', '## Testing\n\n' + testing, 1)
+
+
+def claude_md(invariants=INVARIANTS, testing=TESTING, pointer=POINTER, pointer_last=False, tail='## Other\n\nx\n'):
+    out = '# Product\n\n## Pipeline config\n\nMAIN_BRANCH: main\n\n'
+    if invariants is not None:
+        if pointer:
+            invariants = invariants + '\n' + pointer if pointer_last else pointer + '\n' + invariants
+        out += '## Invariants\n\n' + invariants + '\n'
+    if testing is not None:
+        out += '## Testing\n\n' + testing + '\n'
+    return out + tail
+
+
+class TestClaudeMd(Base):
+    def drift(self, arch, cm, rc=None):
+        a = self.write('docs/design/architecture.md', arch)
+        c = self.write('CLAUDE.md', cm)
+        code, out, err = run(a, '--claude-md', c, '--json')
+        self.assertIn(code, (0, 1), err)
+        res = json.loads(out)
+        self.assertEqual(code, 1 if res['errors'] else 0)
+        return res, c
+
+    def test_matching_copy_with_the_bootstrap_pointer_is_clean(self):
+        for last in (False, True):
+            with self.subTest(pointer_last=last):
+                res, _ = self.drift(arch_with_rules(), claude_md(pointer_last=last))
+                self.assertEqual((res['kind'], res['errors'], res['warnings']), ('architecture', [], []))
+
+    def test_a_hand_written_section_above_the_bootstrap_copy_is_not_compared(self):
+        # /seed appends to an existing CLAUDE.md and /bootstrap appends its copies after its marker: a person's own
+        # ## Testing above them is theirs, and the copy /bootstrap wrote is the one checked.
+        own = '# Product\n\n## Testing\n\nRun `make test` before pushing.\n\n'
+        marked = own + claude_md().replace('## Pipeline config\n\n', '## Pipeline config\n\n<!-- Pipeline config written by /bootstrap -->\n', 1).replace('# Product\n\n', '', 1)
+        res, _ = self.drift(arch_with_rules(), marked)
+        self.assertEqual(res['errors'], [], 'the copy after the /bootstrap marker matches')
+        res, _ = self.drift(arch_with_rules(), marked.replace('fixtures are synthetic', 'fixtures are real'))
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'], 'and a drifted copy is still caught')
+        # No marker: the last section of a name (the appended one) is checked.
+        res, _ = self.drift(arch_with_rules(), own + claude_md().replace('# Product\n\n', '', 1))
+        self.assertEqual(res['errors'], [])
+
+    def test_without_pointer_line_and_crlf_is_clean(self):
+        res, _ = self.drift(arch_with_rules(), claude_md(pointer='').replace('\n', '\r\n'))
+        self.assertEqual(res['errors'], [])
+
+    def test_drift_names_the_section_and_line(self):
+        cm = claude_md(testing=TESTING.replace('synthetic', 'real'))
+        res, c = self.drift(arch_with_rules(), cm)
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+        e = res['errors'][0]
+        self.assertIn('## Testing', e['message'])
+        self.assertEqual(e['path'], c)
+        self.assertTrue(cm.splitlines()[e['line'] - 1].startswith('Unit tests'))
+
+    def test_changed_invariant_is_drift(self):
+        for inv in (INVARIANTS + '- A third rule.\n', '- Never log a secret.\n', INVARIANTS.replace('secret', 'token')):
+            with self.subTest(inv=inv):
+                res, _ = self.drift(arch_with_rules(), claude_md(invariants=inv))
+                self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+                self.assertIn('## Invariants', res['errors'][0]['message'])
+
+    def test_only_one_pointer_line_is_ignored(self):
+        res, _ = self.drift(arch_with_rules(), claude_md(invariants=POINTER + '\n' + INVARIANTS))
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+        # a line naming architecture.md in the middle of the body is content, not the pointer
+        mid = '- Never log a secret.\n' + POINTER + '- Every parser change ships with a fixture.\n'
+        res, _ = self.drift(arch_with_rules(), claude_md(invariants=mid, pointer=''))
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+        # nor is a pointer under ## Testing
+        res, _ = self.drift(arch_with_rules(), claude_md(testing=POINTER + '\n' + TESTING))
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+
+    def test_missing_section_in_claude_md(self):
+        for kw, name in (({'invariants': None}, 'Invariants'), ({'testing': None}, 'Testing')):
+            with self.subTest(section=name):
+                res, _ = self.drift(arch_with_rules(), claude_md(**kw))
+                self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+                self.assertIn('## %s' % name, res['errors'][0]['message'])
+
+    def test_headings_inside_fences_do_not_end_a_body(self):
+        testing = 'Rules.\n\n```md\n## Not a heading\n```\n\nMore rules.\n'
+        res, _ = self.drift(arch_with_rules(testing=testing), claude_md(testing=testing))
+        self.assertEqual(res['errors'], [])
+        res, _ = self.drift(arch_with_rules(testing=testing), claude_md(testing='Rules.\n'))
+        self.assertEqual(codes(res['errors']), ['claude_md_drift'])
+
+    def test_architecture_lint_errors_still_reported(self):
+        res, _ = self.drift(arch_with_rules().replace('## Data model\n\nText.\n\n', ''), claude_md())
+        self.assertEqual(codes(res['errors']), ['missing_section'])
+
+    def test_plain_output_names_claude_md(self):
+        a = self.write('docs/design/architecture.md', arch_with_rules())
+        c = self.write('CLAUDE.md', claude_md(testing='Other rules.\n'))
+        rc, out, _ = run(a, '--claude-md', c)
+        self.assertEqual(rc, 1)
+        self.assertRegex(out.splitlines()[0], '^' + re.escape(c) + r':\d+: E claude_md_drift: "## Testing"')
+
+    def test_mode_errors_and_usage(self):
+        c = self.write('CLAUDE.md', claude_md())
+        p = self.write('p.md', proposal(step(1)))
+        rc, out, _ = run(p, '--claude-md', c, '--json')
+        self.assertEqual(rc, 1)
+        self.assertEqual(codes(json.loads(out)['errors']), ['not_an_architecture'])
+        a = self.write('architecture.md', arch_with_rules())
+        self.assertEqual(run(a, '--claude-md', os.path.join(self.tmp, 'nope.md'))[0], 2)
+        self.assertEqual(run(a, '--claude-md', c, '--lanes')[0], 2)
+        self.assertEqual(run(a, '--claude-md', c, '--roadmap')[0], 2)
+
+
+# ---- the docs CI job (/bootstrap's template and examples/docs-lint-job.yml) ----------------------
+
+def docs_job_script(path):
+    """The `run: |` script of the "Lint design docs" step in PATH, dedented."""
+    with open(path, encoding='utf-8') as f:
+        lines = f.read().splitlines()
+    i = next(k for k, l in enumerate(lines) if l.strip() == '- name: Lint design docs')
+    run_line = lines[i + 1]
+    assert run_line.strip() == 'run: |', run_line
+    indent = len(run_line) - len(run_line.lstrip())
+    body = []
+    for l in lines[i + 2:]:
+        if l.strip() and len(l) - len(l.lstrip()) <= indent:
+            break
+        body.append(l)
+    pad = min(len(l) - len(l.lstrip()) for l in body if l.strip())
+    return '\n'.join(l[pad:] for l in body).strip() + '\n'
+
+
+class TestDocsJob(Base):
+    BOOTSTRAP = os.path.join(ROOT, '.claude', 'commands', 'bootstrap.md')
+    EXAMPLE = os.path.join(ROOT, 'examples', 'docs-lint-job.yml')
+    MARKER = '<!-- Pipeline config written by /bootstrap -->'
+
+    def setUp(self):
+        Base.setUp(self)
+        self.script = docs_job_script(self.EXAMPLE)
+        shutil.copy(LINT, self.write('.claude/scripts/proposal-lint.py', ''))
+        self.write('docs/design/architecture.md', arch_with_rules())
+        self.write('docs/design/roadmap.md', roadmap(milestone(1, '01-p.md')))
+        self.write('docs/design/01-p.md', proposal(step(1)))
+        self.write('docs/design/README.md', '# Design docs\n\n1. not a step list\n')
+        self.write('docs/design/brief.md', 'A brief with no heading.\n')
+        self.write('CLAUDE.md', claude_md().replace('MAIN_BRANCH: main', self.MARKER + '\nMAIN_BRANCH: main'))
+
+    def run_job(self):
+        env = dict(os.environ, PROPOSALS_DIR='docs/design')
+        p = subprocess.run(['bash', '-c', self.script], cwd=self.tmp, env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        return p.returncode, p.stdout
+
+    def test_bootstrap_template_runs_the_example_script(self):
+        self.assertEqual(docs_job_script(self.BOOTSTRAP), self.script)
+        with open(self.BOOTSTRAP, encoding='utf-8') as f:
+            self.assertIn(self.MARKER, f.read())
+
+    def test_clean_docs_pass_and_non_design_files_are_skipped(self):
+        rc, out = self.run_job()
+        self.assertEqual(rc, 0, out)
+        for name in ('architecture.md', 'roadmap.md', '01-p.md'):
+            self.assertIn('docs/design/%s: ' % name, out)
+        self.assertNotIn('README.md', out)
+        self.assertNotIn('brief.md', out)
+        self.assertIn('"milestones"', out)
+
+    def test_a_malformed_doc_fails(self):
+        self.write('docs/design/02-q.md', proposal(step(1, deps=None)))
+        rc, out = self.run_job()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('missing_depends', out)
+
+    def test_claude_md_drift_fails_only_when_bootstrapped(self):
+        with open(os.path.join(self.tmp, 'CLAUDE.md'), encoding='utf-8') as f:
+            text = f.read()
+        self.write('CLAUDE.md', text.replace('fixtures are synthetic', 'fixtures are real'))
+        rc, out = self.run_job()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('claude_md_drift', out)
+        self.write('CLAUDE.md', text.replace(self.MARKER + '\n', '').replace('fixtures are synthetic', 'x'))
+        rc, out = self.run_job()
+        self.assertEqual(rc, 0, out)
 
 
 # ---- ci/lint-doc-examples.py -------------------------------------------------------------------

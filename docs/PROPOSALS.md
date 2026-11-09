@@ -68,6 +68,15 @@ blocks every lane of it (`proposal_not_accepted`, `Status: missing`) unless
 `--allow-draft`. In `plan-to-merged-pr` the check is `/plan --proposal`'s, so a run
 given `plan_text`, or a `planner` other than `plan`, builds without it.
 
+A proposal is grounded in the tree as it was when it was written. When
+`brief-to-proposals` writes several milestones' proposals at once, the earlier
+milestones change that tree before the later ones build, so accept them one at a
+time: before accepting each after the first, once the milestones before it have
+merged, re-run `/review-proposal <doc>` (a `Files:` path or interface that no
+longer matches the tree is a `concern`) and `/propose --revise <doc>` on its
+findings. For a long roadmap, propose only the next milestone (`max_milestones: 1`)
+and the rest with `/propose --milestone=N` as each comes up.
+
 ## Steps and milestones
 
 A proposal's `## Steps` and a roadmap's `## Milestones` share one grammar:
@@ -320,7 +329,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 ## Milestones
 
 1. [x] **Bootstrap the repository.** Green skeleton, CLAUDE.md and CI from architecture.md.
-   - Human gate: ops — run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` check
+   - Human gate: ops — run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` and `docs` checks
    - Depends on: none
    - Acceptance: CI green on main; main protected
    - Outcome: bootstrap PR merged; CI green at 3f2c1ab; main protected
@@ -351,11 +360,11 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 | `## Data model` | entities, key fields, data class, where each lives, retention |
 | `## Decisions` | D-records, each weighing two or more options |
 | `## Security and privacy` | data classes, encryption, auth, secrets, third parties, retention, threats, compliance items and the milestone that clears each |
-| `## Invariants` | bullets, each an enforceable rule; `/bootstrap` copies them verbatim into `CLAUDE.md` |
+| `## Invariants` | bullets, each an enforceable rule; `/bootstrap` copies them verbatim into `CLAUDE.md`, and `--claude-md` checks the copy |
 | `## Repository layout` | the directory tree `/bootstrap` scaffolds; an entry marked `(from milestone N)` is left to that milestone |
 | `## Quality gates` | the three lines below, which `/bootstrap` parses |
 | `## Environments and deployment` | environments, CI/CD, secrets and env vars by NAME, migrations, monitoring, backups, rollback, release process |
-| `## Testing` | layers, frameworks, mocking, coverage, fixture policy; copied verbatim into `CLAUDE.md` |
+| `## Testing` | layers, frameworks, mocking, coverage, fixture policy; copied verbatim into `CLAUDE.md`, and `--claude-md` checks the copy |
 | `## Risks and open questions` | each with impact, mitigation and the milestone that retires it |
 
 `## Quality gates` names the commands in this form (CI job default `gates`):
@@ -557,7 +566,8 @@ those checkboxes, byte for byte, and accepts gates and milestones too.
 | `missing_section`, `no_steps` | E / W | a required section, or the step list, is missing or empty (W for a proposal's other sections) |
 | `missing_proposal`, `gate_with_proposal`, `bad_proposal`, `files_in_roadmap` | E | roadmap milestone rules |
 | `lane_cycle` | E | `--lanes`: `Lane:` groups, dependencies and shared files form a cycle (over every lane, blocked or not) |
-| `not_a_proposal`, `not_a_roadmap` | E | `--lanes` on a non-proposal, `--roadmap` on a non-roadmap |
+| `not_a_proposal`, `not_a_roadmap`, `not_an_architecture` | E | `--lanes` on a non-proposal, `--roadmap` on a non-roadmap, `--claude-md` on a non-architecture |
+| `claude_md_drift` | E | `--claude-md`: `CLAUDE.md`'s `## Invariants` or `## Testing` body differs from the architecture's, or is missing (blank lines at either end, and one pointer line naming `architecture.md` first or last under `## Invariants`, are ignored) |
 | `no_kind`, `missing_status`, `unknown_key` | W | see *Common rules* and *Steps* |
 | `step_too_big` | W | more than 8 files or about 7 sentences |
 | `lane_mixed` | W | a lane mixes ticked and unticked steps |

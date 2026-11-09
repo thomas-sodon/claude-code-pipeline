@@ -1,4 +1,5 @@
-// Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing.
+// Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing, for
+// ship-chain's merge-order sequencing, and for how plan-to-merged-pr hands a PR back to the person (resume_monitor, closeout).
 // Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every
 // prompt is recorded so the tests can check which stages saw which answers.
 import { readFileSync } from 'node:fs'
@@ -103,6 +104,45 @@ await test('plan-to-merged-pr: on_question assume tells stages to proceed and co
   assert.deepEqual(result.assumptions, [{ stage: 'plan', assumption: 'per process -> taken' }])
 })
 
+// ---- plan-to-merged-pr: the monitor's hand-off (resume_monitor) and the close-out check after a merge
+const OBS = { pr_state: 'OPEN', head_sha: 'abcdef1234', ai_review_done_on_head: true, ci_state: 'green', ci_configured: true }
+const MON = { pr: 7, branch: 'feat/x', dir: '/w/x', plan_text: 'the plan', main_branch: 'trunk' }
+await test('plan-to-merged-pr: a settled hand-off carries the monitor-only args and a one-line handoff', async () => {
+  const { result, calls } = await run('plan-to-merged-pr', MON, label => label.startsWith('observe') ? OBS : {})
+  assert.equal(result.status, 'OPEN')
+  assert.deepEqual(result.resume_monitor, MON)
+  assert.match(result.handoff, /settled/)
+  assert.match(result.handoff, /monitor-only/)
+  assert.doesNotMatch(result.handoff, /\n/)
+  assert.ok(!calls.some(c => c.label === 'closeout'))
+})
+
+await test('plan-to-merged-pr: red CI not ours and the round cap both hand off with resume_monitor', async () => {
+  const red = await run('plan-to-merged-pr', MON, label => label.startsWith('observe') ? { ...OBS, ci_state: 'red' } : {})
+  assert.match(red.result.handoff, /outside this PR/)
+  assert.equal(red.result.resume_monitor.pr, 7)
+  const cap = await run('plan-to-merged-pr', { ...MON, max_monitor_rounds: 2 }, label => label.startsWith('observe') ? { ...OBS, ci_state: 'pending' } : {})
+  assert.match(cap.result.handoff, /2-round cap/)
+  assert.equal(cap.result.resume_monitor.max_monitor_rounds, 2)
+})
+
+await test('plan-to-merged-pr: a merged PR with a proposal reports the close-out edits without making them', async () => {
+  const edits = [{ file: 'docs/design/x.md', line: 3, before: 'Status: in-progress', after: 'Status: done' }]
+  const respond = label => label.startsWith('observe') ? { ...OBS, pr_state: 'MERGED' }
+    : label === 'closeout' ? { checked: true, proposal_complete: true, edits, next_milestone: [{ n: 3, title: 'Go / no-go' }], roadmap: 'docs/design/roadmap.md' } : {}
+  const { result, prompt } = await run('plan-to-merged-pr', { ...MON, proposal: 'docs/design/x.md' }, respond)
+  assert.equal(result.status, 'MERGED')
+  assert.deepEqual(result.closeout, { proposal_complete: true, edits, next_milestone: [{ n: 3, title: 'Go / no-go' }], roadmap: 'docs/design/roadmap.md' })
+  assert.equal(result.resume_monitor, undefined)
+  assert.match(prompt('closeout'), /WITHOUT making any of them/)
+  assert.match(prompt('closeout'), /origin\/trunk/)
+  const partial = await run('plan-to-merged-pr', { ...MON, proposal: 'docs/design/x.md' },
+    label => label === 'closeout' ? { checked: true, proposal_complete: false, pending_steps: [4] } : respond(label))
+  assert.deepEqual(partial.result.closeout, { proposal_complete: false, pending_steps: [4] })
+  const none = await run('plan-to-merged-pr', MON, respond)
+  assert.ok(!none.calls.some(c => c.label === 'closeout'), 'no proposal, no close-out check')
+})
+
 // ---- brief-to-proposals
 const btp = (over = {}) => (label, prompt) => {
   if (over[label] !== undefined) return typeof over[label] === 'function' ? over[label](prompt) : over[label]
@@ -160,6 +200,16 @@ await test('brief-to-proposals: a milestone answer reaches only that milestone a
   for (const l of ['propose:m2', 'review:m2-1', 'consistency']) assert.match(prompt(l), /ANSWER-M2/, l)
 })
 
+await test('brief-to-proposals: next steps say to re-review each later proposal before accepting it', async () => {
+  const { result } = await run('brief-to-proposals', BRIEF, btp())
+  const step = result.next_steps.find(s => s.includes('/review-proposal'))
+  assert.ok(step, 'a re-review step')
+  assert.match(step, /after the first \(docs\/design\/3\.md\)/)
+  assert.match(step, /max_milestones: 1/)
+  const one = await run('brief-to-proposals', { ...BRIEF, max_milestones: 1 }, btp())
+  assert.ok(!one.result.next_steps.some(s => s.includes('/review-proposal')), 'one proposal needs no re-review step')
+})
+
 await test('brief-to-proposals: a reviser that needs the person\'s call stops the architecture loop', async () => {
   const over = { 'review:architecture-1': { findings: [{ doc: 'docs/design/roadmap.md', severity: 'concern', description: 'brief is silent on X' }], completed: true },
     'revise:architecture-1': { questions: [Q] } }
@@ -191,6 +241,243 @@ await test('proposal-build-chain: a lane that needs input carries its questions,
   assert.deepEqual(seen[0].answers, [{ id: 'plan.q1', answer: 'for a' }])
   assert.deepEqual(seen[1].answers, [{ id: 'plan.q1', answer: 'for b' }])
   assert.equal(seen[0].on_question, 'stop')
+})
+
+// ---- ship-chain: ships a ship_plan chain lane by lane, each only after the PR below it reads MERGED
+const CHAIN = { chain: 's1', order: [
+  { lane: 's1', branch: 'feat/p-s1', steps: [1], args: { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: '<title for steps 1>', proposal: 'p.md', main_branch: 'main' } },
+  { lane: 's2', branch: 'feat/p-s2', steps: [2], args: { ship_only: true, branch: 'feat/p-s2', dir: '/w/s2', title: '<title for steps 2>', proposal: 'p.md', main_branch: 'main', predecessor_prs: ['<PR numbers of the lanes above, once merged>'] } },
+] }
+const sc = (over = {}) => (label, prompt) => {
+  if (over[label] !== undefined) return typeof over[label] === 'function' ? over[label](prompt) : over[label]
+  if (label.startsWith('lookup-')) return { state: 'NONE', pr_number: 0, title: `Title ${label.slice(7)}` }
+  if (label.startsWith('wait-')) return { state: 'MERGED' }
+  return {}
+}
+const CLOSEOUT = { proposal_complete: true, edits: [{ file: 'p.md', line: 3, before: 'Status: in-progress', after: 'Status: done' }], next_milestone: [], roadmap: '' }
+const shipWf = (byBranch, seen = []) => async (name, a) => {
+  seen.push({ name, ...a })
+  // The close-out round: monitor-only on the last PR, which has merged.
+  if (a.pr && a.max_monitor_rounds === 1) return { status: 'MERGED', pr: { pr_number: a.pr }, closeout: CLOSEOUT }
+  const f = byBranch[a.branch]
+  return typeof f === 'function' ? f(a) : f
+}
+
+await test('ship-chain: ships each lane after the one below merged, with predecessor_prs and a filled title', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }, seen)
+  const { result, calls, prompt } = await run('ship-chain', { chain: CHAIN, title_prefix: '[p] ', ai_review_check: 'Review' }, sc(), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.deepEqual(result.merged_prs, [10, 11])
+  assert.deepEqual(calls.map(c => c.label), ['lookup-s1', 'wait-s1-1', 'lookup-s2', 'wait-s2-1'])
+  assert.match(prompt('lookup-s1'), /steps 1 under "## Steps" in p\.md/)
+  assert.deepEqual(seen.map(s => s.name), ['plan-to-merged-pr', 'plan-to-merged-pr', 'plan-to-merged-pr'])
+  assert.equal(seen[0].ship_only, true)
+  assert.equal(seen[0].title, '[p] Title s1')
+  assert.equal(seen[0].predecessor_prs, undefined)
+  assert.equal(seen[0].ai_review_check, 'Review')
+  assert.deepEqual(seen[1].predecessor_prs, [10])
+  for (const l of ['lookup-s1', 'wait-s1-1']) assert.match(prompt(l), /Never merge/, l)
+  // The last PR merged while the run waited: one monitor-only round on it runs the proposal's close-out check.
+  assert.deepEqual([seen[2].pr, seen[2].branch, seen[2].proposal, seen[2].max_monitor_rounds, seen[2].ship_only], [11, 'feat/p-s2', 'p.md', 1, undefined])
+  assert.deepEqual(result.closeout, CLOSEOUT)
+})
+
+await test('ship-chain: the lookup queries each lane\'s own main branch, as ship_chain_args carry it', async () => {
+  const dev = { chain: 's1', order: CHAIN.order.map(e => ({ ...e, args: { ...e.args, main_branch: 'develop', title: '<title for steps 1>' } })) }
+  const { prompt } = await run('ship-chain', { chain: dev }, sc(), { workflow: shipWf({}) })
+  assert.match(prompt('lookup-s1'), /--base develop /)
+  assert.doesNotMatch(prompt('lookup-s1'), /--base main /)
+  const top = await run('ship-chain', { chain: dev, main_branch: 'trunk' }, sc(), { workflow: shipWf({}) })
+  assert.match(top.prompt('lookup-s1'), /--base trunk /, 'a top-level main_branch still wins')
+  const plain = await run('ship-chain', { chain: CHAIN }, sc(), { workflow: shipWf({}) })
+  assert.match(plain.prompt('lookup-s1'), /--base main /, 'main by default')
+})
+
+await test('ship-chain: a placeholder title the lookup left empty stops the lane, even with a title_prefix', async () => {
+  const seen = []
+  const { result } = await run('ship-chain', { chain: CHAIN, title_prefix: '[p] ' }, sc({ 'lookup-s1': { state: 'NONE', pr_number: 0, title: '' } }), { workflow: shipWf({}, seen) })
+  assert.equal(result.status, 'lane_failed')
+  assert.match(result.stopped_at.reason, /no PR title/)
+  assert.equal(seen.length, 0, 'no PR is opened with the prefix alone as its title')
+})
+
+await test('ship-chain: a closeout from the last lane\'s own run is kept, with no extra round; a stopped chain gets none', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s1': { status: 'MERGED', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'MERGED', pr: { pr_number: 11 }, closeout: { proposal_complete: false, pending_steps: [3] } } }, seen)
+  const { result } = await run('ship-chain', { chain: CHAIN }, sc(), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.equal(seen.length, 2)
+  assert.deepEqual(result.closeout, { proposal_complete: false, pending_steps: [3] })
+  const closed = await run('ship-chain', { chain: CHAIN }, sc({ 'wait-s1-1': { state: 'CLOSED' } }), { workflow: shipWf({ 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } } }) })
+  assert.equal(closed.result.closeout, undefined)
+})
+
+await test('ship-chain: a lane that needs input stops the chain, carries its questions tagged with the lane, and gets only its answers', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s1': { status: 'MERGED', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'needs_input', stage: 'merge_check', questions: [{ id: 'merge_check.q1', ...Q }] } }, seen)
+  const answers = [{ lane: 's1', id: 'monitor.q1', answer: 'for s1' }, { lane: 's2', id: 'plan.q1', answer: 'for s2' }]
+  const { result, calls } = await run('ship-chain', { chain: CHAIN, answers }, sc(), { workflow })
+  assert.equal(result.status, 'needs_input')
+  assert.deepEqual(result.questions.map(q => [q.lane, q.id]), [['s2', 'merge_check.q1']])
+  assert.match(result.relay, /never answer them on their behalf/)
+  assert.equal(result.stopped_at.lane, 's2')
+  assert.deepEqual(seen[0].answers, [{ id: 'monitor.q1', answer: 'for s1' }])
+  assert.deepEqual(seen[1].answers, [{ id: 'plan.q1', answer: 'for s2' }])
+  assert.ok(!calls.some(c => c.label.startsWith('wait-')), 'a PR that merged during its monitor is not waited on')
+})
+
+await test('ship-chain: a re-run skips merged lanes and monitors an already-open PR instead of opening another', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }, seen)
+  const over = { 'lookup-s1': { state: 'MERGED', pr_number: 10, title: 'x' }, 'lookup-s2': { state: 'OPEN', pr_number: 11, title: 'y' } }
+  const { result } = await run('ship-chain', { chain: CHAIN }, sc(over), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.equal(seen.length, 2, 'the open PR is monitored, then the close-out round runs on it')
+  assert.equal(seen[0].pr, 11)
+  assert.equal(seen[0].ship_only, undefined)
+  assert.equal(seen[0].title, undefined)
+})
+
+await test('ship-chain: an open draft PR is readied through ship-only with existing_pr, after the lanes below merged', async () => {
+  const seen = []
+  const workflow = shipWf({ 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }, seen)
+  const over = { 'lookup-s1': { state: 'MERGED', pr_number: 10, title: 'x' }, 'lookup-s2': { state: 'OPEN', pr_number: 11, is_draft: true, title: 'y' } }
+  const { result } = await run('ship-chain', { chain: CHAIN }, sc(over), { workflow })
+  assert.equal(result.status, 'merged')
+  assert.equal(seen[0].ship_only, true)
+  assert.equal(seen[0].existing_pr, 11)
+  assert.equal(seen[0].pr, undefined, 'not monitor-only: monitoring never readies a draft')
+  assert.deepEqual(seen[0].predecessor_prs, [10], 'readied only once the PR below reads MERGED')
+  assert.equal(seen[0].title, 'y')
+})
+
+await test('ship-chain: stops on a closed PR, a PR still open at the wait cap, or a lane that did not ship', async () => {
+  const two = { 'feat/p-s1': { status: 'OPEN', pr: { pr_number: 10 } }, 'feat/p-s2': { status: 'OPEN', pr: { pr_number: 11 } } }
+  const closed = await run('ship-chain', { chain: CHAIN }, sc({ 'wait-s1-1': { state: 'CLOSED' } }), { workflow: shipWf(two) })
+  assert.equal(closed.result.status, 'closed')
+  assert.deepEqual(closed.result.not_shipped, ['s2'])
+  const open = await run('ship-chain', { chain: CHAIN, max_wait_rounds: 2 }, sc({ 'wait-s1-1': { state: 'OPEN' }, 'wait-s1-2': { state: 'OPEN', notes: 'changes requested' } }), { workflow: shipWf(two) })
+  assert.equal(open.result.status, 'not_merged')
+  assert.match(open.result.stopped_at.reason, /changes requested/)
+  assert.ok(!open.calls.some(c => c.label === 'lookup-s2'), 'the next lane is not touched while the one below is open')
+  const blocked = await run('ship-chain', { chain: CHAIN }, sc(), { workflow: shipWf({ 'feat/p-s1': { status: 'blocked_at_merge_check' } }) })
+  assert.equal(blocked.result.status, 'lane_failed')
+  assert.match(blocked.result.stopped_at.reason, /blocked_at_merge_check/)
+})
+
+await test('proposal-build-chain: each ship_plan chain carries ship_chain_args for ship-chain', async () => {
+  const lanesJson = JSON.stringify({ chains: [{ key: 's1', lanes: [
+    { key: 's1', branch: 'feat/p-s1', dir: '/w/s1', bases: [], steps: [1], concern: 'c1' },
+    { key: 's2', branch: 'feat/p-s2', dir: '/w/s2', bases: ['feat/p-s1'], steps: [2], concern: 'c2' }] }], blocked: [], errors: [] })
+  const workflow = async () => ({ status: 'pushed', plan: 'the plan' })
+  const respond = label => label === 'derive-lanes' ? { lanes_json: lanesJson, exit_code: 0, source: 'origin' } : {}
+  const { result } = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w' }, respond, { workflow })
+  assert.equal(result.status, 'pushed')
+  const c = result.ship_plan[0]
+  assert.deepEqual(c.ship_chain_args.chain.order.map(l => [l.lane, l.steps]), [['s1', [1]], ['s2', [2]]])
+  assert.deepEqual(c.order[1].args.predecessor_prs, ['<PR numbers of the lanes above, once merged>'])
+})
+
+// ---- bug-fix-backlog: without lanes, the Intake proposes them and stops for the person to confirm
+const INTAKE_REPLY = {
+  issues: [{ number: 11, title: 'a', labels: ['bug'], code_sites: ['src/auth.js:login'] }, { number: 12, title: 'b', labels: ['bug'], code_sites: ['src/auth.js:login'] },
+    { number: 13, title: 'c', labels: ['bug'], code_sites: ['src/pay.js:charge'] }, { number: 14, title: 'd', labels: ['bug'], code_sites: [] }],
+  lanes: [{ key: 'Auth Login', issues: [11, 12, 99], code_site: 'src/auth.js:login', why: 'same function' }, { key: 'auth-login', issues: [12, 13], code_site: 'src/pay.js:charge', why: 'x' }],
+  unlaned: [{ number: 14, reason: 'an open PR already closes it' }],
+  ci_red: [{ workflow: 'ci', url: 'https://ci/1', sha: 'abc', conclusion: 'failure', failing_jobs: ['test'], summary: 'flaky', tracked_by: [] }],
+}
+const bfb = (over = {}) => label => over[label] !== undefined ? over[label] : label === 'intake' ? INTAKE_REPLY : {}
+
+await test('bug-fix-backlog: without lanes the Intake proposes lanes and stops with one question', async () => {
+  const { result, calls, prompt } = await run('bug-fix-backlog', { root: '/w', labels: ['bug', 'crash'] }, bfb())
+  assert.equal(result.status, 'needs_input')
+  assert.equal(result.stage, 'intake')
+  assert.deepEqual(calls.map(c => c.label), ['intake'])
+  assert.deepEqual(result.questions.map(q => q.id), ['intake.q1'])
+  // Each listed issue in one lane, out-of-list and unlaned issues dropped, keys unique slugs.
+  assert.deepEqual(JSON.parse(result.questions[0].recommended), [{ key: 'auth-login', issues: [11, 12] }, { key: 'auth-login-2', issues: [13] }])
+  assert.deepEqual(result.proposed_lanes.map(l => l.key), ['auth-login', 'auth-login-2'])
+  assert.equal(result.ci_red.length, 1)
+  assert.match(result.relay, /never confirm or edit the lanes on their behalf/)
+  assert.match(prompt('intake'), /\["bug","crash"\]/)
+  assert.match(prompt('intake'), /never create, edit, label, comment on, assign or close an issue/)
+})
+
+await test('bug-fix-backlog: the Intake stops even with on_question assume, and needs root', async () => {
+  const { result } = await run('bug-fix-backlog', { root: '/w', on_question: 'assume' }, bfb())
+  assert.equal(result.status, 'needs_input')
+  await assert.rejects(run('bug-fix-backlog', {}, bfb()), /root is required with the Intake/)
+  await assert.rejects(run('bug-fix-backlog', { root: '/w', intake: false }, bfb()), /lanes is required/)
+})
+
+await test('bug-fix-backlog: an intake answer runs the confirmed lanes, and reaches no lane', async () => {
+  const seen = []
+  const workflow = async (name, a) => { seen.push(a); return { status: 'pushed' } }
+  const triage = { branch: 'bugfix/edited-11-undated', ahead_of_main: 0, behind_main: 0, issues: [{ number: 11, title: 'a', verdict: 'plan', evidence: 'e' }], plan: 'p' }
+  const repro = { results: [{ number: 11, reproduced: true, behaviour_correct: false, tests: ['t.js::x'], failure_excerpt: '', notes: '' }] }
+  const answers = [{ id: 'intake.q1', answer: JSON.stringify([{ key: 'edited', issues: [11], code_site: 'ignored' }]) }]
+  const { result, calls } = await run('bug-fix-backlog', { root: '/w', answers }, bfb({ 'triage:edited': triage, 'reproduce:edited': repro }), { workflow })
+  assert.ok(!calls.some(c => c.label === 'intake'), 'a lanes answer needs no Intake')
+  assert.deepEqual(result.map(r => [r.lane, r.status]), [['edited', 'pushed']])
+  assert.equal(seen[0].answers, undefined, 'the intake answer is not passed to a lane')
+  // A bare 'accept' names no proposal: it stops again instead of building whatever this Intake proposes.
+  const bare = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'accept' }] }, bfb())
+  assert.equal(bare.result.status, 'needs_input')
+  assert.equal(bare.result.accept_not_applied, 'no_fingerprint')
+  assert.ok(!bare.calls.some(c => c.label.startsWith('triage:')), 'no lane runs on a bare accept')
+  const none = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: '[]' }] }, bfb())
+  assert.deepEqual(none.result, [])
+  // The same answer as a JSON value, not a string: still "run nothing", never a re-asked Intake.
+  const noneValue = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: [] }] }, bfb())
+  assert.deepEqual(noneValue.result, [])
+  assert.ok(!noneValue.calls.some(c => c.label === 'intake'), 'an empty-array answer is an answer')
+  await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: 'yes please' }] }, bfb()), /must be 'accept' or a JSON array/)
+})
+
+await test('bug-fix-backlog: each intake option, relayed back as its own text, is understood', async () => {
+  const stop = await run('bug-fix-backlog', { root: '/w' }, bfb())
+  const opts = stop.result.questions[0].options
+  const asked = async answer => run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer }] }, bfb())
+  const triaged = calls => calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
+  const accepted = await asked(opts.find(o => /^accept/i.test(o)))
+  assert.deepEqual(triaged(accepted.calls), ['triage:auth-login', 'triage:auth-login-2'], 'accept runs the proposed lanes')
+  assert.deepEqual((await asked(opts.find(o => /^none/i.test(o)))).result, [], 'none runs nothing')
+  assert.deepEqual((await asked('Accept')).calls.some(c => c.label === 'intake'), true)
+  const inline = await asked('the edited lanes: [{"key": "x", "issues": [11]}]')
+  assert.deepEqual(triaged(inline.calls), ['triage:x'], 'lanes JSON inside a sentence')
+  await assert.rejects(asked(opts.find(o => /JSON array/.test(o))), /must be 'accept' or a JSON array/, 'the template itself is no answer')
+})
+
+await test('bug-fix-backlog: accept runs only the very proposal the person saw', async () => {
+  const stop = await run('bug-fix-backlog', { root: '/w' }, bfb())
+  const acceptOpt = stop.result.questions[0].options[0]
+  assert.match(acceptOpt, /^accept [0-9a-f]{8} /, 'the accept option names its proposal')
+  const triaged = calls => calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
+  // Same proposal on the re-run (a replay, or an Intake that grouped the same way): it runs.
+  const same = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: acceptOpt }] }, bfb())
+  assert.deepEqual(triaged(same.calls), ['triage:auth-login', 'triage:auth-login-2'])
+  // The re-run's Intake grouped differently (or saw a new issue): nothing runs, the new proposal is asked again.
+  const regrouped = { ...INTAKE_REPLY, lanes: [{ key: 'auth', issues: INTAKE_REPLY.issues.map(i => i.number).filter(n => !(INTAKE_REPLY.unlaned || []).some(u => u.number === n)), code_site: 's', why: 'w' }] }
+  const changed = await run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: acceptOpt }] }, bfb({ intake: regrouped }))
+  assert.equal(changed.result.status, 'needs_input')
+  assert.equal(changed.result.accept_not_applied, 'proposal_changed')
+  assert.ok(!changed.calls.some(c => c.label.startsWith('triage:')), 'no lane runs on a changed proposal')
+  assert.notEqual(changed.result.questions[0].options[0], acceptOpt, 'the new proposal gets its own fingerprint')
+})
+
+await test('bug-fix-backlog: lanes a person edited are validated before any branch is named', async () => {
+  const lanes = async given => run('bug-fix-backlog', { root: '/w', answers: [{ id: 'intake.q1', answer: JSON.stringify(given) }] }, bfb())
+  for (const bad of [[{ key: 'a', issues: '12' }], [{ key: 'a', issues: 12 }], [{ key: 'a', issues: [] }], [{ key: 'a', issues: [0] }], [{ key: 'a', issues: ['x'] }], [{ key: 'a' }]]) {
+    await assert.rejects(lanes(bad), /needs issues as a non-empty array of issue numbers/, JSON.stringify(bad))
+  }
+  const { calls } = await lanes([{ key: 'Auth session', issues: ['12'] }, { issues: [13] }])
+  const triage = calls.map(c => c.label).filter(l => l.startsWith('triage:')).sort()
+  assert.deepEqual(triage, ['triage:auth-session', 'triage:bug-13'], 'keys are slugged, a missing key is named after its first issue')
+  await assert.rejects(lanes([{ key: 'A b', issues: [1] }, { key: 'a-b', issues: [2] }]), /share key a-b/)
+  // An issue in two edited lanes would get two triages and two 'Fixes #12' PRs: refused before anything runs.
+  const dup = lanes([{ key: 'a', issues: [12] }, { key: 'b', issues: [12, 14] }])
+  await assert.rejects(dup, /issue #12 is in lanes a and b/)
 })
 
 process.exit(failed ? 1 : 0)

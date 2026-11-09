@@ -8,10 +8,11 @@ This command is the **first step for a new idea**: run it in the clean repositor
 
 - `<target>` — the repository to seed (default: the working directory).
 - `--from=<dir>` — the pipeline source: a directory whose `.claude/` holds the pipeline (a checkout of the pipeline, or a project that has it installed). Default: the working directory. It must contain `.claude/workflows/brief-to-proposals.js` and `.claude/scripts/proposal-lint.py` → else `error=no_source`, naming what is missing and asking for `--from`. Files are copied as they are on disk; when the source is a git checkout with uncommitted changes (modified or untracked files) in what is copied, the report lists them (the target then gets an unreleased version).
-- `--update` — also replace pipeline files in the target that differ from the source (upgrading an installed pipeline). Never touches `CLAUDE.md`.
+- `--update` — upgrade an installed pipeline: replace pipeline files the target has not edited since they were installed, and delete ones the source no longer ships (see *Copy the pipeline files*). Never touches `CLAUDE.md`.
+- `--force` — with `--update`: also take the source's version of a file edited both in the target and in the source (a *conflict*), or of one that has no install record and matches no version the source ever shipped (*differs*).
 - `--dry-run` — print what would be copied, kept and written; write nothing.
 
-An unrecognized `--`-prefixed token or a second target → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: *Check the target* and *Write CLAUDE.md* still run; only *Copy the pipeline files* is skipped.
+An unrecognized `--`-prefixed token, a second target, or `--force` without `--update` → `error=invalid_argument`. Source and target resolving to the same directory (for example no `--from`, run in a repository that already holds the pipeline) → nothing to copy: *Check the target* and *Write CLAUDE.md* still run; only *Copy the pipeline files* is skipped.
 
 ## Check the target
 
@@ -22,17 +23,25 @@ An unrecognized `--`-prefixed token or a second target → `error=invalid_argume
 
 ## Copy the pipeline files
 
-For each of `.claude/commands/`, `.claude/skills/` (when the source has it), `.claude/workflows/` and `.claude/scripts/`, every regular file under it in the source, to the same path in the target. When the source is a git checkout, the files are the ones `git -C <source> ls-files --cached --others --exclude-standard -- <dir>` lists, so caches and anything else the source ignores never ship; otherwise skip `__pycache__/` and `*.pyc`. Never follow a symlink.
+Run the deterministic installer from the source, never by hand when it exists:
 
-- **Absent** in the target → copy it, keeping its file mode.
+    python3 <source>/.claude/scripts/pipeline-sync.py --target <target> --from <source> --json [--update [--force]] [--dry-run]
+
+It copies, for each of `.claude/commands/`, `.claude/skills/` (when the source has it), `.claude/workflows/` and `.claude/scripts/`, every regular file under it in the source to the same path in the target (when the source is a git checkout, the files `git ls-files --cached --others --exclude-standard` lists, so caches and anything else the source ignores never ship; otherwise skipping `__pycache__/` and `*.pyc`; never following a symlink), keeping file modes, and `.claude/settings.json` only when the target has none. It records what it installed in `.claude/pipeline-manifest.json` (the source's repo, ref and commit, and the sha256 of each file as the source shipped it), so a later `--update` compares three ways:
+
+- **Absent** in the target → copied (*added*), unless the manifest shows it was installed and someone deleted it (*removed_locally*: kept deleted).
 - **Identical** → nothing to do.
-- **Different** → keep the target's version and list it as *differs*; under `--update`, replace it and list it as *updated*.
+- **Unedited since install, changed in the source** → *outdated*; under `--update`, replaced (*updated*).
+- **Edited in the target, unchanged in the source** → *local_edit*: kept.
+- **Edited in both** → *conflict*: kept; under `--update --force`, replaced.
+- **Different, with no install record** (a pipeline copied by hand, before the manifest) → looked up in the source's git history: identical to a version some commit shipped → an unedited older version, *outdated* (and listed as *adopted*), with that version recorded as its base; else *differs*: it may hold local edits, so it is kept, as a conflict is; under `--update --force`, replaced.
+- **Recorded, but no longer in the source** → *obsolete*; under `--update`, deleted when unedited (*deleted*), else kept (*obsolete_edited*).
 
-Never delete a target file, and copy nothing else (no `settings.local.json`, no source `CLAUDE.md`, no caches such as `__pycache__/`). Copy `.claude/settings.json` only when the target has none.
+Exit 2 (`error`) → stop and report it. When the source has no `pipeline-sync.py` (an older pipeline), apply the same rules by hand without a manifest: copy what is absent, keep what differs unless `--update`, delete nothing.
 
 ## Write CLAUDE.md
 
-- **No `CLAUDE.md`** → write one (atomically: write `CLAUDE.md.tmp.<pid>` beside it, `<pid>` being your shell's, then rename it into place). `<repository name>` is the repo root's directory name:
+- **No `CLAUDE.md`** → write one (atomically: write `CLAUDE.md.tmp.<pid>` beside it, `<pid>` being your shell's, then rename it into place). `<repository name>` is the repo root's directory name. The `## How work happens here` section is the pipeline's template, `<source>/.claude/scripts/claude-md-base.md`, copied verbatim with its marker comment (`<!-- How work happens here written by /seed ... -->`): `pipeline-sync.py` compares a marked section with the template of the pipeline it syncs from and reports the difference (it never edits `CLAUDE.md`). When the source has no `claude-md-base.md` (an older pipeline), write that section as the source's own `/seed` gives it.
 
   ```md
   # <repository name>
@@ -41,14 +50,7 @@ Never delete a target file, and copy nothing else (no `settings.local.json`, no 
 
   This repository is designed and built with a Claude Code pipeline. The design lives in `docs/design/`: `architecture.md`, `roadmap.md` and one proposal per code milestone. After the first commit, changes reach `main` only through pull requests.
 
-  ## How work happens here
-
-  - A product brief or large change goes through `/roadmap`, `/propose` and `/review-proposal` (the `brief-to-proposals` workflow runs them) before any code.
-  - Design docs are drafts until a person sets `Status: accepted`; nothing is built from a draft.
-  - Every human-gated step (research, decisions, accounts and secrets, releases) is done and ticked by a person, with its `Outcome:` recorded.
-  - Code is built lane by lane with `proposal-build-chain` and `plan-to-merged-pr`; never push to `main`, never force-push; a person merges.
-  - Secrets are named, never written down: values live in the CI secret store, the host's secret manager, or a gitignored `.env`.
-  - Nothing is guessed that only a person can answer. A command asks every such question at once, with options; a workflow stops with `needs_input` and returns them. Whoever ran it asks the person, never answers for them, and re-runs it with `answers`. Every other assumption is listed in the report.
+  <the ## How work happens here section: the whole of <source>/.claude/scripts/claude-md-base.md, verbatim>
 
   ## Pipeline config
 
@@ -58,14 +60,15 @@ Never delete a target file, and copy nothing else (no `settings.local.json`, no 
   ```
 
   No `QUALITY_GATES` yet: there is nothing to gate until `/bootstrap` writes the skeleton, and a placeholder would be run as a command. `/plan` and `/impl` say so until then.
-- **An existing `CLAUDE.md`** → keep every line, and append at the end of the file, each with its full body as above: the `## How work happens here` section if it has no such heading, then the `## Pipeline config` section if it has none. An existing Pipeline config is never edited.
+- **An existing `CLAUDE.md`** → keep every line, and append at the end of the file, each with its full body as above: the `## How work happens here` section (the template, with its marker) if it has no such heading, then the `## Pipeline config` section if it has none. An existing Pipeline config is never edited.
 - **An existing repository** whose Pipeline config (old or new) has no `QUALITY_GATES`: report the commands its CI runs (from `.github/workflows/` or the equivalent) as the candidate value, for a person to add once they pass locally. A greenfield repository gets its gates from `/bootstrap`.
+- **An existing repository with no AI review check** (no CI workflow that reviews pull requests and posts comments — an action or app such as `answerable-ai-review`, `claude-code-action` or a code-review bot): report that the PR monitor will see only human comments and CI, and offer the pipeline's `examples/answerable-ai-review.yml` (at `<source>/examples/` when the source has it, else in the repository `.claude/pipeline-manifest.json` records): copy it to `.github/workflows/`, add the secret `CLAUDE_CODE_OAUTH_TOKEN` by NAME (`gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for the value; never write one down), pass `ai_review_check: 'Review'` to the workflows, and require the check `Reply coverage` to make unanswered findings block merge. A repository that has one: report its check name as the `ai_review_check` value. A greenfield repository gets the offer from `/bootstrap`'s next steps.
 
 ## Report
 
     Seeded: <target> from <source>
 
-Then: files copied, identical, differing (kept) or updated, per directory; whether `CLAUDE.md` was written, appended to or left alone; the candidate `QUALITY_GATES` for an existing repository. Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
+Then: files added, identical, updated, deleted, and those kept back (outdated, differs, local edits, conflicts, obsolete) per directory, and the source commit installed (and the one it replaced); whether `CLAUDE.md` was written, appended to or left alone, and, when its `## How work happens here` section differs from the template, the sync report's `claude_md` status and diff, for a person to apply by hand (an existing section is never edited); the candidate `QUALITY_GATES` for an existing repository, and its AI review check (the `ai_review_check` value, or the offer above when it has none). Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
 
 ## What to skip
 
@@ -75,5 +78,5 @@ Then: files copied, identical, differing (kept) or updated, per directory; wheth
 
 ## Safety
 
-- Never overwrite a target file without `--update`, never overwrite `CLAUDE.md` content, never delete anything.
+- Never overwrite a target file without `--update`, never overwrite an edited one without `--update --force`, never overwrite `CLAUDE.md` content. The only deletions are `--update`'s: pipeline files the manifest recorded, that the source no longer ships and nobody edited.
 - Copy only the pipeline directories named above and, when the target has none, `.claude/settings.json`; never copy secrets, `.env` files or `settings.local.json`.
