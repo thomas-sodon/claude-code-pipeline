@@ -108,7 +108,7 @@ await test('bootstrap-repo: defaults reach neither stage as settings nobody gave
   const { calls, prompt } = await run('bootstrap-repo', BARGS, boot(), { workflow: async (n, a) => { seen.push(a); return P2MP_OPEN } })
   assert.deepEqual(seen[0], { ship_only: true, branch: BRANCH, title: 'Bootstrap repository', dir: '/abs/p' })
   assert.equal(calls[0].effort, 'medium')
-  assert.match(prompt('bootstrap'), /GITHUB_ACCESS from the "Pipeline config" section of CLAUDE\.md, default gh/)
+  assert.match(prompt('bootstrap'), /GITHUB_ACCESS from the "Pipeline config" section of CLAUDE\.md when it is set, else .*gh when it is authenticated, else the connector/)
   assert.doesNotMatch(prompt('bootstrap'), /gate wrapper|in place of the session's Co-Authored-By/)
 })
 

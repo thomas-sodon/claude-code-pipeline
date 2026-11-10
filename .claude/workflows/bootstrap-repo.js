@@ -16,8 +16,9 @@ export const meta = {
 //   title?: string            the bootstrap PR's title (default 'Bootstrap repository')
 //   main_branch?, ai_review_check?, github_access?, gate?, commit_trailers?, on_question?
 //                             passed to plan-to-merged-pr for the ship (see its args). github_access ('gh' | 'connector';
-//                             unset or '' = GITHUB_ACCESS from the Pipeline config, default gh), gate and commit_trailers
-//                             reach the bootstrap stage too. Leave ai_review_check unset on a new repository unless a review
+//                             unset or '' = GITHUB_ACCESS from the Pipeline config, else gh when it is authenticated, else the
+//                             connector: .claude/scripts/github-access.md), gate and commit_trailers reach the bootstrap
+//                             stage too. Leave ai_review_check unset on a new repository unless a review
 //                             app already posts that check: the AI review workflow is offered in the next steps, after the merge.
 //   efforts?: { bootstrap, ...plan-to-merged-pr's keys }  bootstrap (default 'medium') is the /bootstrap stage's effort; the
 //                             other keys go to the ship run
@@ -61,7 +62,7 @@ const GUARD = `If a permission check or classifier denies any action, do NOT ret
   `(Bash, python, sed, heredocs, a different file path); record it as blocked and report it. `
 const WHERE = `Work ONLY in the git checkout ${DIR} (cd there / use absolute paths): the repository being bootstrapped. `
 const GH_ACCESS = `Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. ` +
-  `The access in use is ${A.github_access ? `${A.github_access}, as this run was given` : 'GITHUB_ACCESS from the "Pipeline config" section of CLAUDE.md, default gh'}; git fetch and push stay plain git. `
+  `The access in use is ${A.github_access ? `${A.github_access}, as this run was given` : 'GITHUB_ACCESS from the "Pipeline config" section of CLAUDE.md when it is set, else as that file\'s "Which access" resolves it (gh when it is authenticated, else the connector)'}; git fetch and push stay plain git. `
 const GATE = A.gate || ''
 const GATE_NOTE = GATE
   ? `Run every gate command (QUALITY_GATES, QUALITY_GATES_FAST and the docs job's script) through the gate wrapper, \`${GATE} <command>\` (a compound command as \`${GATE} bash -c '<command>'\`), from the repo root. ` +

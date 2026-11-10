@@ -45,7 +45,7 @@ const GUARD = `If a permission check or classifier denies any action, do NOT ret
   `(Bash, python, sed, heredocs, a different file path); record it as blocked and report it. `
 const WHERE = `Work ONLY in ${DIR} (cd there / use absolute paths). `
 const DOCS_ONLY = `This is design work on one doc: change nothing but ${DOC}. Never write code; never commit, stage, push, switch or create a branch, or open a PR. ` +
-  `The review ledger the commands keep (under ~/.claude, or on the pipeline state branch through .claude/scripts/pipeline-state.py) is theirs to write. `
+  `The review ledger the commands keep (under ~/.claude, with its copy on the pipeline state branch through .claude/scripts/pipeline-state.py) is theirs to write. `
 const WORK = GUARD + WHERE + DOCS_ONLY
 const LINT = `python3 .claude/scripts/proposal-lint.py`
 const FRAME = `The doc is re-reviewed against the tree as it is now: milestones that merged since it was written may have moved or changed the files, symbols and interfaces it builds on. `
