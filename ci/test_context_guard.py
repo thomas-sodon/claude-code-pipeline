@@ -116,6 +116,19 @@ class Guard(unittest.TestCase):
         with open(os.path.join(self.dir, '%s.hook.json' % sid)) as f:
             return json.load(f)
 
+    def repo_mark(self):
+        """The repository's handoff mark, handoff-<repo-key>.json: the tests use one repository."""
+        (name,) = [n for n in os.listdir(self.dir) if n.startswith('handoff-')]
+        with open(os.path.join(self.dir, name)) as f:
+            return json.load(f)
+
+    def worktree(self):
+        """A second worktree of the test repository, as another session of it would use."""
+        wt = os.path.join(self.tmp, 'wt')
+        git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'init', env=self.env)
+        git(self.repo, 'worktree', 'add', '-q', wt, env=self.env)
+        return wt
+
     def save_state(self, repo, text, *flags):
         r = subprocess.run([sys.executable, STATE, '--repo', repo, 'save', '-', '--as', 'STATE.md'] + list(flags),
                            input=text.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
@@ -326,12 +339,31 @@ class PromptAndStop(Orchestrating):
     def test_a_repository_mark_counts_without_a_session_id(self):
         self.at(41)
         self.assertEqual(self.hook_json('Stop')['decision'], 'block')
-        wt = os.path.join(self.tmp, 'wt')
-        git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'init', env=self.env)
-        git(self.repo, 'worktree', 'add', '-q', wt, env=self.env)
+        wt = self.worktree()
         r = self.mark(sid=None, cwd=wt)      # another worktree of the same repository
         self.assertEqual(json.loads(r.stdout.decode())['scope'], ['repository'])
+        self.assertIsNone(self.repo_mark()['session_id'], 'a mark no session wrote is the fallback for every one')
         self.assertEqual(self.hook('Stop'), '')
+
+    def test_another_sessions_handoff_does_not_release_this_one(self):
+        wt = self.worktree()
+        self.orchestrate(sid='s2', cwd=wt)   # session B, in another worktree of the repository
+        self.at(41)
+        self.at(41, sid='s2')
+        for sid, cwd in (('s1', self.repo), ('s2', wt)):
+            self.assertEqual(self.hook_json('Stop', sid=sid, cwd=cwd)['decision'], 'block', sid)
+        r = self.mark(sid='s2', cwd=wt)
+        self.assertEqual(json.loads(r.stdout.decode())['scope'], ['session', 'repository'])
+        self.assertEqual(self.repo_mark()['session_id'], 's2', 'the repository mark names the session that wrote it')
+        self.assertEqual(self.hook('Stop', sid='s2', cwd=wt), '', "B's own handoff releases B")
+        self.assertEqual(self.hook_json('Stop')['decision'], 'block', "B's handoff does not release A")
+        for event in ('PostToolUse', 'UserPromptSubmit'):
+            out = self.hook_json(event, tool_name='Bash', prompt='go on')
+            self.assertNotIn('A handoff was saved', out['hookSpecificOutput']['additionalContext'], event)
+        self.assertIsNone(self.status()['handoff_at'])
+        self.mark()                          # A's own handoff
+        self.assertEqual(self.hook('Stop'), '', "A's own handoff releases A")
+        self.assertIsNotNone(self.status()['handoff_at'])
 
     def test_mark_handoff_with_neither_session_nor_repository_exits_2(self):
         elsewhere = os.path.join(self.tmp, 'not-a-repo')

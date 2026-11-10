@@ -30,8 +30,9 @@ At or over the threshold (env PIPELINE_HANDOFF_PCT, default 40), in an orchestra
                     fresh one. Rate-limited: the first crossing, then every further 5 points or every 10th
                     tool call. The Workflow call that makes a session orchestrating is measured like any other.
   UserPromptSubmit  additionalContext only; the person's prompt is never blocked.
-  Stop              decision "block" until a handoff is recorded after the first crossing; a Stop that
-                    stop_hook_active marks as already continued is allowed, so it never loops.
+  Stop              decision "block" until this session records a handoff after the first crossing (another
+                    session's does not count); a Stop that stop_hook_active marks as already continued is
+                    allowed, so it never loops.
   PreCompact        auto: the first one in a session is blocked with the handoff instruction; a later one is
                     allowed, with summary instructions on stdout to keep the pipeline state. manual: allowed.
 A session that is not orchestrating gets none of these, at any usage, and no PreCompact summary instructions.
@@ -56,7 +57,9 @@ Environment:
 
 Files in the guard directory: <session>.json (status line: used_percentage, context_window_size, at),
 <session>.hook.json (orchestrating, crossing and rate-limit state), <session>.handoff.json and
-handoff-<repo-key>.json (handoff marks), errors.log. Records older than 30 days are removed at SessionStart.
+handoff-<repo-key>.json (handoff marks; the repository's, shared by its worktrees, names the session that wrote
+it and counts only for that one, or for every session when it names none), errors.log. Records older than 30 days
+are removed at SessionStart.
 The hook never fails the session: any error exits 0 with no output (and a line in errors.log).
 """
 
@@ -331,11 +334,15 @@ def repo_key(cwd):
 
 
 def last_handoff(sid, cwd):
-    """The time of the latest recorded handoff for this session or its repository, or None."""
+    """The time of the latest handoff recorded for this session, or None. The repository's mark, shared by every
+    worktree and session of the repository, counts only when it names this session or none (a mark-handoff run
+    without a session id), so another session's handoff never releases this one; with no sid, it always counts."""
     marks = [read_json(path_for('%s.handoff.json' % sid)).get('ts')] if sid else []
     key = repo_key(cwd)
     if key:
-        marks.append(read_json(path_for('handoff-%s.json' % key)).get('ts'))
+        rec = read_json(path_for('handoff-%s.json' % key))
+        if not sid or not rec.get('session_id') or rec.get('session_id') == sid:
+            marks.append(rec.get('ts'))
     marks = [number(m) for m in marks if number(m) is not None]
     return max(marks) if marks else None
 
@@ -637,6 +644,8 @@ def session_arg(argv):
 def cmd_mark_handoff(argv):
     sid = safe_id(session_arg(argv))
     t = now()
+    # Both marks name the session (None without one): the repository's mark releases only that session, or every
+    # session of the repository when no session wrote it (last_handoff).
     rec = {'at': iso(t), 'ts': t, 'session_id': sid}
     written = []
     try:

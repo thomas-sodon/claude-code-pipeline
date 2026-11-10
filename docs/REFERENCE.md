@@ -975,7 +975,7 @@ session:
 | status line | prints `ctx NN% · handoff due` and records the usage in `~/.claude/context-guard/<session>.json` | `ctx NN%` (`ctx --` before the first response) |
 | PostToolUse | context for Claude: start no new work, finish or park the step, run `/handoff`, end the session. Rate-limited: the first crossing (the Workflow call that makes the session orchestrating counts), then every 5 more points or every 10th tool call | nothing |
 | UserPromptSubmit | context for Claude beside the prompt; never blocks it | nothing |
-| Stop | blocks (`decision: block`) until `/handoff` has recorded a handoff since the crossing; a stop already continued once (`stop_hook_active`) goes through | nothing |
+| Stop | blocks (`decision: block`) until `/handoff` in this session has recorded a handoff since the crossing (another session's, in another worktree of the repository say, does not count); a stop already continued once (`stop_hook_active`) goes through | nothing |
 | PreCompact (auto) | the first in a session is blocked with the handoff instruction; a later one goes ahead, with summary instructions that keep the pipeline state | allowed, with the same instructions |
 | PreCompact (manual) | allowed | allowed |
 | SessionStart | at any usage, and in a session that does not orchestrate too: when the state branch has `STATE.md`, says when it was saved, to read it first (`python3 .claude/scripts/pipeline-state.py get STATE.md`), and quotes its `## Next` (up to 2,000 characters) | the same |
@@ -1019,7 +1019,8 @@ To turn it off or adjust it:
   orchestrator that relays runs it did not start itself, or one that runs under CI.
 - `python3 .claude/scripts/context-guard.py status` prints what the guard sees for
   the current session (`CLAUDE_CODE_SESSION_ID`, or `--session ID`), whether it
-  orchestrates included, and `mark-handoff` records a handoff by hand.
+  orchestrates included, and `mark-handoff` records a handoff by hand: for that
+  session, or, run with no session id, for every session of the repository.
 
 The guard runs only where Claude Code reads the repository's
 `.claude/settings.json`: a local session in it, or a cloud session with that one
