@@ -36,7 +36,7 @@ export const meta = {
 //                              one this PR turns red gets the CI-fix step (reproduced locally when possible, else fixed from its log)
 //   commit_trailers?: string[] lines the workflow's own commits end with (default ['Co-Authored-By: Claude <noreply@anthropic.com>'])
 //   max_review_rounds?: 5, max_polish?: 6, max_monitor_rounds?: 10 (max_rounds is accepted as an alias)
-//   efforts?: { plan, impl, review, fix, polish, merge_check, pr, monitor }  (pr unset = the session's effort, as /create-pr always ran)
+//   efforts?: { plan, impl, review, fix, polish, merge_check, pr, monitor, closeout }  (pr unset = the session's effort, as /create-pr always ran)
 //   on_question?: 'stop'|'assume'  default 'stop': a stage that hits a blocking question (one only the person can answer) stops the
 //                              run with status needs_input and the questions; 'assume' takes each recommended option instead and
 //                              lists it in the result's assumptions
@@ -44,6 +44,9 @@ export const meta = {
 //                              each answer reaches the stage that asked and every later stage, so a resume (resumeFromRunId)
 //                              replays the stages before it from the record
 // Monitor-only mode: { pr: number, branch: string, dir?: string } skips straight to the Monitor phase.
+// A run that hands the PR off while it is still open returns resume_monitor (these args, ready to re-run) and a one-line handoff.
+// A run given `proposal` whose PR reads MERGED checks the proposal on origin/<main_branch> and returns closeout (read-only:
+// only a person sets Status: done or ticks the roadmap milestone).
 const A = typeof args === 'string' ? { concern: args } : (args || {})
 const CONCERN = A.concern
 const MONITOR_ONLY = !!A.pr
@@ -81,7 +84,7 @@ if (BASES.length && !BUILD_ONLY && !PREDS.length) throw new Error('a stacked run
 const GATE = A.gate !== undefined ? A.gate : ''
 const TRAILERS = (A.commit_trailers || ['Co-Authored-By: Claude <noreply@anthropic.com>']).join('\n')
 const MAX_REVIEW = A.max_review_rounds ?? 5
-const EFF = { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low', ...(A.efforts || {}) }
+const EFF = { plan: 'medium', impl: 'low', review: 'high', fix: 'low', polish: 'low', merge_check: 'low', monitor: 'low', closeout: 'low', ...(A.efforts || {}) }
 // Agent options; an unset effort inherits the session's.
 const opts = (label, ph, effortKey, schema) => {
   const o = { label, phase: ph }
@@ -294,6 +297,36 @@ const SHIP_PR_SCHEMA = {
   },
   required: ['blocked'],
 }
+const CLOSEOUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    checked: { type: 'boolean', description: 'true once proposal-lint.py --json ran on the proposal as it is on the integration branch' },
+    proposal_complete: { type: 'boolean', description: 'true only if the proposal has steps and every one (code steps and human gates) is ticked' },
+    pending_steps: { type: 'array', items: { type: 'integer' }, description: 'numbers of the steps not yet ticked' },
+    roadmap: { type: 'string', description: 'the roadmap the proposal\'s Source: names, when it resolves to one; else empty' },
+    edits: {
+      type: 'array',
+      description: 'only when proposal_complete: the close-out edits a person makes, none of them made by you',
+      items: {
+        type: 'object',
+        properties: {
+          file: { type: 'string' },
+          line: { type: 'integer', description: 'line number in the file as it is on the integration branch' },
+          before: { type: 'string', description: 'the exact line as it is now' },
+          after: { type: 'string', description: 'the exact line(s) it becomes' },
+        },
+        required: ['file', 'line', 'before', 'after'],
+      },
+    },
+    next_milestone: {
+      type: 'array',
+      description: 'the roadmap\'s next actionable milestones (--roadmap "next"), each with its title; empty without a roadmap',
+      items: { type: 'object', properties: { n: { type: 'integer' }, title: { type: 'string' } }, required: ['n', 'title'] },
+    },
+    notes: { type: 'string' },
+  },
+  required: ['checked', 'proposal_complete', 'pending_steps', 'roadmap', 'edits', 'next_milestone', 'notes'],
+}
 // Defects block the PR; suggestions and nits go to the fixer but never hold it.
 const blocking = list => list.filter(f => f.severity === 'bug' || f.severity === 'concern')
 
@@ -306,7 +339,7 @@ const needsInput = (kind, r, extra) => {
   log(`${kind}: ${questions.length} question(s) only the person can answer — stopping (status needs_input)`)
   for (const q of questions) log(`  ${q.id}: ${q.question} (recommended: ${q.recommended})`)
   const relay = kind === 'monitor'
-    ? RELAY.replace(/ and resumeFromRunId set to this run's id:.*$/, `, in monitor-only mode ({ pr, branch, dir } from this result), so the PR is observed afresh.`)
+    ? RELAY.replace(/ and resumeFromRunId set to this run's id:.*$/, `, in monitor-only mode (this result's resume_monitor as args, plus answers), so the PR is observed afresh.`)
     : RELAY
   return done('needs_input', { stage: kind, questions, relay, ...(extra || {}) })
 }
@@ -541,6 +574,13 @@ let behindMerges = 0
 let quiet = 0
 let last = null
 const actions = []
+// The args that re-run this PR's monitor alone (monitor-only mode), carrying the settings that shape it.
+const RESUME = { pr: PRN, branch: BRANCH }
+if (DIR) RESUME.dir = DIR
+if (PLAN_FOR_PR) RESUME.plan_text = PLAN_FOR_PR
+for (const k of ['proposal', 'main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers', 'efforts', 'on_question']) if (A[k] !== undefined) RESUME[k] = A[k]
+if ((A.max_monitor_rounds ?? A.max_rounds) !== undefined) RESUME.max_monitor_rounds = MAX_ROUNDS
+let handoffWhy = ''
 for (let r = 1; r <= MAX_ROUNDS; r++) {
   const obs = await agent(
     GUARD + WHERE + AUTH + `Observe PR #${PRN} (branch ${BRANCH}), round ${r}. Read-only: change no files, push nothing, post nothing.\n` +
@@ -555,7 +595,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     opts(`observe-${r}`, 'Monitor', 'monitor', OBSERVE_SCHEMA),
   )
   if (!obs) {
-    if (r === MAX_ROUNDS) log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
+    if (r === MAX_ROUNDS) { log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`); handoffWhy = `hit the ${MAX_ROUNDS}-round cap without settling` }
     continue
   }
   last = obs
@@ -579,7 +619,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     noteAssumptions('monitor', m)
-    if (asked(m)) return needsInput('monitor', m, { pr, monitor_actions: actions, final_state: last })
+    if (asked(m)) return needsInput('monitor', m, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME })
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
     // Count every BEHIND attempt: one that pushes nothing (no-op or failed) would otherwise retry every round and never settle.
     if (behindMergeDue) behindMerges++
@@ -613,6 +653,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   if (!pushed && last.ci_state === 'red' && !last.ci_red_caused_by_pr && last.ai_review_done_on_head &&
       last.actionable_comments === 0 && !last.has_conflicts && !behindMergeDue) {
     log('CI is red for a reason outside this PR and nothing else is actionable — handing to human (re-run or fix main)')
+    handoffWhy = 'CI is red for a reason outside this PR (re-run it or fix main)'
     break
   }
   // BEHIND alone does not block settling once its capped merges are spent; "Update branch" at merge time covers it.
@@ -621,9 +662,49 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   if (quiet >= 2) {
     log('PR settled with nothing actionable for 2 consecutive rounds — handing to human for merge' +
       (last.behind_main ? ' (still behind main: use "Update branch" when merging)' : ''))
+    handoffWhy = 'settled: nothing actionable for 2 rounds, ready for a person to merge' + (last.behind_main ? ' (behind main: use "Update branch")' : '')
     break
   }
-  if (r === MAX_ROUNDS) log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`)
+  if (r === MAX_ROUNDS) { log(`Monitor hit the ${MAX_ROUNDS}-round cap without settling — check the PR by hand`); handoffWhy = `hit the ${MAX_ROUNDS}-round cap without settling` }
 }
 
-return done(last ? last.pr_state : 'monitor_failed', { pr, monitor_actions: actions, final_state: last })
+const STATUS = last ? last.pr_state : 'monitor_failed'
+// Handed off while still open: nothing watches the PR from here, so say how to pick it up again.
+if (STATUS === 'OPEN' || STATUS === 'monitor_failed') {
+  const handoff = `PR #${PRN} handed off — ${handoffWhy || 'no round could observe it'}. Later comments, conflicts or red CI are not watched: ` +
+    `re-run plan-to-merged-pr with this result's resume_monitor as args (monitor-only), or schedule that re-run (the pipeline REFERENCE, "Watching a handed-off PR").`
+  log(handoff)
+  return done(STATUS, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME, handoff })
+}
+
+// ---- Close-out: the proposal's last lane may just have merged. Report the edits a person makes; never make them.
+let closeout
+if (STATUS === 'MERGED' && A.proposal) {
+  const c = await agent(
+    GUARD + WHERE + AUTH + `PR #${PRN} (branch ${BRANCH}) has merged. Check whether the design doc ${A.proposal} is now complete on ${MAIN}. ` +
+    `Read-only: change no file in this checkout, commit nothing, push nothing, post nothing, tick nothing.\n` +
+    `1. git fetch origin ${MAIN}. Add a throwaway detached worktree of origin/${MAIN} in your scratch area (git worktree add --detach <scratch>/closeout origin/${MAIN}) and run every command below from it; remove it (git worktree remove --force <path>) before you finish. ` +
+    `If ${A.proposal} does not exist there, report checked=false and why in notes.\n` +
+    `2. Run python3 .claude/scripts/proposal-lint.py ${A.proposal} --json (if the script is missing there, run this checkout's copy, still from the worktree). ` +
+    `proposal_complete = it lists at least one step and every step (code steps and human gates alike) has done true; pending_steps = the n of every other step.\n` +
+    `3. If its header.source has the form <file>.md#N and that file (relative to the proposal's directory) exists on origin/${MAIN}, run proposal-lint.py <that file> --roadmap. ` +
+    `If it reports kind roadmap and a milestone N, roadmap = its path and next_milestone = its "next" list, each with that milestone's title. Otherwise roadmap is empty, next_milestone is [], and notes says why.\n` +
+    `4. Only when proposal_complete, list in edits — WITHOUT making any of them; a person sets Status: done and ticks milestones, through a docs PR — each edit's file, line number on origin/${MAIN}, exact current line and exact replacement: ` +
+    `(a) the proposal's Status: line becoming "Status: done" (keep any trailing comment), unless it already reads done; ` +
+    `(b) when a roadmap resolved, milestone N's "N. [ ]" line becoming "N. [x]" (what proposal-lint.py <roadmap> --tick N writes), unless it is already ticked; ` +
+    `and, only when milestone N is a human gate, an "- Outcome: <what it delivered: the proposal and its merged PRs>" sub-bullet appended after its last sub-bullet (on a code milestone an Outcome line is W outcome_on_code_step, so add none). ` +
+    `Otherwise edits is [].`,
+    opts('closeout', 'Monitor', 'closeout', CLOSEOUT_SCHEMA),
+  )
+  if (!c || !c.checked) log(`Close-out check of ${A.proposal} did not run${c && c.notes ? `: ${c.notes}` : ''} — check it by hand (proposal-lint.py --roadmap)`)
+  else if (c.proposal_complete) {
+    closeout = { proposal_complete: true, edits: c.edits, next_milestone: c.next_milestone, roadmap: c.roadmap }
+    log(`${A.proposal} is complete on ${MAIN}: ${c.edits.length} close-out edit(s) for a person to make in a docs PR` +
+      (c.next_milestone.length ? `; next milestone(s): ${c.next_milestone.map(m => `${m.n} ${m.title}`).join(', ')}` : ''))
+  } else {
+    closeout = { proposal_complete: false, pending_steps: c.pending_steps }
+    log(`${A.proposal} still has step(s) ${c.pending_steps.join(', ')} unticked on ${MAIN}`)
+  }
+}
+
+return done(STATUS, { pr, monitor_actions: actions, final_state: last, ...(closeout ? { closeout } : {}) })

@@ -22,7 +22,8 @@ export const meta = {
 //   context?: string          extra framing for every author (builder, budget, constraints the source does not state)
 //   panel?: number            independent architecture sketches before /roadmap (default 3; 0 = skip the panel)
 //   milestones?: number[]     propose only these roadmap milestones (default: every pending milestone that names a proposal)
-//   max_milestones?: number   propose at most the first N of those, in roadmap order (e.g. 1 to try the flow on one milestone)
+//   max_milestones?: number   propose at most the first N of those, in roadmap order (e.g. 1 to try the flow on one milestone; 1 is
+//                             recommended for a long roadmap, since later proposals go stale as earlier milestones change the tree)
 //   force?: boolean           let /roadmap overwrite an existing architecture.md / roadmap.md (default false)
 //   max_review_rounds?: number  revise rounds per doc (default 3)
 //   efforts?: { intake, sketch, judge, roadmap, propose, review, revise, consistency, lint }
@@ -528,6 +529,7 @@ const lint = await agent(
 )
 const lintErrors = lint ? lint.docs.reduce((n, d) => n + d.errors, 0) + lint.lanes.reduce((n, l) => n + (l.errors || 0), 0) : null
 const unclean = written.filter(p => !p.review || !p.review.clean)
+const laterDocs = BRIEF_MODE ? written.slice().sort((a, b) => a.milestone - b.milestone).slice(1).map(p => p.doc) : []
 
 const questions = pendingQs.concat((consistency && consistency.questions) || [])
 if (questions.length) logQuestions(questions)
@@ -554,6 +556,10 @@ return {
   next_steps: [
     questions.length ? `First answer the ${questions.length} question(s) in questions (see relay): the docs that raised them are unwritten or unrevised, and the Consistency phase waits on them.` : null,
     'Read and edit the docs. They are drafts (Status: draft): set Status: accepted on each one you approve; nothing is built or bootstrapped from a draft.',
+    // Every proposal was written against today's tree, which the earlier milestones will change before the later ones build.
+    laterDocs.length ? `Accept the proposals one milestone at a time, in roadmap order. Before accepting each one after the first (${laterDocs.join(', ')}), once the milestones before it have merged, ` +
+      `re-run /review-proposal <doc> against the tree as it is then, and /propose --revise <doc> on its findings: a Files: list or interface the earlier milestones changed is a review concern then, not a stalled lane later.` +
+      (MAX_M ? '' : ` For a long roadmap, run with max_milestones: 1 instead and propose each later milestone with /propose --milestone=N when it comes up.`) : null,
     'Do every research or decision gate the docs list that blocks design choices, record its Outcome, and run /propose --revise <doc> on the docs whose steps depend on it.',
     arch ? `Greenfield: run /bootstrap ${arch.architecture} in the clean repository (one commit, holding the docs too, on a bootstrap/<date> branch), ship it with plan-to-merged-pr { ship_only: true, branch, title } and merge it (an empty remote gets the root commit on local main instead, which you push), protect main and require the CI check; once that PR has merged and CI is green on main, add the bootstrap milestone's Outcome (CI green at <sha>; main protected), tick it (${LINT} ${arch.roadmap} --tick <n>) and land that through a docs PR.` : null,
     'Existing repo: land the seeded pipeline files, the CLAUDE.md changes and the accepted docs through an ordinary PR (commit them on a branch, /create-pr, merge) — lanes are cut from origin and read the proposal and the commands there.',

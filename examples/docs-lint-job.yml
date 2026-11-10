@@ -1,0 +1,44 @@
+# Lint the design docs in CI: paste the `docs` job below under `jobs:` in .github/workflows/ci.yml of a
+# repository the pipeline is installed in (by /seed or pipeline-sync.py). /bootstrap writes this same job
+# into a new repository's CI; this copy is for a repository bootstrapped before it did, or never bootstrapped.
+#
+# It runs .claude/scripts/proposal-lint.py (python3, standard library only, preinstalled on the runner):
+# - on every design doc in PROPOSALS_DIR: each .md file whose first `# ` heading is `# Proposal:`,
+#   `# Roadmap:` or `# Architecture:` (a README, a brief or notes beside them are skipped);
+# - with --roadmap on PROPOSALS_DIR/roadmap.md, when there is one;
+# - with --claude-md CLAUDE.md on PROPOSALS_DIR/architecture.md, when CLAUDE.md carries /bootstrap's
+#   Pipeline config marker: the ## Invariants and ## Testing bodies /bootstrap copied must still match the
+#   architecture's (E claude_md_drift). A CLAUDE.md /bootstrap never wrote is not checked.
+# Every docs PR (accepting a doc, ticking a gate, writing an `Outcome:`) is then linted before it merges.
+#
+# Setup:
+# - Set PROPOSALS_DIR to the value in your CLAUDE.md's Pipeline config.
+# - Pin actions/checkout to the full commit SHA your other jobs use (its release tag in a comment).
+# - Once it has run once, require the `docs` check on main beside your gates check
+#   (Settings -> Rules, or the branch protection's required status checks).
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PROPOSALS_DIR: docs/design
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint design docs
+        run: |
+          set -u
+          lint=.claude/scripts/proposal-lint.py
+          rc=0
+          for f in "$PROPOSALS_DIR"/*.md; do
+            [ -f "$f" ] || continue
+            awk '/^# /{d = /^# (Proposal|Roadmap|Architecture):/; exit} END{exit !d}' "$f" || continue
+            python3 "$lint" "$f" || rc=1
+          done
+          if [ -f "$PROPOSALS_DIR/roadmap.md" ]; then
+            python3 "$lint" "$PROPOSALS_DIR/roadmap.md" --roadmap || rc=1
+          fi
+          if [ -f "$PROPOSALS_DIR/architecture.md" ] && grep -qF '<!-- Pipeline config written by /bootstrap -->' CLAUDE.md 2>/dev/null; then
+            python3 "$lint" "$PROPOSALS_DIR/architecture.md" --claude-md CLAUDE.md || rc=1
+          fi
+          exit $rc

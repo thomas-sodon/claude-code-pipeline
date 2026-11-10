@@ -49,19 +49,21 @@ The clone may be empty or hold just the README and licence a host creates.
    ship-only run is skipped.)
 4. **Ship it** (you merge). `plan-to-merged-pr` with `{ ship_only: true, branch,
    title }` opens the bootstrap PR and babysits its CI; you merge it, protect `main`
-   and require its CI check, add the secrets by name and tick the roadmap's Bootstrap
-   gate with its `Outcome:` through a docs PR: `/bootstrap` prints the steps.
+   and require its CI checks (the gates and `docs`, which lints the design docs), add
+   the secrets by name and tick the roadmap's Bootstrap gate with its `Outcome:`
+   through a docs PR: `/bootstrap` prints the steps. They also offer an AI review for
+   the monitor (see *AI review* below).
 5. **Build, milestone by milestone.** You do the human gates the next milestone
-   waits on; `proposal-build-chain` builds its proposal's lanes; you ship each lane
-   in merge order and merge. `python3 .claude/scripts/proposal-lint.py
+   waits on; `proposal-build-chain` builds its proposal's lanes; `ship-chain` ships
+   each chain's lanes in merge order, one PR at a time, and you merge each. `python3 .claude/scripts/proposal-lint.py
    docs/design/roadmap.md --roadmap` names the next milestone.
 
 ### An existing project
 
 ```sh
 git clone https://github.com/thomas-sodon/claude-code-pipeline /tmp/ccp
-cd your-project && mkdir -p .claude
-cp -r /tmp/ccp/.claude/commands /tmp/ccp/.claude/workflows /tmp/ccp/.claude/scripts .claude/
+cd your-project
+python3 /tmp/ccp/.claude/scripts/pipeline-sync.py --from /tmp/ccp   # copies .claude/, records a manifest
 printf '\n## Pipeline config\n\nQUALITY_GATES: npm test\n' >> CLAUDE.md   # your gate command
 claude   # then: "Run the plan-to-merged-pr workflow with { concern: '<what to change>' }"
 ```
@@ -71,7 +73,62 @@ copies the same files, appends to `CLAUDE.md` whichever of `## How work happens 
 and a base `## Pipeline config` it lacks, and, when that config has no
 `QUALITY_GATES`, reports the commands your CI runs as the candidate value, for you
 to add once they pass locally. Land the seeded files with `/create-pr` before you
-build: lanes are cut from `origin` and need the commands there.
+build: lanes are cut from `origin` and need the commands there. To lint your design
+docs in CI, as `/bootstrap` sets up on a new repository, paste the `docs` job from
+[`examples/docs-lint-job.yml`](examples/docs-lint-job.yml) into your CI workflow and
+require its check on `main`
+([how](docs/REFERENCE.md#install-and-configuration)).
+
+### AI review
+
+The PR monitor waits for an AI review check before counting comments, but none is
+installed by default: without one, the only independent review is `/review-changes`
+before the PR. [`examples/answerable-ai-review.yml`](examples/answerable-ai-review.yml)
+is the one this repository runs. Copy it to `.github/workflows/`, add the secret by
+name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for the value, from
+`claude setup-token`), and pass `ai_review_check: 'Review'` to the workflows. It
+posts findings as review comments (check `Review`) and fails `Reply coverage` while
+one has no reply; require `Reply coverage` on `main` if unanswered findings should
+block merge. `/bootstrap`'s next steps offer it, and `/seed` does on an existing
+repository with no AI review check.
+
+### Keeping the pipeline up to date
+
+`/seed` and `.claude/scripts/pipeline-sync.py` record what they installed in
+`.claude/pipeline-manifest.json` (the source commit and a hash per file), so an
+update can tell an upstream change from your own edit. From your repository:
+
+```sh
+python3 .claude/scripts/pipeline-sync.py --check     # exit 1 when the pipeline's ref has changes for you
+python3 .claude/scripts/pipeline-sync.py --update    # take them; then land .claude/ through a PR
+```
+
+It clones the pipeline (the manifest's repo and ref, `--repo` / `--ref` to change
+them, or `--from <checkout>`), replaces the files you have not edited, deletes the
+ones upstream removed, and keeps your edits: a file changed on both sides is listed
+as a `conflict` (`--update --force` takes upstream's). It never edits `CLAUDE.md`
+and never commits, but it compares `CLAUDE.md`'s `## How work happens here` (which
+`/seed` marks with a comment) with the pipeline's current template,
+`.claude/scripts/claude-md-base.md`, and prints the diff for you to apply by hand;
+`--check --check-claude-md` also fails on it. To have it come to you, copy
+[`examples/pipeline-update.yml`](examples/pipeline-update.yml) to
+`.github/workflows/`: once a week it opens a PR with the update and the sync report,
+on a branch per upstream commit, and closes the older update PRs it supersedes.
+A pipeline copied with `cp -r` has no manifest yet; the first run adopts it: a file
+that matches some older upstream version is treated as unedited (`outdated`, listed
+under `adopted`), and one that matches none is `differs`: it may hold your edits, so
+it is kept and reported like a conflict (`--update --force` takes upstream's).
+
+**Pinning a release.** `PIPELINE_REF` (in the Action) and `--ref` take a branch or
+a tag; the manifest records it, so later runs and `--check` compare against the
+same ref until you change it. `main` tracks the tip. To pin, set
+`PIPELINE_REF: v1.4.0` (or run `--update --ref v1.4.0` once), and bump the tag to
+take the next release. For the pipeline's maintainer, the recommendation is to cut
+an annotated semver tag on `main` (`git tag -a v1.4.0 -m '...'`, then
+`git push origin v1.4.0`) once CI is green, with release notes that call out
+renamed or removed commands and changes to `claude-md-base.md`, since those need a
+person: a renamed command changes what workflows call, and the `CLAUDE.md` section
+is applied by hand. Tags are never moved: a fix is a new tag.
 
 For a brief or a change too big for one PR, run `brief-to-proposals` with
 `{ brief }` or `{ concern }` and `dir` (no `pipeline`: the repo holds it now). It
@@ -99,7 +156,13 @@ build each proposal with `proposal-build-chain`.
              /plan       /impl            /review-changes    /polish            CI, AI review,
              grounded    tests first      + fixer until no   gates green,       conflicts, comments
              plan                         bug or concern     /create-pr         until it settles
+
+ Ship: one chain of a proposal's built lanes, in merge order  (ship-chain runs this)
+ lane 1 ──> ship-only PR + monitor ──> merged (human) ──> lane 2, predecessor_prs filled ──> ... ──> last lane merged
 ```
+
+The full process, every hand-off between you and the workflows, and the gaps
+in it are drawn in [docs/PROCESS.md](docs/PROCESS.md).
 
 ## How it works
 
@@ -166,6 +229,7 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
   workflows/
     brief-to-proposals.js     a brief to reviewed architecture, roadmap and proposals; no code
     proposal-build-chain.js   a proposal's lanes, derived from its steps, built as stacked chains
+    ship-chain.js             one built chain shipped in merge order, each PR once the one below merged
     plan-to-merged-pr.js      the engine: a concern, a lane or the bootstrap branch to a watched PR
     bug-fix-backlog.js        triage + adversarial verification + ship, per bug lane
   commands/
@@ -173,13 +237,19 @@ Related: [maestro-agent](https://github.com/thomas-sodon/maestro-agent),
     plan.md  impl.md  review-changes.md  polish.md  create-pr.md
     process-comments.md  merge-main.md  quality-gates.md  bug-fix.md
   scripts/
-    proposal-lint.py          design-doc lint, lane derivation and step ticking
+    proposal-lint.py          design-doc lint, lane derivation, step ticking, CLAUDE.md drift check
     gate-slot.sh              optional host-wide semaphore for gate runs
+    pipeline-sync.py          install / update the pipeline's files in a repo (3-way, via a manifest)
+    claude-md-base.md         the CLAUDE.md "How work happens here" template /seed writes and sync compares
 docs/
+  PROCESS.md                  the end-to-end process diagram, and the known gaps in the flow
   PROPOSALS.md                the design-doc format: architecture, roadmap, proposals
   REFERENCE.md                args, statuses, configuration, state outside the repo
 examples/
   CLAUDE.pipeline-config.md   the config section to paste into your CLAUDE.md
+  pipeline-update.yml         a scheduled GitHub Action that opens a PR updating the pipeline
+  docs-lint-job.yml           the CI job /bootstrap writes to lint the design docs, for an existing repo
+  answerable-ai-review.yml    an AI review GitHub Action for the PR monitor (ai_review_check: 'Review')
 ci/                           checks: workflow syntax; every skill and flag the workflows call
                               exists; the workflows stop on blocking questions and route the
                               answers; the lint's tests and fixtures; every example design doc
@@ -246,6 +316,14 @@ On an existing one, land the seeded pipeline files, the `CLAUDE.md` changes and 
 accepted docs through an ordinary PR before building: lanes are cut from `main` and
 read the proposal and the commands there.
 
+Every proposal is grounded in the tree as it is when the run writes it, and each
+milestone that merges changes that tree. Accept them one milestone at a time:
+before accepting each proposal after the first, once the milestones before it have
+merged, re-run `/review-proposal <doc>`, which reports a `Files:` path or interface
+that no longer matches the tree as a `concern`, and revise on its findings. For a
+long roadmap, pass `max_milestones: 1` and propose each later milestone with
+`/propose --milestone=N` when it comes up.
+
 ### `proposal-build-chain`
 
 Builds an accepted proposal, one PR per lane; each lane runs `plan-to-merged-pr` in
@@ -261,11 +339,38 @@ not rebuilt. The rules are in [docs/PROPOSALS.md](docs/PROPOSALS.md#lanes-and-ch
 To give the lanes by hand, pass `{ lanes }` ([REFERENCE.md](docs/REFERENCE.md#workflow-args)):
 they build in the order given, stopping at the first lane that does not push.
 
-Shipping stays in your hands, in merge order. A stacked lane's PR must not exist,
-not even as a draft, until every PR below it has merged, or a merge bot could merge
-the unmerged base commits it carries. Then run `plan-to-merged-pr` with
-`ship_only: true` and `predecessor_prs`; it opens nothing until each reads `MERGED`.
-A derive-mode result's `ship_plan` lists those args per chain, in merge order.
+Shipping goes in merge order. A stacked lane's PR must not exist, not even as a
+draft, until every PR below it has merged, or a merge bot could merge the unmerged
+base commits it carries. Then run `plan-to-merged-pr` with `ship_only: true` and
+`predecessor_prs`; it opens nothing until each reads `MERGED`. A derive-mode
+result's `ship_plan` lists those args per chain, in merge order, and each chain's
+`ship_chain_args` for `ship-chain`, below, which does the sequencing for you.
+
+### `ship-chain`
+
+Ships one chain of a `ship_plan`: pass the chain's `ship_chain_args` (`{ chain }`).
+Lane by lane, in merge order:
+
+1. **Lookup**: any PR already opened for the lane's branch. A merged one is
+   skipped, a closed one stops the chain; a placeholder title is written from the
+   lane's proposal steps (with `title_prefix` in front).
+2. **Ship**: `plan-to-merged-pr` in ship-only mode, with `predecessor_prs` filled
+   in with the PRs above it as merged: merge check, PR, monitor. A PR an earlier
+   run already opened is monitored (monitor-only) instead of opened again; an open
+   draft is readied instead (ship-only with `existing_pr`), as nobody can merge one.
+3. **Wait**: an agent polls the PR until it reads `MERGED`, at most
+   `max_wait_rounds` rounds of about 30 minutes (default 48). It never merges,
+   approves or enables auto-merge: you merge. Then the next lane ships.
+4. **Close-out**: once the last PR has merged, the result's `closeout` says whether
+   the proposal is now complete on `main` and lists the close-out edits
+   (`Status: done`, the milestone tick) for you to make in a docs PR.
+
+Anything other than `MERGED` stops the chain and names the lane and why: the PR was
+closed, it is still open at the wait cap (`not_merged`, with what holds it), the
+lane did not ship (`lane_failed`), or a stage asked a question only you can answer
+(`needs_input`). Re-run with the same args once you have acted: merged lanes are
+skipped, an open PR is picked up where it is. Independent chains can ship at the
+same time, one `ship-chain` run each.
 
 ### `plan-to-merged-pr`
 
@@ -289,14 +394,27 @@ One concern from a sentence to a PR, then babysit it:
    the PR merges or closes, after two quiet rounds with green CI (on a repo with no
    CI, on the local gates), when CI is red for a reason outside the PR and nothing
    else is actionable, or after `max_monitor_rounds` (default 10). Merging is left
-   to a human.
+   to a human. A PR handed off still open comes back with `resume_monitor`, the
+   monitor-only args to re-run (or [schedule](docs/REFERENCE.md#watching-a-handed-off-pr))
+   when it may have moved; given `proposal`, a merged PR's result says in
+   `closeout` whether the proposal is now complete on `main` and which close-out
+   edits a person should make.
 
 Modes (full, build-only, ship-only, monitor-only) are listed in
 [docs/REFERENCE.md](docs/REFERENCE.md#plan-to-merged-pr-modes).
 
 ### `bug-fix-backlog`
 
-One lane per issue, or per group of issues that share a code site. Each lane runs:
+One lane per issue, or per group of issues that share a code site. Give the lanes
+(`{ lanes: [{ key, issues }], root }`), or omit them for the **Intake**: one
+read-only agent lists the open issues labelled `bug` (`labels` to change that),
+locates the code each points at, groups issues that share a code site into one
+lane, and lists the red CI runs on `main`'s latest commits (report only: it never
+files, labels, comments on or closes an issue). The run then stops with
+`needs_input`, one question whose recommended answer is the proposed lanes; re-run
+with the lanes you confirmed or edited, as JSON, in
+`answers: [{ id: 'intake.q1', answer }]` to work them
+([details](docs/REFERENCE.md#workflow-args)). Each lane runs:
 
 1. **Triage**: `/bug-fix <n> --dry-run` in the lane's own worktree, then one
    combined fix plan for the lane.
@@ -347,8 +465,9 @@ merge it, protect `main` and tick the Bootstrap gate.
 Step 2 (post and list incidents) depends on step 1 (store incidents), so they form
 the chain `s1 → s2`; step 3, the public page, shares no file with them, so it is its
 own chain and builds at the same time; step 6 (email subscribers) waits on the `ops`
-gate of step 5, which nobody has ticked yet, so it is reported blocked. Ship `s1`
-and `s3` with their `ship_plan` args; after `s1` merges, ship `s2` with
+gate of step 5, which nobody has ticked yet, so it is reported blocked. Run
+`ship-chain` once per chain with its `ship_chain_args`: chain `s3` opens its one PR;
+chain `s1` opens `s1`'s PR, waits until you merge it, then ships `s2` with
 `predecessor_prs: [<s1's PR>]`.
 
 **One concern**, on an existing TypeScript service whose Pipeline config has

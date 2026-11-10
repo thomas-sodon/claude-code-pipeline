@@ -1,0 +1,141 @@
+# Keep the pipeline's .claude files current: copy this file to .github/workflows/pipeline-update.yml
+# in a repository the pipeline is installed in (by /seed or pipeline-sync.py).
+#
+# Once a week (or on demand) it clones the pipeline at PIPELINE_REF, runs its pipeline-sync.py --update
+# against this repository and, when anything changed, opens a pull request on a branch named after the
+# upstream commit. It never pushes to the default branch and never merges: you review and merge the PR,
+# like every other change. Files you edited in .claude/ are kept and listed as conflicts in the PR body,
+# and so is any difference between CLAUDE.md's "## How work happens here" and the pipeline's template
+# (sync never edits CLAUDE.md: apply it by hand).
+# When files are kept back but nothing else changed and no PR was ever opened for that upstream commit (the
+# manifest was committed at it by /bootstrap or /create-pr), the report goes in an issue instead, once.
+#
+# Stale PRs: there is one branch, and one PR, per upstream commit (pipeline/update-<sha>). When upstream
+# moves on before you merge, the next run opens a PR for the newer commit and closes the older open
+# pipeline/update-* PRs with a comment pointing to it; their branches are left in place. A branch that
+# had a PR (open, merged, or one you closed, whether or not its branch was deleted) is left alone until
+# upstream changes; a pushed branch without a PR (an earlier gh pr create failed) gets its PR opened.
+#
+# Setup:
+# - Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests".
+# - Optional but recommended: a fine-grained token (contents + pull requests: read/write on this repo)
+#   saved as the secret PIPELINE_UPDATE_TOKEN. A PR opened with the default GITHUB_TOKEN does not start
+#   your CI (GitHub's rule against recursive runs): close and reopen it, or push to it, to run the checks.
+# - PIPELINE_REF: a branch (`main` tracks the tip) or a release tag (e.g. v1.4.0) to pin a version;
+#   bump the tag to take the next release. The manifest records it, so a local --check compares with it.
+name: pipeline-update
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write   # kept-back files with nothing to commit are reported in an issue
+
+concurrency:
+  group: pipeline-update
+  cancel-in-progress: false
+
+env:
+  PIPELINE_REPO: https://github.com/thomas-sodon/claude-code-pipeline
+  PIPELINE_REF: main
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PIPELINE_UPDATE_TOKEN || github.token }}
+      - name: Fetch the pipeline
+        # Full history without file contents: lets pipeline-sync adopt a legacy cp -r install.
+        run: git clone --quiet --filter=blob:none --branch "$PIPELINE_REF" "$PIPELINE_REPO" "$RUNNER_TEMP/ccp"
+      - name: Sync the pipeline files
+        id: sync
+        run: |
+          set -euo pipefail
+          sync="$RUNNER_TEMP/ccp/.claude/scripts/pipeline-sync.py"
+          python3 "$sync" --target . --from "$RUNNER_TEMP/ccp" --ref "$PIPELINE_REF" --update | tee "$RUNNER_TEMP/report.txt"
+          echo "sha=$(git -C "$RUNNER_TEMP/ccp" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          # The manifest records the upstream commit on every run, so an upstream commit that changes no pipeline
+          # file still rewrites it: count it only when it is new here (a first adoption), never on its own.
+          # Files kept back because they were edited here (a conflict, a differing file with no install record,
+          # or one edited here and removed upstream) change
+          # nothing on disk, so ask a read-only --check for them: they still need a PR that lists them.
+          check=$(python3 "$sync" --target . --from "$RUNNER_TEMP/ccp" --ref "$PIPELINE_REF" --check --json || true)
+          kept=$(jq '(.conflict // []) + (.differs // []) + (.obsolete_edited // []) | length' <<<"$check")
+          if [ -n "$(git status --porcelain -- .claude ':(exclude).claude/pipeline-manifest.json')" ] ||
+             ! git ls-files --error-unmatch .claude/pipeline-manifest.json >/dev/null 2>&1 ||
+             [ "${kept:-0}" -gt 0 ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open a pull request
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PIPELINE_UPDATE_TOKEN || github.token }}
+          SHA: ${{ steps.sync.outputs.sha }}
+        run: |
+          set -euo pipefail
+          branch="pipeline/update-$SHA"
+          # Any PR ever opened for this upstream commit (open, merged, or closed on purpose, its branch deleted
+          # or not) means it was handled: never open a second one.
+          if [ "$(gh pr list --head "$branch" --state all --json number --jq length)" != "0" ]; then
+            echo "$branch already has a PR (open, merged, or closed on purpose)"; exit 0
+          fi
+          pushed=
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            # Pushed by an earlier run whose gh pr create failed (e.g. Actions not yet allowed to create PRs).
+            echo "$branch was pushed but has no PR: opening it"
+            pushed=1
+          fi
+          if [ -z "$pushed" ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898+github-actions[bot]@users.noreply.github.com'
+            git switch -c "$branch"
+            git add -- .claude
+            # Nothing to commit, yet files are kept back (edited here: conflict, differs, or edited and removed
+            # upstream), and no PR was ever opened for $SHA (that case ended above). /bootstrap or /create-pr
+            # committed this manifest at $SHA. Report it in an issue, once per upstream commit.
+            if git diff --cached --quiet; then
+              title="Pipeline $SHA: files kept back from the update"
+              if [ "$(gh issue list --state all --search "in:title \"$title\"" --json title --jq "[.[] | select(.title == \"$title\")] | length")" = "0" ]; then
+                { echo "Nothing to commit for [\`$SHA\`]($PIPELINE_REPO/commit/$SHA), but these files were kept back because they"
+                  echo "were edited in this repository. Merge them by hand, or run \`python3 .claude/scripts/pipeline-sync.py --update --force\`."
+                  echo; echo '```'; cat "$RUNNER_TEMP/report.txt"; echo '```'; } > "$RUNNER_TEMP/issue.md"
+                gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md"
+              else echo "already reported in an issue: $title"; fi
+              exit 0
+            fi
+            git commit -q -m "Update the pipeline to $SHA" -m "From $PIPELINE_REPO at $PIPELINE_REF, by pipeline-sync.py --update."
+            git push -q -u origin "$branch"
+          fi
+          {
+            echo "Updates the pipeline's \`.claude\` files to [\`$SHA\`]($PIPELINE_REPO/commit/$SHA) ($PIPELINE_REF)."
+            echo
+            echo "Files edited in this repository are kept; any listed as a **conflict** changed upstream too, and any"
+            echo "listed as **differs** has no install record and matches no version upstream ever shipped:"
+            echo "merge them by hand, or run \`python3 .claude/scripts/pipeline-sync.py --update --force\` to take upstream's."
+            echo "Sync never edits \`CLAUDE.md\`: if the report shows its \`## How work happens here\` differing from the"
+            echo "pipeline's template, apply the change by hand (in this PR or another)."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          # A schedule event's payload has no repository field, so ask the API for the default branch.
+          base=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)
+          url=$(gh pr create --base "$base" --head "$branch" \
+            --title "Update the pipeline to $SHA" --body-file "$RUNNER_TEMP/body.md")
+          echo "opened $url"
+          # Close the older update PRs this one supersedes (branches named after earlier upstream commits).
+          # Only the update PRs this workflow opened: branches in this repository, aimed at the same base.
+          gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository,baseRefName \
+            --jq ".[] | select(.isCrossRepository | not) | select(.baseRefName == \"$base\")
+                  | select(.headRefName | startswith(\"pipeline/update-\")) | select(.headRefName != \"$branch\") | .number" |
+          while read -r old; do
+            gh pr close "$old" --comment "Superseded by $url, which updates the pipeline to a newer upstream commit."
+          done

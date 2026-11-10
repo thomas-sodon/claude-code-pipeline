@@ -1,0 +1,73 @@
+# AI review for the pipeline's monitor: copy this file to .github/workflows/answerable-ai-review.yml.
+#
+# On every push to a pull request it reviews the diff with Claude and posts its findings as review
+# comments (check `Review`), then fails a second check, `Reply coverage`, while any finding has no
+# reply. plan-to-merged-pr's monitor waits for `Review` before counting comments, and its
+# /process-comments step fixes or answers each finding; a reply re-runs only `Reply coverage`.
+#
+# Setup:
+# - Add the secret CLAUDE_CODE_OAUTH_TOKEN by name: `gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for
+#   the value (from `claude setup-token`). Never paste the value into a chat, a file or a commit.
+# - Pass ai_review_check: 'Review' to plan-to-merged-pr, proposal-build-chain, ship-chain and bug-fix-backlog,
+#   so the monitor waits for this check (proposal-build-chain copies it into each lane's ship plan).
+# - To make unanswered findings block merge, require the status check `Reply coverage` on main
+#   (Settings -> Rules, or branch protection), next to your CI check. It is offered after its first run.
+# - Fork PRs get no secrets, so `Review` is skipped on them.
+name: Answerable AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Re-check reply coverage when a finding is answered, so the gate turns green
+  # without another push. Only the replies job runs on this event.
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+
+jobs:
+  # Fail while findings are unanswered (no Claude call, no credential). Runs
+  # after the review so this push's own findings count: comments posted with
+  # GITHUB_TOKEN start no workflow, so nothing else would re-run the gate.
+  replies:
+    name: Reply coverage
+    needs: review
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    concurrency:
+      group: answerable-ai-replies-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: thomas-sodon/answerable-ai-review@ab20bdb0dbf2aa5b132ff1f4195e509331587645 # v0.1.0
+        with:
+          mode: replies
+
+  # Review the diff with Claude and post findings. The gate does not gate it,
+  # so pushes that address findings still get reviewed.
+  # Skipped on fork PRs: they get no secrets and a read-only token.
+  review:
+    name: Review
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    # A newer push supersedes an in-flight review, so stale findings are not posted.
+    concurrency:
+      group: answerable-ai-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: thomas-sodon/answerable-ai-review@ab20bdb0dbf2aa5b132ff1f4195e509331587645 # v0.1.0
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
