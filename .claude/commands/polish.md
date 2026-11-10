@@ -64,7 +64,7 @@ Any other tokens are free-form context (e.g. a findings list pasted from `/revie
     - Concerns surfaced but not fixed (with reason).
     - Ledger findings: each marked fixed, or not fixed with the reason (a *Safety* hard stop or a reverted fix).
     - Fresh Suggestions/Nits: fixed/skipped (with `--fix-suggestions`) or not fixed this run.
-    - Fresh findings appended to the ledger — what the next `/polish` will pick up.
+    - Fresh findings appended to the ledger — what the next `/polish` will pick up; whether the ledger was restored from the state branch, and whether its copy reached it (or why not).
     - Gate results: what ran, what passed, how many fix iterations.
     - Non-obvious decisions or trade-offs.
 
@@ -72,11 +72,11 @@ Any other tokens are free-form context (e.g. a findings list pasted from `/revie
 
 ## Review-findings ledger
 
-`/review-changes` persists its findings to a per-branch ledger at `~/.claude/reviews/<branch-slug>.json` (schema in `.claude/commands/review-changes.md`). This command reads it, marks what it fixes as `fixed`, and appends fresh unresolved findings in the same schema, so unresolved work survives across sessions.
+`/review-changes` persists its findings to a per-branch ledger at `~/.claude/reviews/<branch-slug>.json` (schema in `.claude/commands/review-changes.md`), with a copy on the repository's state branch (origin's `pipeline/state`) at `reviews/<state-slug>.json`, so the ledger outlives the container. `<state-slug>` is `python3 .claude/scripts/pipeline-state.py slug <branch>` (the branch name with every character outside `[A-Za-z0-9._-]` replaced by `-`; it can differ from `<branch-slug>`). This command reads it, marks what it fixes as `fixed`, and appends fresh unresolved findings in the same schema, so unresolved work survives across sessions.
 
 ### Recall (start of run)
 
-`<branch-slug>` is the current branch lowercased, non-alphanumeric runs replaced with `-`, repeats collapsed, leading/trailing `-` trimmed. On a detached HEAD, skip the ledger entirely. Treat the file as **absent** when it is missing, malformed JSON (warn; never overwrite blindly), or its `repo` is not this working directory or its `branch` is not the current branch — never apply fixes for another tree's findings. Union the ledger's `new`/`open` findings with any passed in `$ARGUMENTS`, de-duplicated by `file` + `title`; all of them are fix targets.
+`<branch-slug>` is the current branch lowercased, non-alphanumeric runs replaced with `-`, repeats collapsed, leading/trailing `-` trimmed. On a detached HEAD, skip the ledger entirely. When `~/.claude/reviews/<branch-slug>.json` is missing, first restore it from the state branch: `python3 .claude/scripts/pipeline-state.py get reviews/<state-slug>.json --to ~/.claude/reviews/<branch-slug>.json` (exit 3: none was saved; exit 2: the state branch is unreachable — say so and go on without it). A restored ledger is this repository's, written from another checkout's path, so when its `branch` is the current branch, set its `repo` to this working directory right away; one whose `branch` differs is deleted again. Treat the file as **absent** when it is missing, malformed JSON (warn; never overwrite blindly), or its `repo` is not this working directory or its `branch` is not the current branch — never apply fixes for another tree's findings. Union the ledger's `new`/`open` findings with any passed in `$ARGUMENTS`, de-duplicated by `file` + `title`; all of them are fix targets.
 
 The ledger's `plan_context` (and `plan_path`, if it still exists) carries the design intent the review captured. Keep every fix consistent with it: it can narrow a ledger fix or justify declining a *fresh* finding, but never skips a ledger finding.
 
@@ -87,6 +87,7 @@ Timestamps are ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
 1. **Mark fixed.** Each recalled `new`/`open` finding actually resolved in the working tree → `status: fixed`, `resolved_at: <now>`. Leave unresolved, blocked, or reverted ones unchanged.
 2. **Append fresh unresolved findings.** Each fresh finding not fixed this run (deferred Bug, open Concern, unfixed Suggestion/Nit) → new entry with `id` the next free `r<N>`, `severity`, `file`, best-effort `line`, `title`, one-to-two-line `detail`, `status: new`, `first_seen: <now>`, `resolved_at: null`. Skip findings already tracked (same `file` + `title`) and ones the user or `plan_context` declined.
 3. **Write back** atomically and best-effort: set `updated_at`, create `~/.claude/reviews/` if needed, write `<branch-slug>.json.tmp.<pid>`, then rename. On failure, warn and continue. If no ledger file existed and there is something to append, create one with `repo` (this working directory), `branch`, `base: null`, `plan_context: null`, `plan_path: null`, and the new findings. If an existing file was treated as absent because it was malformed or foreign, do **not** overwrite it — warn and skip the write.
+4. **Copy to the state branch** once a write succeeded, best effort: `python3 .claude/scripts/pipeline-state.py save ~/.claude/reviews/<branch-slug>.json --as reviews/<state-slug>.json -m "review ledger: <branch>"`. Exit 2 (no origin, offline, a push still rejected after its retries) → warn and continue; the local ledger stands.
 
 ## What to skip
 
@@ -96,9 +97,9 @@ Timestamps are ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
 
 ## Safety
 
-- Do not commit, push, stage, unstage, or discard changes. Never use `git stash` (other worktrees may share the stash).
+- Do not commit, push (beyond the ledger's state-branch save), stage, unstage, or discard changes. Never use `git stash` (other worktrees may share the stash).
 - No destructive git operations (`reset --hard`, `checkout --`, `clean -f`, branch deletes).
-- The only file written outside the working tree is the review-findings ledger under `~/.claude/reviews/`; a malformed or foreign ledger is never overwritten.
+- The only file written outside the working tree is the review-findings ledger under `~/.claude/reviews/`, with its copy on the state branch (a commit `pipeline-state.py` pushes to origin's `pipeline/state` without touching the checkout); a malformed or foreign ledger is never overwritten.
 - Never bypass a gate failure with a workaround — fix the root cause.
 - If a *fresh* fix would change observable behavior the user may not intend, surface it before applying; ledger findings are still fixed, with the decision recorded in the report.
 - Gitignored local env files (`.env`, `.env.local`, …) are expected: never read, edit, stage, or delete them, and do not stop because one exists. Stop and tell the user only when a secret-looking file (`.env`, credentials, tokens, keys) is tracked, staged, or would be committed.

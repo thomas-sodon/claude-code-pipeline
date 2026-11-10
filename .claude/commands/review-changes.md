@@ -86,7 +86,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 10. **Assess the "why".** Did the change solve the stated problem? Did planned items fail to land? Is there a simpler approach? Plan/diff disagreement is a finding.
 
-11. **Persist the ledger** (below) — on every run, clean or not. This is the command's only write.
+11. **Persist the ledger** (below) — on every run, clean or not. It and its copy on the state branch are the command's only writes.
 
 12. **Hand off — do not fix.** Never invoke `/polish` from here. Recommend it in a fresh session when there are findings; it recalls the ledger and fixes every recorded finding. If the scope is `committed` only and the working tree is clean, `/polish` cannot apply the findings — ask the user how to proceed (revert, follow-up branch, fix-forward).
 
@@ -100,6 +100,8 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 ## Review-findings ledger
 
 A durable per-branch record at `~/.claude/reviews/<branch-slug>.json` (outside the repo) so a later `/review-changes` or `/polish` can recall what was raised and what has been fixed. `<branch-slug>`: branch name lowercased, non-alphanumeric runs → `-`, repeats collapsed, leading/trailing `-` trimmed (e.g. `feat/42-foo` → `feat-42-foo`). On a detached HEAD, skip the ledger and say so.
+
+A copy lives on the repository's state branch (origin's `pipeline/state`, written by `.claude/scripts/pipeline-state.py` without a checkout) at `reviews/<state-slug>.json`, so the ledger outlives the container that wrote it. `<state-slug>` is `python3 .claude/scripts/pipeline-state.py slug <branch>`: the branch name with every character outside `[A-Za-z0-9._-]` replaced by `-`, the state branch's spelling, which can differ from `<branch-slug>`.
 
     {
       "repo": "<absolute working directory>",
@@ -123,13 +125,14 @@ A durable per-branch record at `~/.claude/reviews/<branch-slug>.json` (outside t
       ]
     }
 
-**Recall.** Treat the file as absent when missing, malformed (warn; never overwrite blindly), or when its `repo`/`branch` do not match this working directory and branch.
+**Recall.** When `~/.claude/reviews/<branch-slug>.json` is missing, first restore it from the state branch: `python3 .claude/scripts/pipeline-state.py get reviews/<state-slug>.json --to ~/.claude/reviews/<branch-slug>.json`. Exit 3 → none was saved; exit 2 → the state branch is unreachable: say so and go on without it. A restored ledger is this repository's, written from another checkout (another container's path), so when its `branch` matches, set its `repo` to this working directory right away; one whose `branch` differs is deleted again. Then treat the file as absent when missing, malformed (warn; never overwrite blindly), or when its `repo`/`branch` do not match this working directory and branch.
 
 **Persist & reconcile** (after the review is written; timestamps `YYYY-MM-DDTHH:MM:SSZ` UTC):
 1. Match recalled findings to this run's by `file` + semantic `title`, never by line.
 2. Recalled `new`/`open` still present → `open`, keep `first_seen`, refresh `line`/`detail`. Recalled `new`/`open` absent → `fixed`, `resolved_at` now (report as *fixed since last review*). Recalled `fixed` that reappears → `open`, clear `resolved_at`, call it a **regression**. Unmatched new finding → append with next `r<N>`, `status: new`. Recalled `fixed` still absent → leave as history.
 3. Set `plan_context`/`plan_path` from step 1; if this run recovered none, keep the prior values rather than clearing them.
 4. Set `repo`, `branch`, `base`, `updated_at`; create `~/.claude/reviews/` if needed; write `<branch-slug>.json.tmp.<pid>` then rename. On failure, warn and continue — the ledger is an aid, not a correctness requirement. Never overwrite a malformed or foreign file.
+5. Once the write succeeded, save a copy to the state branch, best effort: `python3 .claude/scripts/pipeline-state.py save ~/.claude/reviews/<branch-slug>.json --as reviews/<state-slug>.json -m "review ledger: <branch>"`. Exit 2 (no origin, offline, a push still rejected after its retries) → warn in the Ledger line and go on; the local ledger stands.
 
 ## What to skip
 
@@ -147,7 +150,7 @@ Plain text in the response:
 3. A 2–3 sentence summary and overall assessment.
 4. Findings grouped **Bugs**, **Concerns**, **Suggestions**, **Nits** — each with `path:line`, the quoted code (secrets and personal data redacted), what is wrong, why it matters, and a concrete fix or question.
 5. **Fixture and data files** (when Step 3 listed any): `path — size — type — provenance note found / missing`.
-6. **Ledger** line (unless skipped): new, carried over, fixed since last review, regressions.
+6. **Ledger** line (unless skipped): new, carried over, fixed since last review, regressions; whether it was restored from the state branch, and whether its copy reached the state branch (or why not).
 
 If the change is good, say so briefly — don't manufacture issues. End with exactly one of:
 - `Run /polish in a fresh session to apply fixes — it will recall the ledger and fix every recorded finding.`
@@ -156,8 +159,8 @@ If the change is good, say so briefly — don't manufacture issues. End with exa
 
 ## Safety
 
-- Read-only: never modify the repo working tree. The sole write is the ledger under `~/.claude/reviews/`.
+- Read-only: never modify the repo working tree. The sole writes are the ledger under `~/.claude/reviews/` and its copy on the state branch (a commit `pipeline-state.py` pushes to origin's `pipeline/state` without touching the checkout).
 - Never invoke `/polish` from this command.
 - Read-only against `$PLANS_DIR`, `~/.claude/last-plan-by-folder.json`, design docs, and session transcripts.
 - Never quote credentials or personal data (names, addresses, phone or account numbers) into the review or the ledger; cite the file and line and redact the value.
-- Do not commit, push, stage, unstage, stash, or discard changes; no destructive git operations (`reset --hard`, `checkout --`, `clean -f`, branch deletes).
+- Do not commit, push (beyond the ledger's state-branch save), stage, unstage, stash, or discard changes; no destructive git operations (`reset --hard`, `checkout --`, `clean -f`, branch deletes).
