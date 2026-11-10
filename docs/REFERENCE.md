@@ -1051,10 +1051,15 @@ new branches blocks it too.
 | `design/panel-synthesis.md` | `brief-to-proposals` | the judged architecture synthesis |
 | `runs/<YYYYMMDDTHHMMSSZ>-<workflow>.json` | `/handoff` | a workflow's args too large for `STATE.md`, linked from it |
 
-`<branch-slug>` is the branch name with every character outside `[A-Za-z0-9._-]`
-replaced by `-` (`python3 .claude/scripts/pipeline-state.py slug <branch>`);
-`<doc-slug>` is the doc's repo-relative path without `.md`, each `/` replaced by
-`-` (`docs-design-roadmap`).
+`<branch-slug>` is what `python3 .claude/scripts/pipeline-state.py slug <branch>`
+prints, and `<doc-slug>` what it prints for the doc's repo-relative path without
+`.md`. Every character outside `[A-Za-z0-9._-]` becomes `-`; when any did, `-` and
+8 hex digits of the FNV-1a 32-bit hash of the name's UTF-8 bytes follow, so names
+that read the same once replaced still get different files: `feat/x` →
+`feat-x-d03c3cb6`, `feat:x` → `feat-x-ce5c8d3b`, `feat-x` → `feat-x`, and
+`docs/design/roadmap` → `docs-design-roadmap-0c66c4d2`. The workflows compute it
+with a copy of the script's function (`planRefFor`, checked against the script in
+CI); the commands run the script.
 
 ```
 python3 .claude/scripts/pipeline-state.py save SRC [--as PATH] [-m MSG] [--no-push]
@@ -1097,7 +1102,8 @@ Mirrored to the state branch, and restored from it when the local copy is missin
   in `~/src/acme` → `proposal-acme-docs-design-roadmap.json`), so two projects'
   `roadmap.md` never share a ledger; one belonging to another checkout or doc is
   never overwritten. Its copy is `reviews/proposal-<doc-slug>.json`
-  (`docs-design-roadmap`), restored with `repo` reset to the new working directory.
+  (`docs-design-roadmap-0c66c4d2`), restored with `repo` reset to the new working
+  directory.
 - `~/.claude/plans/` (`PLANS_DIR`): the plans `/plan` and `/bug-fix` write. A lane's
   plan is saved as `plans/<branch-slug>.md` at its merge check and restored into
   `PLANS_DIR` by a ship-only or monitor-only run given `plan_ref`; other plans stay

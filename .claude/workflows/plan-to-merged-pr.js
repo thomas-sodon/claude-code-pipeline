@@ -86,9 +86,27 @@ if (!['', 'gh', 'connector'].includes(GH_ACCESS)) throw new Error(`github_access
 // The plan this branch was built from: this run's, or args.plan_text (ship-only / monitor-only). Called once planning is done.
 const planForPr = () => (plan && plan.plan && plan.plan !== 'given') ? plan.plan : (A.plan_text || '')
 const clip = t => t.length > 8000 ? t.slice(0, 8000) + '\n[plan truncated]' : t
-// A lane's plan on the pipeline state branch (.claude/scripts/pipeline-state.py): plans/<branch-slug>.md, the slug being the
-// branch name with every character outside [A-Za-z0-9._-] replaced by '-'.
-const planRefFor = b => `plans/${String(b).replace(/[^A-Za-z0-9._-]/g, '-')}.md`
+// A name as the pipeline state branch spells it in paths: `pipeline-state.py slug`, copied here and in proposal-build-chain.js
+// (ci/test-workflow-shipping.mjs checks both copies against the script). Every character outside [A-Za-z0-9._-] becomes '-';
+// when any did, '-' and 8 hex digits of FNV-1a 32 over the name's UTF-8 bytes follow, so feat/x and feat-x never share a file.
+const stateSlug = name => {
+  const s = String(name)
+  const out = s.replace(/[^A-Za-z0-9._-]/gu, '-')
+  if (out === s) return out
+  let h = 0x811c9dc5
+  const add = b => { h = Math.imul(h ^ b, 0x01000193) >>> 0 }
+  for (const ch of s) {
+    let c = ch.codePointAt(0)
+    if (c >= 0xd800 && c <= 0xdfff) c = 0xfffd   // a lone surrogate, written as U+FFFD as a UTF-8 encoder does
+    if (c < 0x80) add(c)
+    else if (c < 0x800) { add(0xc0 | (c >> 6)); add(0x80 | (c & 63)) }
+    else if (c < 0x10000) { add(0xe0 | (c >> 12)); add(0x80 | ((c >> 6) & 63)); add(0x80 | (c & 63)) }
+    else { add(0xf0 | (c >> 18)); add(0x80 | ((c >> 12) & 63)); add(0x80 | ((c >> 6) & 63)); add(0x80 | (c & 63)) }
+  }
+  return `${out}-${h.toString(16).padStart(8, '0')}`
+}
+// A lane's plan on the pipeline state branch (.claude/scripts/pipeline-state.py): plans/<branch-slug>.md.
+const planRefFor = b => `plans/${stateSlug(b)}.md`
 // Every stage after planning keeps its changes consistent with the design doc, not only the review.
 const PROPOSAL_CTX = A.proposal
   ? `This work implements ${A.proposal}${STEPS.length ? ` steps ${STEPS.join(', ')}` : ''}: keep every change consistent with that design doc's Decisions, Security and privacy, and Rollout sections. `

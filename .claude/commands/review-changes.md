@@ -101,7 +101,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 A durable per-branch record at `~/.claude/reviews/<branch-slug>.json` (outside the repo) so a later `/review-changes` or `/polish` can recall what was raised and what has been fixed. `<branch-slug>`: branch name lowercased, non-alphanumeric runs → `-`, repeats collapsed, leading/trailing `-` trimmed (e.g. `feat/42-foo` → `feat-42-foo`). On a detached HEAD, skip the ledger and say so.
 
-A copy lives on the repository's state branch (origin's `pipeline/state`, written by `.claude/scripts/pipeline-state.py` without a checkout) at `reviews/<state-slug>.json`, so the ledger outlives the container that wrote it. `<state-slug>` is `python3 .claude/scripts/pipeline-state.py slug <branch>`: the branch name with every character outside `[A-Za-z0-9._-]` replaced by `-`, the state branch's spelling, which can differ from `<branch-slug>`.
+A copy lives on the repository's state branch (origin's `pipeline/state`, written by `.claude/scripts/pipeline-state.py` without a checkout) at `reviews/<state-slug>.json`, so the ledger outlives the container that wrote it. `<state-slug>` is what `python3 .claude/scripts/pipeline-state.py slug <branch>` prints: the state branch's spelling, which keeps apart branches that read the same once replaced (`feat/42-foo` → `feat-42-foo-ebcc2a79`, while `feat-42-foo` stays `feat-42-foo`) and can differ from `<branch-slug>`. Run the script; never spell it by hand.
 
     {
       "repo": "<absolute working directory>",

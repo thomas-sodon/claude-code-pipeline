@@ -36,6 +36,14 @@ def tearDownModule():
     shutil.rmtree(ENV['HOME'], ignore_errors=True)
 
 
+def fnv1a32(data):
+    """The reference the slug's suffix is checked against (FNV-1a, 32 bits; its published vectors are tested too)."""
+    h = 0x811c9dc5
+    for b in bytearray(data):
+        h = ((h ^ b) * 0x01000193) & 0xffffffff
+    return h
+
+
 def git(cwd, *a):
     r = subprocess.run(['git', '-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com'] + list(a),
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, env=ENV)
@@ -180,9 +188,30 @@ class SaveGetList(Fixture):
         self.assertEqual(git(wt, 'rev-parse', '--abbrev-ref', 'HEAD'), 'feat/lane')
         self.assertEqual(git(wt, 'status', '--porcelain'), '')
 
-    def test_slug(self):
-        self.assertEqual(self.run_state(None, 'slug', 'feat/42-foo').stdout, b'feat-42-foo\n')
-        self.assertEqual(self.run_state(None, 'slug', 'Feat/Foo_bar.baz@x y').stdout, b'Feat-Foo_bar.baz-x-y\n')
+    def slug(self, name):
+        return self.run_state(None, 'slug', name).stdout.decode().rstrip('\n')
+
+    def test_slug_replaces_and_hashes(self):
+        self.assertEqual(self.slug('feat/42-foo'), 'feat-42-foo-ebcc2a79')
+        self.assertEqual(self.slug('Feat/Foo_bar.baz@x y'), 'Feat-Foo_bar.baz-x-y-ad7d1c20')
+        self.assertEqual(self.slug('docs/design/roadmap'), 'docs-design-roadmap-0c66c4d2')
+        for safe in ('feat-x', 'v1.2_rc-3', 'main', '.hidden', 'a--b'):
+            self.assertEqual(self.slug(safe), safe, 'nothing to replace: its own slug, no hash')
+        # The suffix is FNV-1a 32 over the name's UTF-8 bytes, one "-" per character replaced (not per byte or per
+        # UTF-16 unit): the workflows' copy in JavaScript must count the same way.
+        self.assertEqual([fnv1a32(b''), fnv1a32(b'a'), fnv1a32(b'foobar')], [0x811c9dc5, 0xe40c292c, 0xbf9cf968])
+        for name, replaced in (('feat/ünï', 'feat--n-'), ('feat/\U0001f600-x', 'feat---x'),
+                               ('feat/日本', 'feat---'), ('x\ty', 'x-y'), ('feat/é', 'feat-e-')):
+            self.assertEqual(self.slug(name), '%s-%08x' % (replaced, fnv1a32(name.encode('utf-8'))), repr(name))
+
+    def test_slug_never_maps_two_names_to_one_file(self):
+        names = ('feat-x', 'feat/x', 'feat:x', 'feat x', 'featéx', 'feat\U0001f600x', 'feat/x/', 'feat//x')
+        slugs = [self.slug(n) for n in names]
+        self.assertEqual(len(set(slugs)), len(names), slugs)
+        self.assertEqual(slugs[:2], ['feat-x', 'feat-x-d03c3cb6'])
+        # A command-line name that is not valid UTF-8 is hashed as the bytes given.
+        r = subprocess.run([sys.executable, STATE, 'slug', b'feat/\xff'], stdout=subprocess.PIPE, env=self.env)
+        self.assertEqual(r.stdout, b'feat---%08x\n' % fnv1a32(b'feat/\xff'))
 
 
 class Contention(Fixture):

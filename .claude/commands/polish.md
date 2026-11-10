@@ -72,7 +72,7 @@ Any other tokens are free-form context (e.g. a findings list pasted from `/revie
 
 ## Review-findings ledger
 
-`/review-changes` persists its findings to a per-branch ledger at `~/.claude/reviews/<branch-slug>.json` (schema in `.claude/commands/review-changes.md`), with a copy on the repository's state branch (origin's `pipeline/state`) at `reviews/<state-slug>.json`, so the ledger outlives the container. `<state-slug>` is `python3 .claude/scripts/pipeline-state.py slug <branch>` (the branch name with every character outside `[A-Za-z0-9._-]` replaced by `-`; it can differ from `<branch-slug>`). This command reads it, marks what it fixes as `fixed`, and appends fresh unresolved findings in the same schema, so unresolved work survives across sessions.
+`/review-changes` persists its findings to a per-branch ledger at `~/.claude/reviews/<branch-slug>.json` (schema in `.claude/commands/review-changes.md`), with a copy on the repository's state branch (origin's `pipeline/state`) at `reviews/<state-slug>.json`, so the ledger outlives the container. `<state-slug>` is what `python3 .claude/scripts/pipeline-state.py slug <branch>` prints (the state branch's spelling, which keeps `feat/x` and `feat-x` apart; run the script, never spell it by hand; it can differ from `<branch-slug>`). This command reads it, marks what it fixes as `fixed`, and appends fresh unresolved findings in the same schema, so unresolved work survives across sessions.
 
 ### Recall (start of run)
 

@@ -1,9 +1,11 @@
 // Behavioural tests for shipping without carried state (plan-to-merged-pr, proposal-build-chain, ship-chain): a lane's plan
 // is saved to the pipeline state branch at its merge check and travels as plan_ref; ship-only and monitor-only restore it and
 // recreate a missing checkout; lane results stay slim; and the GitHub access (github_access) reaches every prompt that
-// touches GitHub and every nested run. Same small harness as ci/test-workflow-questions.mjs (copied, not imported).
+// touches GitHub and every nested run. The workflows' copy of the state branch's slug is checked against
+// pipeline-state.py slug itself. Same small harness as ci/test-workflow-questions.mjs (copied, not imported).
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 
 const dir = process.argv[2] || '.claude/workflows'
@@ -68,9 +70,9 @@ const RESTORE_S1 = /python3 \.claude\/scripts\/pipeline-state\.py get plans\/fea
 await test('plan-to-merged-pr: build-only saves the plan to the state branch at the merge check and returns plan_ref', async () => {
   const { result, prompt } = await run('plan-to-merged-pr', { concern: 'c', ship: false }, p2m())
   assert.equal(result.status, 'pushed')
-  assert.equal(result.plan_ref, 'plans/feat-x.md')
+  assert.equal(result.plan_ref, 'plans/feat-x-d03c3cb6.md', 'feat/x, as pipeline-state.py slug spells it')
   const mc = prompt('merge-check')
-  assert.match(mc, /python3 \.claude\/scripts\/pipeline-state\.py save <that file> --as plans\/feat-x\.md/)
+  assert.match(mc, /python3 \.claude\/scripts\/pipeline-state\.py save <that file> --as plans\/feat-x-d03c3cb6\.md/)
   assert.ok(mc.includes(PLAN), 'the merge check is given the whole plan to save')
   assert.match(mc, /best effort/)
   // A failed save stops nothing: the lane still pushes, and says plan_ref ''.
@@ -82,8 +84,8 @@ await test('plan-to-merged-pr: build-only saves the plan to the state branch at 
 
 await test('plan-to-merged-pr: the state path slugs the branch, and a run that stops before saving carries plan_ref \'\'', async () => {
   const odd = await run('plan-to-merged-pr', { concern: 'c', ship: false }, p2m({ plan: { branch: 'feat/p_s1.v2+x@1', plan: PLAN } }))
-  assert.equal(odd.result.plan_ref, 'plans/feat-p_s1.v2-x-1.md')
-  assert.match(odd.prompt('merge-check'), /--as plans\/feat-p_s1\.v2-x-1\.md /)
+  assert.equal(odd.result.plan_ref, 'plans/feat-p_s1.v2-x-1-389cc003.md')
+  assert.match(odd.prompt('merge-check'), /--as plans\/feat-p_s1\.v2-x-1-389cc003\.md /)
   const stopped = await run('plan-to-merged-pr', { concern: 'c', ship: false }, p2m({ impl: { summary: '', files_changed: [], gates_green: false, stopped: true, stop_reason: 'blocked' } }))
   assert.equal(stopped.result.status, 'failed_at_impl')
   assert.equal(stopped.result.plan_ref, '')
@@ -95,8 +97,8 @@ await test('plan-to-merged-pr: the state path slugs the branch, and a run that s
 await test('plan-to-merged-pr: a full run hands off with resume_monitor carrying plan_ref, the plan text only when unsaved', async () => {
   const { result } = await run('plan-to-merged-pr', { concern: 'c' }, p2m())
   assert.equal(result.status, 'OPEN')
-  assert.equal(result.plan_ref, 'plans/feat-x.md')
-  assert.equal(result.resume_monitor.plan_ref, 'plans/feat-x.md')
+  assert.equal(result.plan_ref, 'plans/feat-x-d03c3cb6.md')
+  assert.equal(result.resume_monitor.plan_ref, 'plans/feat-x-d03c3cb6.md')
   assert.equal(result.resume_monitor.plan_text, undefined)
   assert.ok(!JSON.stringify(result.resume_monitor).includes('PLAN-TEXT'))
   const unsaved = await run('plan-to-merged-pr', { concern: 'c' }, p2m({ 'merge-check': { ...MC_OK, plan_saved: false } }))
@@ -126,9 +128,9 @@ await test('plan-to-merged-pr: ship-only with plan_ref restores the plan for /cr
 
 await test('plan-to-merged-pr: ship-only saves a given plan_text, and with both plan_ref wins with the text as its fallback', async () => {
   const textOnly = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_text: PLAN }, p2m())
-  assert.match(textOnly.prompt('merge-check'), /--as plans\/feat-p-s1\.md /)
-  assert.equal(textOnly.result.plan_ref, 'plans/feat-p-s1.md')
-  assert.equal(textOnly.result.resume_monitor.plan_ref, 'plans/feat-p-s1.md')
+  assert.match(textOnly.prompt('merge-check'), /--as plans\/feat-p-s1-80775a7d\.md /)
+  assert.equal(textOnly.result.plan_ref, 'plans/feat-p-s1-80775a7d.md')
+  assert.equal(textOnly.result.resume_monitor.plan_ref, 'plans/feat-p-s1-80775a7d.md')
   assert.equal(textOnly.result.resume_monitor.plan_text, undefined)
   const both = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_ref: 'plans/feat-p-s1.md', plan_text: PLAN }, p2m())
   assert.doesNotMatch(both.prompt('merge-check'), /pipeline-state\.py save/)
@@ -226,7 +228,7 @@ const LANES_JSON = JSON.stringify({ chains: [
   { key: 's3', lanes: [{ key: 's3', branch: 'feat/p-s3', dir: '/w/s3', bases: [], steps: [3], concern: 'c3', already_built: true }] }],
 blocked: [], errors: [] })
 // A lane run's full result; the save failed for feat/p-s2.
-const built = a => ({ status: 'pushed', branch: a.branch, plan: `PLAN-TEXT for ${a.branch}`, plan_ref: a.branch === 'feat/p-s2' ? '' : `plans/${a.branch.replace(/\//g, '-')}.md`,
+const built = a => ({ status: 'pushed', branch: a.branch, plan: `PLAN-TEXT for ${a.branch}`, plan_ref: a.branch === 'feat/p-s2' ? '' : 'plans/feat-p-s1-80775a7d.md',
   impl: { summary: 'built it', files_changed: ['a.js'] }, merge_check: { merge_check: 'clean', pushed_sha: 'abc' }, review_clean: true, polish_clean: true,
   assumptions: [{ stage: 'impl', assumption: 'kept the old flag' }] })
 
@@ -238,14 +240,14 @@ await test('proposal-build-chain: lane results drop the plan text, and the ship 
   assert.equal(result.status, 'pushed')
   assert.match(prompt('derive-lanes'), /Report repo: origin's GitHub owner\/name/)
   assert.deepEqual(seen.map(s => [s.branch, s.ship, s.github_access]), [['feat/p-s1', false, 'connector'], ['feat/p-s2', false, 'connector']])
-  assert.deepEqual(result.chains[0].lanes[0].result, { status: 'pushed', branch: 'feat/p-s1', plan_ref: 'plans/feat-p-s1.md', review_clean: true, polish_clean: true, assumptions: [{ stage: 'impl', assumption: 'kept the old flag' }] })
+  assert.deepEqual(result.chains[0].lanes[0].result, { status: 'pushed', branch: 'feat/p-s1', plan_ref: 'plans/feat-p-s1-80775a7d.md', review_clean: true, polish_clean: true, assumptions: [{ stage: 'impl', assumption: 'kept the old flag' }] })
   assert.ok(!JSON.stringify(result.chains).includes('PLAN-TEXT'), 'no lane result carries plan text')
   const [c1, c3] = result.ship_plan
-  assert.equal(c1.order[0].args.plan_ref, 'plans/feat-p-s1.md')
+  assert.equal(c1.order[0].args.plan_ref, 'plans/feat-p-s1-80775a7d.md')
   assert.equal(c1.order[0].args.plan_text, undefined)
   assert.equal(c1.order[1].args.plan_ref, undefined, 'the lane whose save failed')
   assert.equal(c1.order[1].args.plan_text, 'PLAN-TEXT for feat/p-s2')
-  assert.equal(c3.order[0].args.plan_ref, 'plans/feat-p-s3.md', 'an already-built lane: where its earlier run saved it')
+  assert.equal(c3.order[0].args.plan_ref, 'plans/feat-p-s3-7e775757.md', 'an already-built lane: where its earlier run saved it')
   for (const c of result.ship_plan) {
     for (const o of c.order) assert.deepEqual([o.args.github_access, o.args.repo, o.args.ai_review_check, o.args.ship_only], ['connector', 'acme/app', 'Review', true], o.lane)
     assert.deepEqual(c.ship_chain_args, { chain: { chain: c.chain, order: c.order } })
@@ -268,6 +270,35 @@ await test('proposal-build-chain: a lane that did not push keeps what stopped it
   await run('proposal-build-chain', { lanes: [lanes[0]], github_access: '' }, () => ({}), { workflow: async (n, a) => { seen.push(a); return { status: 'pushed' } } })
   assert.equal('github_access' in seen[0], false)
   await assert.rejects(run('proposal-build-chain', { lanes, github_access: 'mcp' }, () => ({}), { workflow }), /github_access must be 'gh', 'connector' or ''/)
+})
+
+// ---- the state branch's slug: each workflow's copy (stateSlug, behind planRefFor) prints what pipeline-state.py slug does
+const SLUG_NAMES = ['feat/x', 'feat-x', 'feat:x', 'feat x', 'feat/42-foo', 'Feat/Foo_bar.baz@x y', 'feat/p_s1.v2+x@1',
+  'bootstrap/20261110', 'main', 'v1.2_rc-3', '.hidden', 'a--b', 'feat//x/', 'feat/ünïcødé', 'feat/日本語', 'feat/😀-x',
+  'feat/é', 'docs/design/01-Free_Checker', 'x\ty', 'lone\ud800surrogate']
+// The function's source, cut from the workflow file as the harness reads it, and run on its own.
+function slugCopy(file) {
+  const src = readFileSync(join(dir, file), 'utf8')
+  const fn = src.match(/^const stateSlug = [\s\S]*?\n\}\n/m)
+  const ref = src.match(/^const planRefFor = .*$/m)
+  assert.ok(fn && ref, `${file} defines stateSlug and planRefFor at top level`)
+  return { file, source: fn[0], ...new Function(`${fn[0]}${ref[0]}\nreturn { stateSlug, planRefFor }`)() }
+}
+
+await test('state-branch slug: both workflows\' planRefFor gives the path pipeline-state.py slug spells, for every name', async () => {
+  const script = join(dir, '..', 'scripts', 'pipeline-state.py')
+  const copies = ['plan-to-merged-pr.js', 'proposal-build-chain.js'].map(slugCopy)
+  assert.equal(copies[0].source, copies[1].source, 'the two copies are the same code')
+  for (const name of SLUG_NAMES) {
+    const want = execFileSync('python3', [script, 'slug', name], { encoding: 'utf8' }).replace(/\n$/, '')
+    for (const c of copies) {
+      assert.equal(c.stateSlug(name), want, `${c.file}: ${JSON.stringify(name)}`)
+      assert.equal(c.planRefFor(name), `plans/${want}.md`, `${c.file}: ${JSON.stringify(name)}`)
+    }
+  }
+  const refs = ['feat/x', 'feat-x', 'feat:x', 'feat x'].map(copies[0].planRefFor)
+  assert.equal(new Set(refs).size, 4, `names that read the same once replaced get different files: ${refs.join(', ')}`)
+  assert.equal(copies[0].planRefFor('feat-x'), 'plans/feat-x.md', 'a name with nothing to replace is its own slug')
 })
 
 // ---- ship-chain: slim lane records, recreated checkouts, and the access in every stage

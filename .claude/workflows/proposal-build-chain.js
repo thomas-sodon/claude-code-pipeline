@@ -66,8 +66,27 @@ const RELAY = `Ask the person these questions yourself, all at once, each with i
 const SHIP_SHARED = {}
 for (const k of ['main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers']) if (A[k] !== undefined) SHIP_SHARED[k] = A[k]
 if (GH_ACCESS) SHIP_SHARED.github_access = GH_ACCESS
-// A lane's plan on the pipeline state branch: plans/<branch-slug>.md (every character outside [A-Za-z0-9._-] becomes '-').
-const planRefFor = b => `plans/${String(b).replace(/[^A-Za-z0-9._-]/g, '-')}.md`
+// A name as the pipeline state branch spells it in paths: `pipeline-state.py slug`, copied here and in plan-to-merged-pr.js
+// (ci/test-workflow-shipping.mjs checks both copies against the script). Every character outside [A-Za-z0-9._-] becomes '-';
+// when any did, '-' and 8 hex digits of FNV-1a 32 over the name's UTF-8 bytes follow, so feat/x and feat-x never share a file.
+const stateSlug = name => {
+  const s = String(name)
+  const out = s.replace(/[^A-Za-z0-9._-]/gu, '-')
+  if (out === s) return out
+  let h = 0x811c9dc5
+  const add = b => { h = Math.imul(h ^ b, 0x01000193) >>> 0 }
+  for (const ch of s) {
+    let c = ch.codePointAt(0)
+    if (c >= 0xd800 && c <= 0xdfff) c = 0xfffd   // a lone surrogate, written as U+FFFD as a UTF-8 encoder does
+    if (c < 0x80) add(c)
+    else if (c < 0x800) { add(0xc0 | (c >> 6)); add(0x80 | (c & 63)) }
+    else if (c < 0x10000) { add(0xe0 | (c >> 12)); add(0x80 | ((c >> 6) & 63)); add(0x80 | (c & 63)) }
+    else { add(0xf0 | (c >> 18)); add(0x80 | ((c >> 12) & 63)); add(0x80 | ((c >> 6) & 63)); add(0x80 | (c & 63)) }
+  }
+  return `${out}-${h.toString(16).padStart(8, '0')}`
+}
+// A lane's plan on the pipeline state branch: plans/<branch-slug>.md, where the lane's own run saved it.
+const planRefFor = b => `plans/${stateSlug(b)}.md`
 // Plan text kept out of this result: the ship plan's fallback for a lane whose plan could not be saved (plan_ref '').
 const PLAN_TEXT = {}
 // A lane's plan-to-merged-pr result without its plan text. What stopped a lane that did not push stays, so a person can act on it.

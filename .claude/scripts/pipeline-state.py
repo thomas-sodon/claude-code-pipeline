@@ -33,8 +33,15 @@ get PATH     fetch, then print PATH's content from origin/<branch>, or write it 
              refs/heads/<branch> instead, without fetching.
 list PREFIX  the stored paths that start with PREFIX (default: all), one per line.
              An absent branch lists nothing. --local as for get.
-slug NAME    NAME with every character outside [A-Za-z0-9._-] replaced by "-": the
-             <branch-slug> of plans/<branch-slug>.md and reviews/<branch-slug>.json.
+slug NAME    NAME as the state branch spells it in paths: the <branch-slug> of
+             plans/<branch-slug>.md and reviews/<branch-slug>.json, and the
+             <doc-slug> of reviews/proposal-<doc-slug>.json. Every character outside
+             [A-Za-z0-9._-] becomes "-"; when any did, "-" and 8 lowercase hex digits
+             of the FNV-1a 32-bit hash of NAME's UTF-8 bytes follow, so names that
+             read the same once replaced (feat/x, feat-x, feat:x) get different
+             paths. A name with nothing to replace is its own slug. The workflows'
+             copy (stateSlug, behind planRefFor) must print the same for every
+             name; ci/test-workflow-shipping.mjs checks that against this script.
 
 Run it from inside any checkout of the product repository, or point --repo at one.
 Network commands never prompt for credentials (GIT_TERMINAL_PROMPT=0).
@@ -64,6 +71,7 @@ NET_TIMEOUT = 60              # seconds for one network git call
 MAX_BYTES = 5 * 1024 * 1024   # a state file is a handoff, a plan or a ledger, not an artifact store
 PROTECTED = ('main', 'master')
 SLUG_RE = re.compile(r'[^A-Za-z0-9._-]')
+FNV_OFFSET, FNV_PRIME = 0x811c9dc5, 0x01000193
 ZERO = '0' * 40
 
 
@@ -100,6 +108,24 @@ def out(r):
 
 def err(r):
     return (r.stderr or b'').decode('utf-8', 'replace').strip() or 'exit %d' % r.returncode
+
+
+def fnv1a32(data):
+    """FNV-1a, 32 bits, over bytes."""
+    h = FNV_OFFSET
+    for b in bytearray(data):
+        h = ((h ^ b) * FNV_PRIME) & 0xffffffff
+    return h
+
+
+def slug(name):
+    """NAME as the state branch spells it in paths (see slug NAME above). Injective: a name with nothing to replace
+    is itself, and every other one carries the hash of the name as given, so feat/x and feat-x never share a file.
+    surrogateescape gives back the exact bytes of a command-line argument that is not valid UTF-8."""
+    out = SLUG_RE.sub('-', name)
+    if out == name:
+        return out
+    return '%s-%08x' % (out, fnv1a32(name.encode('utf-8', 'surrogateescape')))
 
 
 def rev(repo, name):
@@ -387,7 +413,7 @@ def main(argv=None):
     a.branch = getattr(a, 'branch', None)
     try:
         if a.cmd == 'slug':
-            print(SLUG_RE.sub('-', a.name))
+            print(slug(a.name))
             return 0
         repo = repo_dir(a)
         if a.cmd == 'save':
