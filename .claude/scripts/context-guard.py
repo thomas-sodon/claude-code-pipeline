@@ -35,6 +35,8 @@ written, to read it before acting, and quotes its ## Next section (at most 2,000
 Environment:
   PIPELINE_HANDOFF_PCT     handoff threshold, percent of the context window (default 40)
   PIPELINE_CONTEXT_WINDOW  window size in tokens when no status line reports one
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW  read, not set: a smaller compaction window is the one usage is measured against
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE  read, not set: the threshold stays at least 10 points (or half) below it
   PIPELINE_GUARD_DIR       per-session records (default ~/.claude/context-guard)
   PIPELINE_CONTEXT_GUARD   "off" (or 0, false, no) makes the hooks no-ops and drops "handoff due"
   PIPELINE_STATE_BRANCH    the state branch SessionStart reads (default pipeline/state)
@@ -91,13 +93,30 @@ def enabled():
 
 
 def threshold():
+    t = DEFAULT_PCT
     try:
-        t = float(os.environ.get('PIPELINE_HANDOFF_PCT', ''))
-        if 0 < t <= 100:
-            return t
+        v = float(os.environ.get('PIPELINE_HANDOFF_PCT', ''))
+        if 0 < v <= 100:
+            t = v
     except ValueError:
         pass
-    return DEFAULT_PCT
+    # An auto-compaction set to fire earlier than usual must not beat the handoff: stay well under it.
+    try:
+        c = float(os.environ.get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', ''))
+        if 0 < c <= 100:
+            t = min(t, max(c - 10, c / 2))
+    except ValueError:
+        pass
+    return t
+
+
+def compact_window():
+    """CLAUDE_CODE_AUTO_COMPACT_WINDOW: the window auto-compaction measures against, or None."""
+    try:
+        w = int(os.environ.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW', ''))
+        return w if w > 0 else None
+    except ValueError:
+        return None
 
 
 def env_window():
@@ -249,14 +268,21 @@ def measure(sid, transcript_path):
     pct = number(rec.get('used_percentage'))
     ts = number(rec.get('ts'))
     if pct is not None and ts is not None and 0 <= now() - ts < FRESH_SECONDS:
-        return {'pct': pct, 'source': 'statusline', 'window': posint(rec.get('context_window_size')),
-                'tokens': None, 'window_source': 'statusline'}
-    tokens, model = transcript_usage(transcript_path or rec.get('transcript_path'))
-    if tokens is None:
-        return {'pct': None, 'source': None, 'window': None, 'tokens': None, 'window_source': None}
-    window, wsrc = window_for(posint(rec.get('context_window_size')), model, tokens)
-    return {'pct': tokens * 100.0 / window, 'source': 'transcript', 'window': window, 'tokens': tokens,
-            'window_source': wsrc}
+        m = {'pct': pct, 'source': 'statusline', 'window': posint(rec.get('context_window_size')),
+             'tokens': None, 'window_source': 'statusline'}
+    else:
+        tokens, model = transcript_usage(transcript_path or rec.get('transcript_path'))
+        if tokens is None:
+            return {'pct': None, 'source': None, 'window': None, 'tokens': None, 'window_source': None}
+        window, wsrc = window_for(posint(rec.get('context_window_size')), model, tokens)
+        m = {'pct': tokens * 100.0 / window, 'source': 'transcript', 'window': window, 'tokens': tokens,
+             'window_source': wsrc}
+    # Auto-compaction measured against a smaller window (CLAUDE_CODE_AUTO_COMPACT_WINDOW) fires against that window.
+    cap = compact_window()
+    if cap and m['window'] and m['window'] > cap:
+        m['pct'] = m['pct'] * m['window'] / cap
+        m['window'], m['window_source'] = cap, 'auto_compact_window'
+    return m
 
 
 # ---- per-session state ------------------------------------------------------------------------

@@ -184,6 +184,20 @@ class Usage(Guard):
         t = self.transcript(assistant(model='claude-haiku-4-5', input_tokens=100000))
         self.assertEqual(self.status(transcript=t)['usage']['window'], 200000)
 
+    def test_an_earlier_auto_compaction_moves_the_measure_and_the_threshold(self):
+        t = self.transcript(assistant(model='claude-opus-5-5', input_tokens=150000))
+        u = self.status(transcript=t, env={'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '300000'})['usage']
+        self.assertEqual((u['window'], u['window_source']), (300000, 'auto_compact_window'))
+        self.assertAlmostEqual(u['pct'], 50.0)
+        self.write_record('s1', used_percentage=20, context_window_size=1000000, ts=time.time())
+        u = self.status(transcript=t, env={'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '500000'})['usage']
+        self.assertEqual((u['source'], u['window']), ('statusline', 500000))
+        self.assertAlmostEqual(u['pct'], 40.0)
+        self.assertEqual(self.status()['threshold'], 40.0)
+        self.assertEqual(self.status(env={'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': '30'})['threshold'], 20.0)
+        self.assertEqual(self.status(env={'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': '80'})['threshold'], 40.0)
+        self.assertEqual(self.status(env={'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': '12'})['threshold'], 6.0)
+
     def test_a_compaction_after_the_last_count_makes_usage_unknown(self):
         t = self.transcript(assistant(input_tokens=150000),
                             {'type': 'system', 'subtype': 'compact_boundary'},
