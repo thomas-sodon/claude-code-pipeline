@@ -19,10 +19,11 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 
 - `PLANS_DIR` — default `~/.claude/plans`.
 - `MAIN_BRANCH` — default `main`.
-- `GH_WRAPPER` — when set, prefix every `gh`, `git fetch`, and `git push` command with it (e.g. a script that loads a token from `.env`). When unset, use ambient `gh auth`. If the first `gh` call fails on authentication, stop and tell the user to authenticate or configure `GH_WRAPPER`.
+- `GH_WRAPPER` — when set, prefix every `gh`, `git fetch`, and `git push` command with it (e.g. a script that loads a token from `.env`). When unset, use ambient `gh auth`. When the access named is `gh` and the first `gh` call fails on authentication, stop and tell the user to authenticate or configure `GH_WRAPPER`.
+- `GITHUB_ACCESS` — `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. Resolve it before the first GitHub call; when no access is usable, stop with `error=github_unavailable`. `git fetch` stays plain git either way.
 - `QUALITY_GATES`, `TEST_GUIDELINES` — referenced in the plan's verification and test steps only; this command never runs gates. If `QUALITY_GATES` is missing, still write the plan but note in its Verification section and in the addendum that the project must add `QUALITY_GATES` to its pipeline config.
 
-Examples below write `$GH_WRAPPER gh ...`; drop the prefix when unset. Local reads (`git log`, `git show`, file checks) need no auth.
+Examples below write `$GH_WRAPPER gh ...`; drop the prefix when unset. In connector mode, make the connector call named beside each instead. Local reads (`git log`, `git show`, file checks) need no auth.
 
 ## Land on a current tree
 
@@ -91,6 +92,8 @@ Used by every path and re-check below. Run one search, then post-filter:
 $GH_WRAPPER gh pr list --state open --search "#<NNN> in:body" --json number,url,body
 ```
 
+Connector: `list_pull_requests` with `state: "open"`, `fields: ["number","html_url","body"]` and `perPage: 100`, reading every page (it has no search), then the same filter.
+
 Keep only PRs whose body matches, case-insensitively, `\b(close[sd]?|fix(es|ed)?|resolve[sd]?):?\s+#<NNN>\b` — every GitHub closing keyword, with or without a colon, whole-word, and with the number bounded so `#12` does not match `#123`. A bare mention (`see #<NNN>`) does not count. Titles are not auto-linked, so search bodies only.
 
 ### Fetching an issue
@@ -101,6 +104,8 @@ Keep only PRs whose body matches, case-insensitively, `\b(close[sd]?|fix(es|ed)?
 $GH_WRAPPER gh issue view <NNN> --json number,title,body,state,labels,createdAt,closedAt,url
 $GH_WRAPPER gh api repos/{owner}/{repo}/issues/<NNN> --jq .locked
 ```
+
+Connector: one `issue_read` `get` returns both: `state`, label names, `created_at`, `closed_at`, `html_url`, and `locked: true` when the issue is locked (absent means not locked).
 
 ### Targeted path — explicit number
 
@@ -126,6 +131,8 @@ Steps 1–5 halt identically under `--dry-run`. Steps 1–2 and the claim check 
    $GH_WRAPPER gh issue list --state open --search '"[rca]" in:title' --sort created --order desc --limit 50 --json number,title,createdAt,labels,url
    ```
 
+   Connector: `list_issues` with `state: "OPEN"`, `labels: ["rca"]`, `orderBy: "CREATED_AT"`, `direction: "DESC"` and `perPage: 50`; then `list_issues` with `state: "OPEN"` in the same order, keeping the titles that contain `[rca]`, until 50 are kept or the list ends.
+
    Empty → `error=no_open_rca_issues`.
 2. Iterate newest to oldest, applying the **auto-pick skip rules** below.
 3. First survivor is the pick; exhausted → `error=no_actionable_rca_issue` with the skip table.
@@ -138,6 +145,8 @@ Steps 1–5 halt identically under `--dry-run`. Steps 1–2 and the claim check 
    ```
    $GH_WRAPPER gh issue list --state open --search "sort:created-asc" --limit 200 --json number,title,labels,createdAt,url
    ```
+
+   Connector: `list_issues` with `state: "OPEN"`, `orderBy: "CREATED_AT"`, `direction: "ASC"` and `perPage: 100`, two pages; it lists no pull requests either.
 
 2. Iterate oldest to newest, applying the **auto-pick skip rules** below.
 3. First survivor is the pick; exhausted → `error=no_actionable_issue` with the skip table (number, title, reason). Do not loosen the rules to force an action — an empty or all-skipped list is a valid end state.
@@ -152,7 +161,7 @@ The user did not target these issues, so skip silently (recording each reason fo
 3. A plan already exists at `$PLANS_DIR/fix-<NNN>-*.md` (`plan exists`).
 4. Closing-keyword PR detection finds an open PR (`open PR <url>`).
 
-Lock state is not in `gh issue list`, so a locked pick is caught at the post-pick re-check (`locked`).
+Lock state is not in `gh issue list` (nor in `list_issues`), so a locked pick is caught at the post-pick re-check (`locked`).
 
 ### Post-pick re-check (auto-pick paths)
 
@@ -248,6 +257,8 @@ The early prechecks happened before triage; a sibling may have acted since. Run 
    ```
 
    If `gh` reports the issue already closed or cannot close it, release the claim and stop with `error=issue_already_closed_race`, quoting stderr. Do not retry.
+
+   Connector: two calls, comment first, so a refused comment closes nothing: `add_issue_comment` with `issue_number: <NNN>` and the comment body, then `issue_write` with `method: "update"`, `issue_number: <NNN>`, `state: "closed"` and `state_reason: "completed"`. Either call failing → release the claim and stop with `error=issue_already_closed_race`, quoting the error (and, when the comment posted, its URL). Do not retry, and never delete the comment.
 5. Finish the progress claim (`issue_closed`, outcome = reason line).
 6. Print `Closed: <url> — <reason> (<short evidence>)`.
 
@@ -309,6 +320,7 @@ All errors print as `error=<code>` with the issue or PR URL where relevant. Race
 | Code | When |
 |---|---|
 | `invalid_argument` | bad token shape, or integer + `--rca` |
+| `github_unavailable` | no GitHub access is usable (`.claude/scripts/github-access.md`) |
 | `issue_not_found`, `issue_already_closed`, `issue_locked`, `duplicate` | targeted early checks |
 | `issue_claimed_by_other_folder` | sibling claim within 24h (targeted) |
 | `no_actionable_issue`, `no_open_rca_issues`, `no_actionable_rca_issue` | auto-pick exhausted (print skip table) |
@@ -318,7 +330,7 @@ All errors print as `error=<code>` with the issue or PR URL where relevant. Race
 ## Scope limits
 
 - One issue per invocation.
-- Never edit issue bodies, labels, milestones, or assignees. The close path's only GitHub mutation is the single `gh issue close --comment`.
+- Never edit issue bodies, labels, milestones, or assignees. The close path's only GitHub mutation is the single `gh issue close --comment` (connector: its one comment and one close).
 - Never run quality gates, invoke `/impl`, create branches, push, open PRs, or merge — gates belong in the plan's Verification, executed later.
 - Never let anchor drift decide the verdict.
 

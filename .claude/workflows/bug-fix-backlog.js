@@ -11,7 +11,7 @@ export const meta = {
   ],
 }
 
-// args: { lanes?: [Lane], intake?, labels?, dir?, root?, date?, gate?, main_branch?, ai_review_check?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, ship?, close? }
+// args: { lanes?: [Lane], intake?, labels?, dir?, root?, date?, gate?, main_branch?, ai_review_check?, github_access?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, ship?, close? }
 //   intake  — run the Intake (read-only) instead of taking lanes: it lists the open issues carrying any of labels and the red
 //             CI runs on the latest commits of main (report only), groups issues that share a code site, and the run stops
 //             with status needs_input (stage intake): one question whose recommended answer is the proposed lanes.
@@ -23,8 +23,10 @@ export const meta = {
 //   ship    — default true; false = build only (push, no PR)
 //   close   — default true; false = report confirmed-fixed issues instead of closing them
 //   efforts — { intake, triage, verify, close } for this workflow's stages; the whole object is also passed to plan-to-merged-pr
-//   gate, main_branch, ai_review_check, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds, efforts,
-//             on_question and ship: false are passed through to plan-to-merged-pr; no other key is
+//   github_access — 'gh' or 'connector': how every agent reaches GitHub (.claude/scripts/github-access.md). Default '':
+//             the GITHUB_ACCESS line of the Pipeline config, else gh when it is authenticated, else the GitHub MCP tools
+//   gate, main_branch, ai_review_check, github_access, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds,
+//             efforts, on_question and ship: false are passed through to plan-to-merged-pr; no other key is
 //   answers — [{ lane, id, answer }]: answers to the questions a lane's needs_input result returned; each lane gets only its own.
 //             The Intake's question is answered with [{ id: 'intake.q1', answer }] and no lane: the confirmed lanes as JSON
 //             (an array of Lane: the recommended answer or the person's edit of it; '[]' runs nothing), or the accept
@@ -38,9 +40,13 @@ const ROOT = A.root
 const DATE = A.date || 'undated'
 const MAIN = A.main_branch || 'main'
 const GATE = A.gate !== undefined ? A.gate : ''
+// How the agents reach GitHub: '' leaves it to the Pipeline config's GITHUB_ACCESS, else gh when authenticated, else the connector.
+const ACCESS = A.github_access === undefined || A.github_access === null ? '' : String(A.github_access).trim().toLowerCase()
+if (!['', 'gh', 'connector'].includes(ACCESS)) throw new Error(`bug-fix-backlog: github_access must be 'gh', 'connector' or '' (got ${JSON.stringify(A.github_access)})`)
 const EFF = { intake: 'medium', triage: 'medium', verify: 'high', close: 'low', ...(A.efforts || {}) }
 const SHARED = {}
 for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
+if (ACCESS) SHARED.github_access = ACCESS
 if (A.ship === false) SHARED.ship = false
 // Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane); the Intake's goes to none.
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
@@ -55,8 +61,17 @@ const INTAKE_RELAY = `Ask the person this question yourself: show the proposed l
   `('[]' runs nothing; the accept option, passed back exactly as offered with its fingerprint, runs the proposal only if the re-run's Intake proposes the very same lanes — set resumeFromRunId to this run's id so it replays; a changed proposal stops for confirmation again).`
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
-const AUTH = `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
-  `A skill's auth check (e.g. /bug-fix's stop when its first gh call fails on authentication) passes when plain gh is authenticated, even if the GH_WRAPPER prefix does not work here; stop only when plain gh is unauthenticated too. `
+// GitHub access (.claude/scripts/github-access.md): gh, or the GitHub MCP connector where gh is not logged in (cloud sessions).
+// cx() names a step's connector call beside its gh form; github_access: 'gh' keeps the prompts gh-only.
+const cx = s => ACCESS === 'gh' ? '' : ` (connector: ${s})`
+const AUTH = `Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. ` +
+  (ACCESS
+    ? `The access for this run is ${ACCESS}, whatever GITHUB_ACCESS the Pipeline config names. `
+    : `Take it from the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md; with none, gh when gh auth status succeeds, else the GitHub MCP tools. `) +
+  (ACCESS === 'gh' ? '' : `With the connector, load the mcp__github__ tool schemas with ToolSearch before the first call, take owner/repo from git remote get-url origin, and make the connector call named beside each gh command (or mapped in that file). `) +
+  `With no access usable, stop and report error=github_unavailable. git fetch and git push stay plain git either way. ` +
+  `For gh/git network commands use the GH_WRAPPER prefix from the "Pipeline config" section of CLAUDE.md when it is set and works in this checkout; otherwise run gh/git directly (ambient auth works). ` +
+  `In gh mode, a skill's auth check (e.g. /bug-fix's stop when its first gh call fails on authentication) passes when plain gh is authenticated, even if the GH_WRAPPER prefix does not work here; stop only when plain gh is unauthenticated too. `
 const GATES = (GATE
   ? `Run every lint / typecheck / test invocation through the gate semaphore \`${GATE} <command>\` from the checkout root (a compound command as \`${GATE} bash -c '<command>'\`, writing any ' inside it as '\\''; use this instead of any GATE_WRAPPER from the Pipeline config, including where a skill says to use GATE_WRAPPER, and never nest the two; exit 75 = every slot busy: re-run; exit 125/127 = report, never bypass). `
   : `When the "Pipeline config" section of CLAUDE.md sets GATE_WRAPPER, prefix every lint / typecheck / test invocation with it (a compound command as \`$GATE_WRAPPER bash -c '<command>'\`, writing any ' inside it as '\\''). `) +
@@ -201,6 +216,7 @@ const INTAKE_SCHEMA = {
         required: ['workflow', 'url', 'sha', 'conclusion', 'failing_jobs', 'summary', 'tracked_by'],
       },
     },
+    error: { type: 'string', description: "'github_unavailable' when no GitHub access was usable (every list is then empty); omit or leave empty otherwise" },
   },
   required: ['issues', 'lanes', 'unlaned', 'ci_red'],
 }
@@ -274,17 +290,19 @@ if (INTAKE) {
       GUARD + AUTH + (INTAKE_DIR ? `Work in the git checkout ${INTAKE_DIR} (cd there / use absolute paths). ` : '') +
       `Read-only: edit no file, change no branch and no worktree (git fetch origin is the only git write), and never create, edit, label, comment on, assign or close an issue or PR — even for a red CI run no issue tracks; you only report. ` +
       `You are the intake for a bug-fix backlog run: propose the lanes a person will confirm.\n` +
-      `1. List every OPEN issue carrying any of the labels ${JSON.stringify(LABELS)}: gh issue list --state open --label <label> --limit 500 --json number,title,labels,body, once per label, merged so each issue appears once. ` +
+      `1. List every OPEN issue carrying any of the labels ${JSON.stringify(LABELS)}: gh issue list --state open --label <label> --limit 500 --json number,title,labels,body${cx('list_issues with state OPEN and labels [<label>], perPage 100, following after to the end')}, once per label, merged so each issue appears once. ` +
       `For each, locate the code it points at on origin/${MAIN} (git fetch origin, then git grep <pattern> origin/${MAIN} / git show origin/${MAIN}:<path>) and record it as code_sites (current path:symbol). ` +
-      `Leave out of every lane, in unlaned with the reason, an issue an open PR already closes (gh pr list --state open --search "<n> in:body" --json number,body, with a closing keyword for it), one that is not a bug report (a feature request, a question), or one that cannot be worked without information only its reporter has.\n` +
+      `Leave out of every lane, in unlaned with the reason, an issue an open PR already closes (gh pr list --state open --search "<n> in:body" --json number,body${cx('list_pull_requests with state open and fields number and body, every page')}, with a closing keyword for it), one that is not a bug report (a feature request, a question), or one that cannot be worked without information only its reporter has.\n` +
       `2. Group the rest into lanes: issues whose fix edits the same code site (the same function or a tightly coupled pair) go in one lane, so one PR fixes them together; every other issue is a lane of its own. Never group by topic or label alone. ` +
       `Each lane gets a short lowercase slug key naming its code site, its issues, the shared code_site and a one-line why.\n` +
-      `3. Report, never act on, red CI on ${MAIN}: take the 5 newest commits of origin/${MAIN} (git log -5 --format=%H origin/${MAIN}) and their runs (gh run list --branch ${MAIN} --limit 50 --json databaseId,headSha,workflowName,conclusion,url); ` +
-      `for each run on those commits whose conclusion is failure, timed_out or startup_failure, give its workflow, url, sha, conclusion, failing jobs (gh run view <id> --json jobs), a one-line summary from the failing step's log (gh run view <id> --log-failed), and tracked_by: the listed issues that already describe it. ` +
-      `Nothing to report → empty lists.`,
+      `3. Report, never act on, red CI on ${MAIN}: take the 5 newest commits of origin/${MAIN} (git log -5 --format=%H origin/${MAIN}) and their runs (gh run list --branch ${MAIN} --limit 50 --json databaseId,headSha,workflowName,conclusion,url${cx(`actions_list list_workflow_runs with workflow_runs_filter {"branch": "${MAIN}"} and perPage 50`)}); ` +
+      `for each run on those commits whose conclusion is failure, timed_out or startup_failure, give its workflow, url, sha, conclusion, failing jobs (gh run view <id> --json jobs${cx('actions_list list_workflow_jobs with resource_id <id>')}), a one-line summary from the failing step's log (gh run view <id> --log-failed${cx('get_job_logs with run_id <id>, failed_only true and return_content true')}), and tracked_by: the listed issues that already describe it. ` +
+      `Nothing to report → empty lists. With no GitHub access usable, list nothing and set error to github_unavailable.`,
       { label: 'intake', phase: 'Intake', effort: EFF.intake, schema: INTAKE_SCHEMA },
     )
     if (!r) return { status: 'failed_at_intake' }
+    // An unreachable GitHub is not an empty backlog: stop instead of proposing no lanes.
+    if (r.error) { log(`Intake: ${r.error}`); return { status: 'failed_at_intake', error: r.error } }
     const proposed = proposeLanes(r)
     const lanesOnly = proposed.map(({ key, issues }) => ({ key, issues }))
     const fp = fingerprint(lanesOnly)
@@ -329,7 +347,7 @@ const results = await pipeline(
     GUARD + AUTH + where(l) +
     `Set up first: if ${l.dir} does not exist, git fetch origin and create it as a git worktree on a new branch ${l.branch} from origin/${MAIN}; if it exists, keep it and any work in it. Run git rev-parse --abbrev-ref HEAD there and return its output verbatim as branch (do not switch branches to make it match ${l.branch}; a mismatch stops the lane). Also return git status --porcelain --untracked-files=all there verbatim as baseline_dirty, one line per entry ([] when it prints nothing), and, after git fetch origin, git rev-list --count origin/${MAIN}..HEAD as ahead_of_main and git rev-list --count HEAD..origin/${MAIN} as behind_main.\n` +
     `Then, from ${l.dir}, for EACH of ${nums(l)}: invoke the Skill tool with skill "bug-fix" and args "<number> --dry-run". Stay on branch ${l.branch} (skip the skill's switch-to-${MAIN} step). ` +
-    `Dry-run means the skill writes no plan file and closes nothing — keep it that way. Record its verdict per issue (plan / close, or skip if it stopped with an error such as issue_already_closed or issue_claimed_by_other_folder), exactly one entry per issue. ` +
+    `Dry-run means the skill writes no plan file and closes nothing — keep it that way. Record its verdict per issue (plan / close, or skip if it stopped with an error such as issue_already_closed, issue_claimed_by_other_folder or github_unavailable), exactly one entry per issue. ` +
     `If the skill's open-PR precheck warns that an open PR already closes the issue, record that PR's URL as linked_open_pr (it proceeds anyway; this workflow does not).\n` +
     `Then write ONE combined plan for every plan-verdict issue, at today's code locations, in the skill's plan layout: the failing regression test(s) to add first (following the project's testing rules in CLAUDE.md), the ordered per-file edits, the acceptance criteria, and the gate commands; end it with a "Fixes #N" line per plan-verdict issue. ` +
     (l.issues.length > 1 ? `These issues share a code site: design one fix that resolves all of them rather than stacking patches. ` : '') +
@@ -386,9 +404,9 @@ const results = await pipeline(
     // Two independent refuters per close verdict: a wrong close is public, so it needs both to fail.
     for (const lens of ['trace the issue\'s failure scenario through today\'s call path end to end', 'search for sibling sites and alternative inputs that still exhibit the bug'])
       if (closing.length) thunks.push(() => agent(
-        GUARD + where(l) +
+        GUARD + AUTH + where(l) +
         `Read-only (edit nothing, change no git state). The bug-fix triage concluded each issue below is ALREADY FIXED (or its surface removed) and wants to close it. Try to REFUTE that: ${lens}. ` +
-        `Fetch each issue body with gh issue view <n> --json body. Set refuted=true if the described behaviour (by intent, not literal line numbers) still occurs anywhere in origin/${MAIN} (git fetch origin, then read it with git show origin/${MAIN}:<path> / git grep <pattern> origin/${MAIN}), quoting the code; a fix present only in the working tree or in commits not on origin/${MAIN} does not count.\n${brief(closing)}`,
+        `Fetch each issue body with gh issue view <n> --json body${cx('issue_read get')}. Set refuted=true if the described behaviour (by intent, not literal line numbers) still occurs anywhere in origin/${MAIN} (git fetch origin, then read it with git show origin/${MAIN}:<path> / git grep <pattern> origin/${MAIN}), quoting the code; a fix present only in the working tree or in commits not on origin/${MAIN} does not count.\n${brief(closing)}`,
         { label: `refute-close:${l.key}`, phase: 'Verify', effort: EFF.verify, schema: REFUTE_SCHEMA },
       ).then(r => ({ kind: 'refute', r })))
     const checks = (await parallel(thunks)).filter(Boolean)
@@ -442,8 +460,10 @@ const results = await pipeline(
     if (v.confirmedFixed.length && A.close !== false) {
       closed = (await agent(
         GUARD + AUTH + where(l) +
-        `Close each issue below as already fixed. Immediately before each close, re-check: gh issue view <n> --json state (skip it if no longer OPEN), and gh pr list --state open --search "<n> in:body" --json number,body — skip it if an open PR body has a closing keyword for it. ` +
-        `Close with gh issue close <n> --reason completed --comment "$(cat <file>)" (gh issue close has no --comment-file flag), writing the comment (the triage's close comment, which quotes the evidence, with its closing "Closed by /bug-fix …" line replaced by — not followed by — "Auto-closed by /bug-fix after verifying intent against current ${MAIN}; two independent refuters found no remaining instance.") to a file in your scratchpad first. Change nothing else on the issue.\n` +
+        `Close each issue below as already fixed. Immediately before each close, re-check: gh issue view <n> --json state${cx('issue_read get')} (skip it if no longer OPEN), and gh pr list --state open --search "<n> in:body" --json number,body${cx('list_pull_requests with state open and fields number and body, every page')} — skip it if an open PR body has a closing keyword for it. ` +
+        `Close with gh issue close <n> --reason completed --comment "$(cat <file>)" (gh issue close has no --comment-file flag), writing the comment (the triage's close comment, which quotes the evidence, with its closing "Closed by /bug-fix …" line replaced by — not followed by — "Auto-closed by /bug-fix after verifying intent against current ${MAIN}; two independent refuters found no remaining instance.") to a file in your scratchpad first. ` +
+        (ACCESS === 'gh' ? '' : `With the connector, post that comment with add_issue_comment, then close with issue_write (method update, state closed, state_reason completed); a close that fails after the comment posted goes in not_closed with the comment's URL — never retry it or delete the comment. `) +
+        `With no GitHub access usable, close nothing and list each issue in not_closed with reason github_unavailable. Change nothing else on the issue.\n` +
         JSON.stringify(v.confirmedFixed.map(i => ({ number: i.number, close_reason: i.close_reason, close_comment: i.close_comment })), null, 1),
         { label: `close:${l.key}`, phase: 'Close', effort: EFF.close, schema: CLOSE_SCHEMA },
       )) || { closed: [], not_closed: v.confirmedFixed.map(i => ({ number: i.number, reason: 'close stage failed' })) }

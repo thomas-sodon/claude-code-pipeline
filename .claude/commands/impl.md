@@ -15,6 +15,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 - `PLANS_DIR` — plan location (default `~/.claude/plans`).
 - `PROPOSALS_DIR` — design docs (default: none; doc mode still applies to any `# Proposal:` doc passed by path).
 - `GH_WRAPPER` — optional prefix for git network commands (default: none).
+- `GITHUB_ACCESS` — not needed here: this command makes no GitHub API call, and its one network command, `git fetch`, stays plain git under either access (`.claude/scripts/github-access.md`).
 - `TEST_GUIDELINES` — the project's testing rules (default: the project's `CLAUDE.md`).
 
 ## Arguments
