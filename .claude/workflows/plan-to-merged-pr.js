@@ -30,7 +30,8 @@ export const meta = {
 //   repo?: string              the repository's GitHub owner/name, e.g. 'acme/app': what a missing dir is cloned from when the checkout an
 //                              agent starts in is not this repository's, and the owner/name of connector calls
 //   github_access?: string     'gh' | 'connector' | '' (default ''): how the agents reach GitHub; '' = the GITHUB_ACCESS line of the
-//                              Pipeline config (gh when it is absent). git fetch and push stay plain git either way
+//                              Pipeline config, else gh when it is authenticated, else the connector (.claude/scripts/github-access.md).
+//                              git fetch and push stay plain git either way
 //   branch?: string            use this branch instead of letting the planner create one
 //   bases?: string[]           branches this work is stacked on (merged before planning and at the merge check)
 //   ship?: boolean             default true; false = build only: commit, merge check, push the branch, open no PR
@@ -148,7 +149,7 @@ const cxIn = tool => GH_ACCESS === 'gh' ? '' : `; connector: ${tool}`
 const byAccess = (gh, connector) => GH_ACCESS === 'gh' ? gh : GH_ACCESS === 'connector' ? connector : `In gh mode: ${gh} In connector mode: ${connector}`
 const ACCESS = (GH_ACCESS
   ? `The access for this run is ${GH_ACCESS} (the github_access arg, which overrides the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md). `
-  : `The access for this run is the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md (gh when it is absent). `) +
+  : `The access for this run is the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md; when it is absent, gh when gh auth status succeeds, else the GitHub MCP tools ("Which access" in .claude/scripts/github-access.md). `) +
   `Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. ` +
   (GH_ACCESS === 'gh' ? '' : `In connector mode, load the mcp__github__ tool schemas with ToolSearch, do each gh command named here with the tool named after it (that file maps the rest), and take the owner and name ${REPO ? `from ${REPO}` : 'from git remote get-url origin'}, never guessed. `) +
   `If the access in use is unavailable, stop with error=github_unavailable${GH_ACCESS === 'connector' ? '' : ' (gh mode keeps its existing error names, gh_unauthenticated and gh_auth_failed)'}. ` +

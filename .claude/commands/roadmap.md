@@ -157,11 +157,11 @@ The source's cheapest validation is a waitlist, so demand is measured before the
    - Human gate: ops — set architecture.md to Status: accepted, run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` and `docs` checks
    - Depends on: none
    - Acceptance: CI green on main; main protected; the Outcome records the repository URL
-2. [ ] **Provision hosting.** Accounts the first deploy needs.
-   - Human gate: ops — create the staging and production projects on the host; add DATABASE_URL to each by name
+2. [ ] **Provision hosting.** Accounts and secrets the first deploy needs.
+   - Human gate: ops — create the staging and production projects on the host; add DATABASE_URL to each project and DEPLOY_TOKEN to the CI secret store, by name
    - Depends on: 1
-   - Acceptance: both projects exist; `DATABASE_URL` set in both; CI can deploy to staging
-3. [ ] **Waitlist landing page.** The source's cheapest validation: measure sign-ups before building the product. Its proposal ends with the production release gate, which depends on milestone 4 as roadmap.md#4.
+   - Acceptance: both projects exist; `DATABASE_URL` set in both and `DEPLOY_TOKEN` in CI, each by name
+3. [ ] **Waitlist landing page.** The source's cheapest validation: measure sign-ups before building the product. Its proposal starts with the CI deploy to staging and production on milestone 2's accounts, and ends with the production release gate, which depends on milestone 4 as roadmap.md#4.
    - Proposal: 01-waitlist.md
    - Depends on: 1, 2
    - Acceptance: page live in production; sign-ups stored with recorded consent; daily count visible to the team
@@ -190,7 +190,7 @@ Rules:
 - **Human gates** — `Human gate: <kind> — <what a person does>`, no `Proposal:`:
   - `research` — every assumption only a person can settle (see *Desk research*);
   - `decision` — every legal or compliance sign-off and every go/no-go;
-  - `ops` — every account, domain, store or registry listing, or secret a person must create (secrets by NAME, per environment), placed before the first milestone that needs it;
+  - `ops` — every account, domain, store or registry listing, or secret a person must create (secrets by NAME, per environment), placed before the first milestone that needs it; its Acceptance is what the person creates, never what later code proves (a CI deploy job is a step of the proposal that first deploys);
   - `release` — a launch that ships several milestones' work together (one store submission of an app built across milestones). Each production release, app-store submission or launch is gated exactly **once**: by default as a `release` gate inside the proposal whose code it ships, right after that code (`/propose` writes it), and as a roadmap milestone only in that several-milestones case — never both.
   - A gate milestone that only one step of a proposal must wait for — a legal or privacy sign-off before its release, an `ops` milestone that provisions the accounts the step uses — need not hold back the whole code milestone: that step depends on it as `roadmap.md#N` (the lint resolves it and treats it as satisfied once ticked). Name such gates in the code milestone's description so `/propose` wires them.
 - **Code milestones** — `Proposal: NN-slug.md`: two-digit sequence in roadmap order from `01` (continue after the highest `NN-` already in `$OUT`), kebab-case slug of at most 40 characters. The file is not written here. Size each to one proposal of roughly 3–10 PR-sized steps that is independently valuable; split anything larger into milestones that each ship on their own: a proposal over 12 steps or 40 KB draws a lint warning and a review concern, and one over 20 steps or 80 KB is a lint error and gets no lanes.

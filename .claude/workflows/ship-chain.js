@@ -18,7 +18,8 @@ export const meta = {
 //   main_branch, ai_review_check, required_checks, gate, commit_trailers, max_monitor_rounds, efforts, on_question
 //                   — shared ship settings; each one given here overrides the lane's own args
 //   github_access   — 'gh' | 'connector' | '' (default: each lane's own, as the ship plan gives it, else ''): how the agents reach
-//                     GitHub; '' leaves it to the GITHUB_ACCESS line of the Pipeline config (gh when it is absent). It reaches the
+//                     GitHub; '' leaves it to the GITHUB_ACCESS line of the Pipeline config, else gh when it is authenticated,
+//                     else the connector (.claude/scripts/github-access.md). It reaches the
 //                     lookup, the wait (which in connector mode polls with GitHub MCP reads and Monitor timed waits) and every
 //                     lane's plan-to-merged-pr run; given here, it overrides the lanes' own
 //   repo            — the repository's GitHub owner/name (default: each lane's own, as the ship plan gives it): what a missing
@@ -82,7 +83,7 @@ const GUARD = `If a permission check or classifier denies any action, do NOT ret
 // when the lane's run may be in that mode.
 const accessText = (mode, repo) => (mode
   ? `The access for this run is ${mode} (the github_access arg, which overrides the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md). `
-  : `The access for this run is the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md (gh when it is absent). `) +
+  : `The access for this run is the GITHUB_ACCESS line in the "Pipeline config" section of CLAUDE.md; when it is absent, gh when gh auth status succeeds, else the GitHub MCP tools ("Which access" in .claude/scripts/github-access.md). `) +
   `Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. ` +
   (mode === 'gh' ? '' : `In connector mode, load the mcp__github__ tool schemas with ToolSearch, do each gh command named here with the tool named after it (that file maps the rest), and take the owner and name ${repo ? `from ${repo}` : 'from git remote get-url origin'}, never guessed. `) +
   `If the access in use is unavailable, stop with error=github_unavailable${mode === 'connector' ? '' : ' (gh mode keeps its existing error names, gh_unauthenticated and gh_auth_failed)'}. ` +
