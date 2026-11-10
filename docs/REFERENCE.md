@@ -955,17 +955,28 @@ Stop the schedule once the PR merges or closes.
 orchestrator) under half its context window: it hands off with `/handoff` instead
 of compacting. `.claude/settings.json` registers it as the status line
 (`context-guard.py statusline`) and as one hook command for five events
-(`context-guard.py hook`, which dispatches on the event):
+(`context-guard.py hook`, which dispatches on the event).
+
+It acts only on the orchestrator. A main session becomes one with its first
+Workflow tool call (PostToolUse sees `tool_name` `Workflow` and records
+`orchestrating` in the session's record), or from its start with
+`PIPELINE_ORCHESTRATOR=1`. A session that runs no workflow, such as an ordinary
+coding session or a `claude -p` run, gets the SessionStart pointer and a plain
+`ctx NN%`, at any usage, and nothing else: it is never told to hand off, so it never
+pushes a state branch. Under CI (`CI` or `GITHUB_ACTIONS` set to anything but empty,
+`0`, `false`, `no` or `off`) the guard does nothing at all, SessionStart included,
+so a review bot is left alone, unless `PIPELINE_ORCHESTRATOR=1`. In an orchestrating
+session:
 
 | Event | At or over the threshold | Otherwise |
 |---|---|---|
 | status line | prints `ctx NN% · handoff due` and records the usage in `~/.claude/context-guard/<session>.json` | `ctx NN%` (`ctx --` before the first response) |
-| PostToolUse | context for Claude: start no new work, finish or park the step, run `/handoff`, end the session. Rate-limited: the first crossing, then every 5 more points or every 10th tool call | nothing |
+| PostToolUse | context for Claude: start no new work, finish or park the step, run `/handoff`, end the session. Rate-limited: the first crossing (the Workflow call that makes the session orchestrating counts), then every 5 more points or every 10th tool call | nothing |
 | UserPromptSubmit | context for Claude beside the prompt; never blocks it | nothing |
 | Stop | blocks (`decision: block`) until `/handoff` has recorded a handoff since the crossing; a stop already continued once (`stop_hook_active`) goes through | nothing |
 | PreCompact (auto) | the first in a session is blocked with the handoff instruction; a later one goes ahead, with summary instructions that keep the pipeline state | allowed, with the same instructions |
 | PreCompact (manual) | allowed | allowed |
-| SessionStart | at any usage: when the state branch has `STATE.md`, says when it was saved, to read it first (`python3 .claude/scripts/pipeline-state.py get STATE.md`), and quotes its `## Next` (up to 2,000 characters) | the same |
+| SessionStart | at any usage, and in a session that does not orchestrate too: when the state branch has `STATE.md`, says when it was saved, to read it first (`python3 .claude/scripts/pipeline-state.py get STATE.md`), and quotes its `## Next` (up to 2,000 characters) | the same |
 
 Usage comes from the status line's record when it is under 10 minutes old, else
 from the session transcript: the last main-chain assistant response's input,
@@ -976,13 +987,16 @@ for a model whose window is 1M (the 5-series and later, Fable, Mythos, an id end
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` becomes the window, and
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` lowers the threshold to 10 points under it (half
 of it, below 20), so an earlier auto-compaction never comes first. Events fired
-inside a subagent or a workflow agent (hook input with `agent_id`) are ignored, and
-any error exits 0 with no output, so the hooks never fail a session.
+inside a subagent or a workflow agent (hook input with `agent_id`) are ignored, so a
+subagent's Workflow call makes no session orchestrating, and any error exits 0 with
+no output, so the hooks never fail a session.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `PIPELINE_HANDOFF_PCT` | `40` | the threshold, in percent of the context window |
 | `PIPELINE_CONTEXT_WINDOW` | inferred | the window in tokens when no status line reports it (`1000000` for a 1M model the guard does not recognize) |
+| `PIPELINE_ORCHESTRATOR` | unset | `1`: the session orchestrates from its start, without a Workflow call, and under CI too |
+| `CI`, `GITHUB_ACTIONS` | read, never set | either one set (not empty, `0`, `false`, `no` or `off`): no hook nags, blocks or points at `STATE.md`, and the status line drops "handoff due", unless `PIPELINE_ORCHESTRATOR=1` |
 | `PIPELINE_CONTEXT_GUARD` | on | `off` (or `0`, `false`, `no`) makes every hook a no-op and drops "handoff due" |
 | `PIPELINE_GUARD_DIR` | `~/.claude/context-guard` | per-session records (removed after 30 days) |
 | `PIPELINE_STATE_BRANCH` | `pipeline/state` | the state branch, for the guard and `pipeline-state.py` |
@@ -999,9 +1013,11 @@ To turn it off or adjust it:
   the hooks keep working from the transcript.
 - `"disableAllHooks": true` turns off every hook and the status line; deleting the
   entries from `.claude/settings.json` removes the guard for everyone.
+- `PIPELINE_ORCHESTRATOR=1` has the guard act from a session's first event: for an
+  orchestrator that relays runs it did not start itself, or one that runs under CI.
 - `python3 .claude/scripts/context-guard.py status` prints what the guard sees for
-  the current session (`CLAUDE_CODE_SESSION_ID`, or `--session ID`), and
-  `mark-handoff` records a handoff by hand.
+  the current session (`CLAUDE_CODE_SESSION_ID`, or `--session ID`), whether it
+  orchestrates included, and `mark-handoff` records a handoff by hand.
 
 The guard runs only where Claude Code reads the repository's
 `.claude/settings.json`: a local session in it, or a cloud session with that one

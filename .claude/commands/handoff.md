@@ -1,6 +1,6 @@
 Write the pipeline handoff, `STATE.md`, to the state branch so a fresh session can continue this one's work, record that the handoff was written, and tell the person how to continue.
 
-Run it when the context guard says the handoff is due (the status line shows `handoff due`, or a hook says the context is at or over `PIPELINE_HANDOFF_PCT`, default 40%), before ending a long orchestration session, or whenever the person asks. The handoff carries what this session knows that the repository does not: the workflow runs and their exact args, the person's answers, open questions and assumptions, and the next action. It links to files instead of copying them.
+Run it when the context guard says the handoff is due (the status line shows `handoff due`, or a hook says the context is at or over `PIPELINE_HANDOFF_PCT`, default 40%; it says so only in a session that orchestrates, one that has run a workflow or has `PIPELINE_ORCHESTRATOR=1`, and under CI only with `PIPELINE_ORCHESTRATOR=1`), before ending a long orchestration session, or whenever the person asks. The handoff carries what this session knows that the repository does not: the workflow runs and their exact args, the person's answers, open questions and assumptions, and the next action. It links to files instead of copying them.
 
 ## Configuration
 

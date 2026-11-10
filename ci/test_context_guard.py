@@ -6,7 +6,8 @@ Run from the repo root: python3 ci/test_context_guard.py
 
 Each test runs the script as Claude Code does, with hook or status-line JSON on stdin, and a private guard
 directory (PIPELINE_GUARD_DIR) and HOME in a temp directory. The SessionStart tests build a state branch with
-pipeline-state.py.
+pipeline-state.py. The guard nags and blocks only an orchestrating session, so the tests of its nags and blocks
+start each session with a Workflow tool call (Orchestrating); CI and GITHUB_ACTIONS are cleared, as CI sets them.
 """
 
 import json
@@ -37,9 +38,10 @@ class Guard(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='guard-test-')
         self.dir = os.path.join(self.tmp, 'guard')
-        # Inside a Claude Code session these are set for real; the tests must not pick them up.
+        # Inside a Claude Code session or a CI job these are set for real; the tests must not pick them up.
         self.env = {k: v for k, v in os.environ.items()
-                    if not k.startswith(('PIPELINE_', 'CLAUDE_', 'GIT_')) or k == 'GIT_EXEC_PATH'}
+                    if (not k.startswith(('PIPELINE_', 'CLAUDE_', 'GIT_')) or k == 'GIT_EXEC_PATH')
+                    and k not in ('CI', 'GITHUB_ACTIONS')}
         self.env.update(HOME=self.tmp, XDG_CONFIG_HOME=self.tmp, GIT_CONFIG_NOSYSTEM='1',
                         PIPELINE_GUARD_DIR=self.dir, PIPELINE_STATE_OFFLINE='1')
         self.repo = os.path.join(self.tmp, 'repo')
@@ -106,6 +108,27 @@ class Guard(unittest.TestCase):
         self.assertEqual(r.returncode, code, r.stderr)
         return r
 
+    def orchestrate(self, sid='s1', env=None, **fields):
+        """The session's Workflow tool call, which makes it orchestrating; its output ('' with no usage known)."""
+        return self.hook('PostToolUse', sid=sid, env=env, tool_name='Workflow', **fields)
+
+    def hook_state(self, sid='s1'):
+        with open(os.path.join(self.dir, '%s.hook.json' % sid)) as f:
+            return json.load(f)
+
+    def save_state(self, repo, text, *flags):
+        r = subprocess.run([sys.executable, STATE, '--repo', repo, 'save', '-', '--as', 'STATE.md'] + list(flags),
+                           input=text.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class Orchestrating(Guard):
+    """A session that has run a workflow: its Workflow call comes first, before any usage is known."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.orchestrate(), '', 'with no usage known, the Workflow call only marks the session')
+
 
 def assistant(model='claude-opus-4-8', sidechain=False, **usage):
     e = {'type': 'assistant', 'message': {'model': model, 'role': 'assistant', 'content': [], 'usage': usage}}
@@ -125,7 +148,10 @@ class StatusLine(Guard):
                          (12, 200000, '/x/s1.jsonl'))
         self.assertRegex(rec['at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
 
-    def test_handoff_due_at_or_over_the_threshold(self):
+    def test_handoff_due_at_or_over_the_threshold_in_an_orchestrating_session(self):
+        self.assertEqual(self.statusline({'session_id': 's1', 'context_window': {'used_percentage': 90}}), 'ctx 90%',
+                         'a session that has run no workflow is never told to hand off')
+        self.orchestrate()
         self.assertEqual(self.statusline({'session_id': 's1', 'context_window': {'used_percentage': 39.4}}),
                          'ctx 39%')
         self.assertEqual(self.statusline({'session_id': 's1', 'context_window': {'used_percentage': 40}}),
@@ -136,6 +162,7 @@ class StatusLine(Guard):
                                          env={'PIPELINE_CONTEXT_GUARD': 'off'}), 'ctx 90%')
 
     def test_falls_back_to_current_usage_then_to_unknown(self):
+        self.orchestrate()
         line = self.statusline({'session_id': 's1', 'context_window': {
             'used_percentage': None, 'context_window_size': 1000000,
             'current_usage': {'input_tokens': 5, 'cache_creation_input_tokens': 100000,
@@ -223,7 +250,7 @@ class Usage(Guard):
         self.assertAlmostEqual(self.status(transcript=t)['usage']['pct'], 60.0)
 
 
-class PostToolUse(Guard):
+class PostToolUse(Orchestrating):
     def warns(self, **kw):
         out = self.hook_json('PostToolUse', tool_name='Bash', **kw)
         if out is None:
@@ -266,7 +293,7 @@ class PostToolUse(Guard):
         self.assertIn('A handoff was saved at', out['hookSpecificOutput']['additionalContext'])
 
 
-class PromptAndStop(Guard):
+class PromptAndStop(Orchestrating):
     def test_user_prompt_submit_adds_context_and_never_blocks(self):
         self.at(30)
         self.assertEqual(self.hook('UserPromptSubmit', prompt='hello'), '')
@@ -318,7 +345,7 @@ class PromptAndStop(Guard):
             self.assertEqual(self.hook(event, env=off, trigger='auto'), '')
 
 
-class PreCompact(Guard):
+class PreCompact(Orchestrating):
     def test_auto_blocks_once_then_allows_with_summary_instructions(self):
         self.at(92)
         out = self.hook_json('PreCompact', trigger='auto', custom_instructions=None)
@@ -343,6 +370,7 @@ class PreCompact(Guard):
         self.assertEqual(self.hook_json('PreCompact', trigger='auto')['decision'], 'block')
 
     def test_the_block_is_per_session(self):
+        self.orchestrate(sid='s2')
         self.at(92, sid='s1')
         self.at(92, sid='s2')
         self.assertEqual(self.hook_json('PreCompact', sid='s1', trigger='auto')['decision'], 'block')
@@ -355,29 +383,98 @@ class Subagents(Guard):
         sub = {'agent_id': 'agent-abc123', 'agent_type': 'general-purpose'}
         for event in EVENTS:
             self.assertEqual(self.hook(event, trigger='auto', stop_hook_active=False, **sub), '', event)
-        self.assertEqual(self.hook('PostToolUse', transcript_path='/p/s1/subagents/agent-x.jsonl'), '')
+        self.assertEqual(self.orchestrate(**sub), '', 'a subagent that runs a workflow orchestrates nothing')
+        self.assertEqual(self.orchestrate(transcript_path='/p/s1/subagents/agent-x.jsonl'), '')
         self.assertFalse(os.path.exists(os.path.join(self.dir, 's1.hook.json')), 'no state recorded')
-        # ... so a subagent's tool calls never count toward the main session's rate limit
-        self.assertIsNotNone(self.hook_json('PostToolUse'))
+        self.assertEqual(self.hook('Stop', stop_hook_active=False), '', 'so the main session is not orchestrating')
+        # ... and once the main session runs a workflow, a subagent's tool calls never count toward its rate limit
+        self.assertIn('/handoff', self.orchestrate(), 'the first crossing warns')
         for _ in range(12):
             self.hook('PostToolUse', **sub)
         self.assertEqual(self.hook('PostToolUse'), '')
 
     def test_a_main_session_started_with_agent_is_guarded(self):
+        self.orchestrate(agent_type='security-reviewer')
         self.at(80)
         out = self.hook_json('Stop', agent_type='security-reviewer', stop_hook_active=False)
         self.assertEqual(out['decision'], 'block')
+
+
+class Orchestration(Guard):
+    def events(self, env=None):
+        """The output of each event the guard nags or blocks on, in turn: PostToolUse, UserPromptSubmit, Stop and
+        PreCompact (auto); '' where it did nothing."""
+        return [self.hook(e, env=env, tool_name='Bash', prompt='go on', stop_hook_active=False, trigger='auto')
+                for e in ('PostToolUse', 'UserPromptSubmit', 'Stop', 'PreCompact')]
+
+    def line(self, pct=80, env=None):
+        return self.statusline({'session_id': 's1', 'context_window': {'used_percentage': pct}}, env=env)
+
+    def test_over_the_threshold_without_orchestration_nothing_nags_or_blocks(self):
+        self.at(80)
+        for _ in range(2):
+            self.assertEqual(self.events(), ['', '', '', ''])
+        self.assertEqual(self.line(), 'ctx 80%')
+        st = self.status()
+        self.assertEqual((st['orchestrating'], st['over'], st['crossed_at'], st['precompact_blocked']),
+                         (False, True, None, None), 'nothing measured, crossed or used up')
+        self.assertNotIn('orchestrating', self.hook_state())
+
+    def test_a_workflow_call_marks_the_session_and_the_next_event_over_the_threshold_nags(self):
+        self.at(80)
+        self.assertEqual(self.events(), ['', '', '', ''])
+        out = json.loads(self.orchestrate())
+        self.assertIn('/handoff', out['hookSpecificOutput']['additionalContext'], 'the Workflow call is measured')
+        self.assertIs(self.hook_state()['orchestrating'], True)
+        out = self.hook_json('UserPromptSubmit', prompt='go on')
+        self.assertIn('/handoff', out['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(self.hook_json('Stop', stop_hook_active=False)['decision'], 'block')
+        self.assertEqual(self.hook_json('PreCompact', trigger='auto')['decision'], 'block')
+        self.assertIs(self.hook_state()['orchestrating'], True, 'the mark stays for the rest of the session')
+        self.assertTrue(self.status()['orchestrating'])
+        self.assertEqual(self.line(), 'ctx 80% · handoff due')
+        self.at(80, sid='s2')
+        self.assertEqual(self.hook('Stop', sid='s2', stop_hook_active=False), '', 'another session is not marked')
+
+    def test_pipeline_orchestrator_1_makes_a_session_orchestrating_without_a_workflow_call(self):
+        on = {'PIPELINE_ORCHESTRATOR': '1'}
+        self.at(80)
+        post, prompt, stop, precompact = self.events(env=on)
+        for out in (post, prompt):
+            self.assertIn('/handoff', json.loads(out)['hookSpecificOutput']['additionalContext'])
+        self.assertEqual([json.loads(stop)['decision'], json.loads(precompact)['decision']], ['block', 'block'])
+        self.assertEqual(self.line(env=on), 'ctx 80% · handoff due')
+        self.assertTrue(self.status(env=on)['orchestrating'])
+        self.assertFalse(self.status()['orchestrating'], 'nothing recorded: the variable decides')
+        self.assertEqual(self.events(env={'PIPELINE_ORCHESTRATOR': '0'})[1:3], ['', ''])
+
+    def test_ci_suppresses_everything_unless_pipeline_orchestrator_is_1(self):
+        self.save_state(self.repo, '# Pipeline handoff: demo\n\n## Next\n\nRun the workflow.\n', '--no-push')
+        self.orchestrate()
+        self.at(80)
+        for ci in ({'CI': 'true'}, {'GITHUB_ACTIONS': 'true'}, {'CI': '1', 'GITHUB_ACTIONS': 'false'}):
+            self.assertEqual(self.events(env=ci), ['', '', '', ''], ci)
+            self.assertEqual(self.orchestrate(env=ci), '', ci)
+            self.assertEqual(self.hook('SessionStart', env=ci, source='startup'), '', '%s: no handoff pointer' % ci)
+            self.assertEqual(self.line(env=ci), 'ctx 80%', ci)
+            self.assertFalse(self.status(env=ci)['orchestrating'], ci)
+        # A falsy CI is none ...
+        falsy = {'CI': 'false', 'GITHUB_ACTIONS': ''}
+        self.assertEqual(self.hook_json('Stop', env=falsy, stop_hook_active=False)['decision'], 'block')
+        out = self.hook_json('SessionStart', env=falsy, source='startup')
+        self.assertIn('Read it before acting', out['hookSpecificOutput']['additionalContext'])
+        # ... and PIPELINE_ORCHESTRATOR=1 orchestrates under CI too, its SessionStart pointer included.
+        forced = {'CI': 'true', 'GITHUB_ACTIONS': 'true', 'PIPELINE_ORCHESTRATOR': '1'}
+        self.assertEqual(self.hook_json('PreCompact', env=forced, trigger='auto')['decision'], 'block')
+        out = self.hook_json('SessionStart', env=forced, source='startup')
+        self.assertIn('Read it before acting', out['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(self.line(env=forced), 'ctx 80% · handoff due')
 
 
 class SessionStart(Guard):
     STATE_MD = ('# Pipeline handoff: demo\n\n## Goal\nShip it.\n\n## Next\n\nRun the workflow '
                 '`brief-to-proposals` with these args:\n\n```json\n{"from": "proposals"}\n'
                 '## not a heading: inside a fence\n```\n\n## Environment\n\nA cloud session.\n')
-
-    def save_state(self, repo, text, *flags):
-        r = subprocess.run([sys.executable, STATE, '--repo', repo, 'save', '-', '--as', 'STATE.md'] + list(flags),
-                           input=text.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
 
     def context(self, env=None, **fields):
         out = self.hook_json('SessionStart', source='startup', env=env, **fields)

@@ -298,11 +298,13 @@ and answers, and handoffs to a fresh session were written by hand.
 *Fix:* hand off before half the window and never compact; run the heavy commands in
 subagents.
 *Status:* partly fixed. The context guard (`.claude/scripts/context-guard.py`,
-registered in `.claude/settings.json`) has the main session hand off at 40% of its
+registered in `.claude/settings.json`) has the orchestrating session (a main session
+that has run a workflow, or has `PIPELINE_ORCHESTRATOR=1`) hand off at 40% of its
 window (`PIPELINE_HANDOFF_PCT`): the status line shows `handoff due`, tool results
 say to start no new work and run `/handoff`, the turn cannot end until a handoff is
-recorded, and the first auto-compaction is blocked; subagents and workflow agents
-are never told to. `/handoff` writes `STATE.md` to the state branch, and a new
+recorded, and the first auto-compaction is blocked. Sessions that run no workflow,
+subagents, workflow agents and CI jobs (`CI` or `GITHUB_ACTIONS` set) are never
+told to. `/handoff` writes `STATE.md` to the state branch, and a new
 session continues from it. `bootstrap-repo` and `refresh-proposal` run `/bootstrap`
 and the re-review in subagents. Still open: Claude Code runs a repository's hooks
 only where it reads its `.claude/settings.json`, so the guard does not run in a

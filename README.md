@@ -242,14 +242,19 @@ workflow agents that return compact results (`bootstrap-repo` and
 
 - **The guard.** `.claude/settings.json` registers `.claude/scripts/context-guard.py`
   as the status line and five hooks (`/seed` copies it, or reports what to merge
-  into yours). At 40% of the window (`PIPELINE_HANDOFF_PCT`) the status line reads
+  into yours). They act only in a session that orchestrates: one that has run a
+  workflow (a Workflow tool call), or has `PIPELINE_ORCHESTRATOR=1`. There, at 40%
+  of the window (`PIPELINE_HANDOFF_PCT`), the status line reads
   `ctx NN% · handoff due`, each tool result says to start no new work and run
   `/handoff`, the turn cannot end until a handoff is recorded, and the first
-  auto-compaction is blocked. Subagents are never told to hand off, and the hooks
-  never fail a session. `PIPELINE_CONTEXT_GUARD=off` turns it off (in
-  `.claude/settings.local.json`'s `env`, or a cloud environment's variables). A
-  cloud session runs the repository's hooks only when that is its one repository
-  (and not a project's thread): with several attached, run `/handoff` yourself
+  auto-compaction is blocked. A session that runs no workflow (an ordinary coding
+  session, a `claude -p` run) and a subagent are never told to hand off, and under
+  CI (`CI` or `GITHUB_ACTIONS` set: a review bot, say) the guard does nothing,
+  unless `PIPELINE_ORCHESTRATOR=1`. The hooks never fail a session;
+  `PIPELINE_CONTEXT_GUARD=off` turns the guard off (in the `env` of
+  `.claude/settings.local.json`, or a cloud environment's variables). A cloud
+  session runs the repository's hooks only when that is its one repository (and
+  not a project's thread): with several attached, run `/handoff` yourself
   ([details](docs/REFERENCE.md#the-context-guard)).
 - **`/handoff`** saves `STATE.md` (where things stand, the runs in flight with their
   exact args, the questions waiting on you, your answers, the exact next action) to

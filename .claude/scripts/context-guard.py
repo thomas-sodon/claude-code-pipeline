@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Context guard: the main Claude Code session hands off before its context passes 50% (stdlib only, 3.8+).
+"""Context guard: the orchestrating Claude Code session hands off before its context passes 50% (stdlib only, 3.8+).
 
 context-guard.py statusline     the status-line command: reads Claude Code's status-line JSON on stdin,
                                 records this session's context usage and prints "ctx NN%" (" · handoff due"
-                                added at or over the threshold).
+                                added at or over the threshold in an orchestrating session).
 context-guard.py hook           one hook entry for SessionStart, UserPromptSubmit, PostToolUse, Stop and
                                 PreCompact; it dispatches on hook_event_name and always exits 0.
 context-guard.py mark-handoff   record that a handoff was written now (/handoff runs it after saving STATE.md).
-context-guard.py status         print what the guard sees for a session, as JSON.
+context-guard.py status         print what the guard sees for a session, as JSON (orchestrating included).
 
 Main session only: an event fired inside a subagent or a workflow agent (its input carries agent_id, see the
 hooks reference) is ignored, so a subagent is never told to hand off.
+
+Orchestrating session only: the nags and blocks below, and "handoff due", apply to a main session that has made a
+Workflow tool call (PostToolUse sees tool_name Workflow and records orchestrating: true in its state file) or runs
+with env PIPELINE_ORCHESTRATOR=1. An ordinary coding session, a claude -p run or a CI review bot is never told to
+hand off, so it never pushes a state branch. Under CI (a truthy CI or GITHUB_ACTIONS: anything but empty, 0, false,
+no or off) none of them apply and SessionStart injects nothing, unless PIPELINE_ORCHESTRATOR=1.
 
 Usage is this session's status-line record when it is under 10 minutes old, else the transcript: the last
 main-chain assistant entry's message.usage (input_tokens + cache_creation_input_tokens +
@@ -19,24 +25,29 @@ size is the status line's last context_window_size, else env PIPELINE_CONTEXT_WI
 transcript's model is one whose window is 1M (the 5-series and later, Fable, Mythos, or an id ending in
 [1m]), else 200000; a token count above the assumed window means the window is 1M.
 
-At or over the threshold (env PIPELINE_HANDOFF_PCT, default 40):
+At or over the threshold (env PIPELINE_HANDOFF_PCT, default 40), in an orchestrating session:
   PostToolUse       additionalContext: start no new work, run /handoff, end the session and continue in a
                     fresh one. Rate-limited: the first crossing, then every further 5 points or every 10th
-                    tool call.
+                    tool call. The Workflow call that makes a session orchestrating is measured like any other.
   UserPromptSubmit  additionalContext only; the person's prompt is never blocked.
   Stop              decision "block" until a handoff is recorded after the first crossing; a Stop that
                     stop_hook_active marks as already continued is allowed, so it never loops.
   PreCompact        auto: the first one in a session is blocked with the handoff instruction; a later one is
                     allowed, with summary instructions on stdout to keep the pipeline state. manual: allowed.
-SessionStart, at any usage: when the state branch has STATE.md (a git fetch of at most 10 s; env
-PIPELINE_STATE_OFFLINE=1 skips it and reads the local refs), additionalContext says when the handoff was
-written, to read it before acting, and quotes its ## Next section (at most 2,000 characters).
+A session that is not orchestrating gets none of these, at any usage, and no PreCompact summary instructions.
+SessionStart, at any usage and whether or not the session orchestrates (outside CI): when the state branch has
+STATE.md (a git fetch of at most 10 s; env PIPELINE_STATE_OFFLINE=1 skips it and reads the local refs),
+additionalContext says when the handoff was written, to read it before acting, and quotes its ## Next section
+(at most 2,000 characters).
 
 Environment:
   PIPELINE_HANDOFF_PCT     handoff threshold, percent of the context window (default 40)
   PIPELINE_CONTEXT_WINDOW  window size in tokens when no status line reports one
   CLAUDE_CODE_AUTO_COMPACT_WINDOW  read, not set: a smaller compaction window is the one usage is measured against
   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE  read, not set: the threshold stays at least 10 points (or half) below it
+  PIPELINE_ORCHESTRATOR    1: the session orchestrates from its first event, without a Workflow call, under CI too
+  CI, GITHUB_ACTIONS       read, not set: either truthy, nothing nags, blocks or injects, and the status line drops
+                           "handoff due", unless PIPELINE_ORCHESTRATOR=1
   PIPELINE_GUARD_DIR       per-session records (default ~/.claude/context-guard)
   PIPELINE_CONTEXT_GUARD   "off" (or 0, false, no) makes the hooks no-ops and drops "handoff due"
   PIPELINE_STATE_BRANCH    the state branch SessionStart reads (default pipeline/state)
@@ -44,7 +55,7 @@ Environment:
   CLAUDE_CODE_SESSION_ID   the session mark-handoff and status act on (set by Claude Code in Bash commands)
 
 Files in the guard directory: <session>.json (status line: used_percentage, context_window_size, at),
-<session>.hook.json (crossing and rate-limit state), <session>.handoff.json and
+<session>.hook.json (orchestrating, crossing and rate-limit state), <session>.handoff.json and
 handoff-<repo-key>.json (handoff marks), errors.log. Records older than 30 days are removed at SessionStart.
 The hook never fails the session: any error exits 0 with no output (and a line in errors.log).
 """
@@ -90,6 +101,25 @@ def guard_dir():
 
 def enabled():
     return (os.environ.get('PIPELINE_CONTEXT_GUARD') or '').strip().lower() not in ('off', '0', 'false', 'no')
+
+
+def truthy(name):
+    return (os.environ.get(name) or '').strip().lower() not in ('', '0', 'false', 'no', 'off')
+
+
+def forced():
+    """env PIPELINE_ORCHESTRATOR=1: the session orchestrates from its first event, under CI too."""
+    return truthy('PIPELINE_ORCHESTRATOR')
+
+
+def quiet_ci():
+    """A CI job (a review bot, a scripted claude -p) gets no nag, block or SessionStart pointer, unless forced."""
+    return (truthy('CI') or truthy('GITHUB_ACTIONS')) and not forced()
+
+
+def orchestrating(st):
+    """Whether the guard acts on this session: forced, or a Workflow tool call recorded in its state, outside CI."""
+    return forced() or (st.get('orchestrating') is True and not quiet_ci())
 
 
 def threshold():
@@ -480,11 +510,15 @@ def on_session_start(ev, sid, st):
     st['main_transcript'] = ev.get('transcript_path')
     st['source'] = ev.get('source')
     cleanup()
+    if quiet_ci():
+        return None                        # a CI job is not continuing a handoff: no fetch, no pointer
     text = handoff_context(ev.get('cwd') or os.environ.get('CLAUDE_PROJECT_DIR') or os.getcwd())
     return additional('SessionStart', text) if text else None
 
 
 def on_prompt(ev, sid, st):
+    if not orchestrating(st):
+        return None
     m = measure(sid, ev.get('transcript_path'))
     if not track(st, m['pct']):
         return None
@@ -494,6 +528,10 @@ def on_prompt(ev, sid, st):
 
 
 def on_post_tool(ev, sid, st):
+    if ev.get('tool_name') == 'Workflow':
+        st['orchestrating'] = True         # it runs workflows: it orchestrates from this call on (CI aside)
+    if not orchestrating(st):
+        return None                        # not measured either: an ordinary session pays no transcript read
     m = measure(sid, ev.get('transcript_path'))
     if not track(st, m['pct']):
         return None
@@ -510,7 +548,7 @@ def on_post_tool(ev, sid, st):
 
 
 def on_stop(ev, sid, st):
-    if ev.get('stop_hook_active'):
+    if ev.get('stop_hook_active') or not orchestrating(st):
         return None
     m = measure(sid, ev.get('transcript_path'))
     if not track(st, m['pct']):
@@ -522,8 +560,8 @@ def on_stop(ev, sid, st):
 
 
 def on_precompact(ev, sid, st):
-    if ev.get('trigger') == 'manual':
-        return None
+    if ev.get('trigger') == 'manual' or not orchestrating(st):
+        return None                        # nothing to hand off: no block, and no pipeline summary to keep
     m = measure(sid, ev.get('transcript_path'))
     if m['pct'] is not None and m['pct'] < threshold():
         return SUMMARY_INSTRUCTIONS        # under the threshold (an idle compaction): nothing to hand off yet
@@ -560,7 +598,7 @@ def cmd_hook():
 # ---- status line, marks, status -----------------------------------------------------------------
 
 def cmd_statusline():
-    pct = None
+    pct = sid = None
     try:
         d = json.loads(sys.stdin.buffer.read().decode('utf-8', 'replace'))
         if not isinstance(d, dict):
@@ -582,7 +620,8 @@ def cmd_statusline():
     except Exception as e:
         log_error('statusline', e)
     line = 'ctx %d%%' % round(pct) if pct is not None else 'ctx --'
-    if pct is not None and enabled() and pct >= threshold():
+    st = read_json(state_file(sid)) if sid else {}
+    if pct is not None and enabled() and pct >= threshold() and orchestrating(st):
         line += ' · handoff due'
     emit(line + '\n')
     return 0
@@ -625,7 +664,8 @@ def cmd_status(argv):
     st = read_json(state_file(sid)) if sid else {}
     m = measure(sid, transcript or st.get('main_transcript'))
     handed = last_handoff(sid, os.getcwd())
-    print(json.dumps({'session_id': sid, 'enabled': enabled(), 'threshold': threshold(), 'usage': m,
+    print(json.dumps({'session_id': sid, 'enabled': enabled(), 'orchestrating': orchestrating(st),
+                      'threshold': threshold(), 'usage': m,
                       'over': m['pct'] is not None and m['pct'] >= threshold(),
                       'crossed_at': st.get('crossed_at'), 'handoff_at': iso(handed) if handed else None,
                       'precompact_blocked': st.get('precompact_blocked'), 'guard_dir': guard_dir()}, indent=2))
