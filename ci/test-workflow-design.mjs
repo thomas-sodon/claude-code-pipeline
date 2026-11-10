@@ -246,6 +246,11 @@ await test('brief-to-proposals: checkpoint agents appear only with branch, and t
   assert.deepEqual(concern.labels, ['branch', 'seed', 'intake', 'propose', 'review:proposal-1', 'checkpoint:proposals', 'lint'])
   assert.ok(concern.prompt('checkpoint:proposals').includes('docs/design/big-change.md'))
   assert.equal(concern.result.status, 'ready')
+  // With no github_access arg, the access is the Pipeline config's, unset meaning what github-access.md says.
+  for (const l of ['branch', 'checkpoint:proposals']) {
+    assert.ok(concern.prompt(l).includes('GITHUB_ACCESS from the "## Pipeline config" section of CLAUDE.md: gh or connector (unset: gh when it is authenticated, else the GitHub MCP tools)'), l)
+    assert.doesNotMatch(concern.prompt(l), /default gh/, l)
+  }
   // A branch that cannot be checked out stops the run before anything is seeded.
   const blocked = await run(WF, args, design({ branch: { stopped: true, stop_reason: 'error=no_main' } }, NO_DOCS))
   assert.equal(blocked.result.status, 'failed_at_branch')

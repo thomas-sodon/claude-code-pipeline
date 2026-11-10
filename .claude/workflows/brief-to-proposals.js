@@ -37,8 +37,9 @@ export const meta = {
 //                             so far, the seeded .claude files and CLAUDE.md (never the brief or the context file) and pushes the
 //                             branch. Without branch the run commits nothing.
 //   commit_trailers?: string[] lines each checkpoint commit ends with (default ['Co-Authored-By: Claude <noreply@anthropic.com>'])
-//   github_access?: string    'gh' | 'connector' (default '': GITHUB_ACCESS from the Pipeline config, else gh); passed into the prompts
-//                             that reach the remote. git fetch and push stay plain git in either mode.
+//   github_access?: string    'gh' | 'connector' (default '': GITHUB_ACCESS from the Pipeline config, gh or connector; unset, gh when it
+//                             is authenticated, else the GitHub MCP tools); passed into the prompts that reach the remote. git fetch
+//                             and push stay plain git in either mode.
 //   panel?: number            independent architecture sketches before /roadmap (default 3; 0 = skip the panel)
 //   milestones?: number[]     propose only these roadmap milestones, written or not (default: every pending milestone that names a
 //                             proposal; when the docs already existed, the ones answered or not yet written)
@@ -114,7 +115,7 @@ const LINT = `python3 .claude/scripts/proposal-lint.py`
 const STATE = `python3 .claude/scripts/pipeline-state.py`
 const PIPELINE = A.pipeline ? String(A.pipeline).replace(/\/+$/, '') : ''
 const GITHUB = `Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. ` +
-  (GH_ACCESS ? `The access in use is ${GH_ACCESS} (this run's github_access). ` : `The access in use is GITHUB_ACCESS from the "## Pipeline config" section of CLAUDE.md, default gh. `) +
+  (GH_ACCESS ? `The access in use is ${GH_ACCESS} (this run's github_access). ` : `The access in use is GITHUB_ACCESS from the "## Pipeline config" section of CLAUDE.md: gh or connector (unset: gh when it is authenticated, else the GitHub MCP tools). `) +
   `git fetch and git push stay plain git in either mode. `
 
 // ---- Questions before assumptions. No one can answer an agent mid-run: a stage that needs the person's answer returns its

@@ -7,7 +7,7 @@ Run it when the context guard says the handoff is due (the status line shows `ha
 Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `MAIN_BRANCH` — integration branch (default `main`).
 - `PROPOSALS_DIR` — the design docs (default `docs/design`); the roadmap is `$PROPOSALS_DIR/roadmap.md`.
-- `GITHUB_ACCESS` — `gh` (default) or `connector`. Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. With neither available, write `open PRs: not listed (github_unavailable)` and go on: a handoff never stops for GitHub.
+- `GITHUB_ACCESS` — `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. With neither available, write `open PRs: not listed (github_unavailable)` and go on: a handoff never stops for GitHub.
 - `GH_WRAPPER` — optional prefix for `gh` and `git fetch`.
 
 The state branch is `pipeline/state` on origin unless env `PIPELINE_STATE_BRANCH` names another; `.claude/scripts/pipeline-state.py` reads and writes it.

@@ -87,11 +87,11 @@ Not under `--dry-run`. Run `mkdir -p <repo>/docs`, then write each file atomical
 
 ## Detect GitHub access
 
-The pipeline reaches GitHub through `gh`, or, where `gh` is not logged in (as in Claude Code cloud sessions), through the GitHub MCP connector (Pipeline config `GITHUB_ACCESS: gh | connector`, default `gh`). Detect which one this repository has, in this order, and record it:
+The pipeline reaches GitHub through `gh`, or, where `gh` is not logged in (as in Claude Code cloud sessions), through the GitHub MCP connector. The Pipeline config's line for it is `GITHUB_ACCESS`: `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Detect which one this repository has, in this order, and record it:
 
 1. **`gh`**: `gh auth status` exits 0, and `gh repo view <owner>/<name> --json nameWithOwner,visibility,defaultBranchRef` succeeds. Keep its visibility and default branch for the checklist.
 2. **`connector`**: otherwise, the session has the connector's tools (names starting `mcp__github__`, such as `mcp__github__create_pull_request` and `mcp__github__pull_request_read`; a deferred tool counts once its schema loads), and one read through them succeeds: `mcp__github__list_branches` with the owner and name.
-3. **None**: neither works. This is not a stop, since the design run needs only plain `git push`. Every PR stage after it needs one of the two, so the checklist says how to get it, and the call carries `github_access: ''`, which falls back to the Pipeline config and its default, `gh`.
+3. **None**: neither works. This is not a stop, since the design run needs only plain `git push`. Every PR stage after it needs one of the two, so the checklist says how to get it, and the call carries `github_access: ''`, which falls back to the Pipeline config's `GITHUB_ACCESS` (unset: gh when it is authenticated, else the GitHub MCP tools).
 
 Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. Here the access in use is the one just detected, since the repository has no Pipeline config yet. `git fetch` and `git push` stay plain git either way.
 
