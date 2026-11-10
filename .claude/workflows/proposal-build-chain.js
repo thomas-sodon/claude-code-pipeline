@@ -33,17 +33,29 @@ export const meta = {
 //   another doc, on an unfinished roadmap milestone, on the proposal's acceptance (a draft: proposal_not_accepted),
 //   on a Source: roadmap milestone that does not resolve (milestone_unresolved) or on a blocked lane before them are
 //   reported as blocked, never built (the blocking reasons in docs/PROPOSALS.md).
-// Both modes: on_question ('stop' | 'assume') passes through to every lane. A lane whose run stops with needs_input carries
-//   its questions (each tagged with the lane's key) up into this result; re-run with the same args plus
-//   answers: [{ lane, id, answer }], and each lane gets only its own answers.
+//   Each lane's plan travels by reference: a lane run saves it to the pipeline state branch at its merge check, and the ship
+//   plan's args carry plan_ref ('plans/<branch-slug>.md'; for an already_built lane, where its earlier run saved it), with
+//   plan_text only for a lane whose save failed. They also carry repo (origin's owner/name), so a ship-only run can recreate a
+//   missing lane checkout from a fresh clone.
+// Both modes: on_question ('stop' | 'assume') and github_access ('gh' | 'connector' | ''; '' leaves it to the GITHUB_ACCESS
+//   line of the Pipeline config) pass through to every lane; github_access also goes into the ship plan's args. A lane whose
+//   run stops with needs_input carries its questions (each tagged with the lane's key) up into this result; re-run with the
+//   same args plus answers: [{ lane, id, answer }], and each lane gets only its own answers.
+// Each lane's result is slim, never the plan text: { status, branch, plan_ref, review_clean, polish_clean, assumptions,
+//   questions?, left_uncommitted? }, plus, on a lane that did not push, what stopped it (stage, stop_reason, blocked_reason,
+//   review_findings).
 const A = args || {}
 const DERIVE = !A.lanes && !!A.proposal
 if (!DERIVE && (!A.lanes || !A.lanes.length)) throw new Error('proposal-build-chain: pass args.lanes, or args.proposal (with dir and root) to derive the lanes from the proposal (see the pipeline README)')
 if (A.lanes && A.proposal) throw new Error('proposal-build-chain: pass args.lanes or args.proposal, not both (each lane names its own proposal)')
 if (DERIVE && (!A.dir || !A.root)) throw new Error('proposal-build-chain: derive mode needs args.dir (a checkout of the repo) and args.root (where the lane worktrees go)')
 const MAIN = A.main_branch || 'main'
+// GitHub access for every lane and the ship plan; '' is not passed on: each run reads the Pipeline config the same way.
+const GH_ACCESS = String(A.github_access ?? '').trim().toLowerCase()
+if (!['', 'gh', 'connector'].includes(GH_ACCESS)) throw new Error(`github_access must be 'gh', 'connector' or '' (got ${JSON.stringify(A.github_access)})`)
 const SHARED = {}
 for (const k of ['planner', 'gate', 'main_branch', 'commit_trailers', 'max_review_rounds', 'max_polish', 'efforts', 'allow_draft', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
+if (GH_ACCESS) SHARED.github_access = GH_ACCESS
 // Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
@@ -53,6 +65,26 @@ const RELAY = `Ask the person these questions yourself, all at once, each with i
 // Settings the later ship-only runs need, carried into the ship plan's args.
 const SHIP_SHARED = {}
 for (const k of ['main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers']) if (A[k] !== undefined) SHIP_SHARED[k] = A[k]
+if (GH_ACCESS) SHIP_SHARED.github_access = GH_ACCESS
+// A lane's plan on the pipeline state branch: plans/<branch-slug>.md (every character outside [A-Za-z0-9._-] becomes '-').
+const planRefFor = b => `plans/${String(b).replace(/[^A-Za-z0-9._-]/g, '-')}.md`
+// Plan text kept out of this result: the ship plan's fallback for a lane whose plan could not be saved (plan_ref '').
+const PLAN_TEXT = {}
+// A lane's plan-to-merged-pr result without its plan text. What stopped a lane that did not push stays, so a person can act on it.
+const slimLane = r => {
+  if (!r) return null
+  const out = { status: r.status, branch: r.branch, plan_ref: r.plan_ref || '', review_clean: r.review_clean, polish_clean: r.polish_clean, assumptions: r.assumptions || [] }
+  if (Array.isArray(r.questions) && r.questions.length) out.questions = r.questions
+  // Files the lane's commits kept out on purpose (the brief, the builder context): a person decides what becomes of them.
+  if (Array.isArray(r.left_uncommitted) && r.left_uncommitted.length) out.left_uncommitted = r.left_uncommitted
+  if (r.status !== 'pushed') {
+    if (r.stage) out.stage = r.stage
+    if (r.stop_reason) out.stop_reason = r.stop_reason
+    if (r.merge_check && r.merge_check.blocked_reason) out.blocked_reason = r.merge_check.blocked_reason
+    if (Array.isArray(r.review_findings) && r.review_findings.length) out.review_findings = r.review_findings
+  }
+  return out
+}
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route ` +
   `(Bash, python, sed, heredocs, a different file path); record it as blocked and report it. `
@@ -80,9 +112,10 @@ async function buildLane(l) {
     log(`Lane ${l.key}: ${err && err.message ? err.message : err}`)
   }
   const status = (r && r.status) || 'failed'
-  log(`Lane ${l.key}: ${status}`)
+  log(`Lane ${l.key}: ${status}${r && r.status === 'pushed' ? (r.plan_ref ? ` (plan saved as ${r.plan_ref})` : ' (plan not saved: the ship plan carries its text)') : ''}`)
+  if (r && !r.plan_ref && typeof r.plan === 'string' && r.plan) PLAN_TEXT[l.key] = r.plan
   const questions = status === 'needs_input' ? ((r && r.questions) || []).map(q => ({ lane: l.key, ...q })) : []
-  return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result: r, ...(questions.length ? { questions, relay: RELAY } : {}) }
+  return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result: slimLane(r), ...(questions.length ? { questions, relay: RELAY } : {}) }
 }
 
 if (!DERIVE) {
@@ -106,6 +139,7 @@ const DERIVE_SCHEMA = {
     lanes_json: { type: 'string', description: 'the exact stdout of proposal-lint.py --lanes, unedited' },
     exit_code: { type: 'integer', description: 'the exit code of proposal-lint.py --lanes' },
     source: { type: 'string', enum: ['origin', 'working_copy'], description: `origin = the proposal as on origin/${MAIN}; working_copy = it is not on origin/${MAIN} yet` },
+    repo: { type: 'string', description: 'origin\'s GitHub owner/name, e.g. acme/app; empty when origin is not on GitHub. Never a URL or credentials' },
     notes: { type: 'string' },
   },
   required: ['lanes_json', 'exit_code', 'source'],
@@ -117,10 +151,13 @@ const derived = await agent(
   `2. git ls-remote --heads origin > <scratch>/heads.txt\n` +
   `3. From <scratch> (so the doc path stays repo-relative), run: python3 ${A.dir}/.claude/scripts/proposal-lint.py ${A.proposal} --lanes --repo ${A.dir} --root ${A.root} --date ${A.date || 'undated'}` +
   (A.branch_prefix ? ` --branch-prefix ${A.branch_prefix}` : '') + (A.allow_draft ? ' --allow-draft' : '') + ` --remote-heads <scratch>/heads.txt\n` +
-  `Return its stdout verbatim as lanes_json (do not edit, summarise or reformat it) and its exit code.`,
+  `Return its stdout verbatim as lanes_json (do not edit, summarise or reformat it) and its exit code.\n` +
+  `4. Report repo: origin's GitHub owner/name, read from git remote get-url origin (acme/app for https://github.com/acme/app.git); never the URL itself or any credentials in it.`,
   { label: 'derive-lanes', phase: 'Derive', effort: 'low', schema: DERIVE_SCHEMA },
 )
 if (!derived) return { status: 'failed_at_derive' }
+// Where a ship-only run clones a lane's checkout from when it is missing and no checkout of the repository is at hand.
+const REPO = (s => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(s) ? s : '')(String(derived.repo || '').trim().replace(/\.git$/, ''))
 let L = null
 try { L = JSON.parse(derived.lanes_json) } catch (err) { L = null }
 if (!L || !Array.isArray(L.chains)) {
@@ -171,15 +208,19 @@ const ship_plan = chains.filter(Boolean).map(c => {
     chain: c.chain,
     order: lanes.filter(l => ok.includes(l.key)).map((l, i) => {
       const built = c.lanes.find(r => r.lane === l.key)
-      const planText = built && built.result && built.result.plan
+      // The plan travels by reference: the lane run's saved plan_ref, or, for a lane an earlier run built, where that run saved
+      // it (a ship-only run that finds nothing there goes on without a plan). Its text only when this run's save failed.
+      const ref = built && built.status === 'already_built' ? planRefFor(l.branch) : ((built && built.result && built.result.plan_ref) || '')
+      const text = ref ? '' : (PLAN_TEXT[l.key] || '')
       return {
         lane: l.key,
         branch: l.branch,
         steps: l.steps,
-        // plan_text and proposal give the ship-only monitor this lane's own design context for comments and conflicts.
+        // plan_ref (or plan_text) and proposal give the ship-only monitor this lane's own design context for comments and conflicts.
         args: {
           ...SHIP_SHARED, ship_only: true, branch: l.branch, dir: l.dir, title: `<title for steps ${l.steps.join(', ')}>`, proposal: A.proposal,
-          ...(planText ? { plan_text: planText } : {}),
+          ...(REPO ? { repo: REPO } : {}),
+          ...(ref ? { plan_ref: ref } : text ? { plan_text: text } : {}),
           ...(i ? { predecessor_prs: ['<PR numbers of the lanes above, once merged>'] } : {}),
         },
       }
