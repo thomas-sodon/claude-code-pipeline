@@ -22,10 +22,22 @@ jobs:
         run: node ci/check-skill-refs.mjs
       - name: Workflows stop on blocking questions and route the answers
         run: node ci/test-workflow-questions.mjs
+      - name: brief-to-proposals resumes, checkpoints and checks consistency in pairs
+        run: node ci/test-workflow-design.mjs
+      - name: Shipping workflows pass plans by reference, recreate checkouts and honour github_access
+        run: node ci/test-workflow-shipping.mjs
+      - name: Wrapper workflows return compact results and route the answers
+        run: node ci/test-workflow-wrappers.mjs
+      - name: bug-fix-backlog carries the GitHub access into its prompts and child runs
+        run: node ci/test-workflow-github-access.mjs
       - name: proposal-lint tests
         run: python3 ci/test_proposal_lint.py
       - name: pipeline-sync tests
         run: python3 ci/test_pipeline_sync.py
+      - name: pipeline-state tests
+        run: python3 ci/test_pipeline_state.py
+      - name: context-guard tests
+        run: python3 ci/test_context_guard.py
       - name: Valid fixtures lint clean
         run: |
           for f in ci/fixtures/valid-*.md; do
@@ -45,7 +57,7 @@ jobs:
           test "$rc" -eq 125 || { echo "expected 125 with no command, got $rc"; exit 1; }
       - name: Commands are present and project-agnostic
         run: |
-          for c in seed roadmap propose review-proposal bootstrap plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates; do
+          for c in seed start-product roadmap propose review-proposal bootstrap plan impl polish review-changes create-pr process-comments bug-fix merge-main quality-gates handoff; do
             test -s ".claude/commands/$c.md" || { echo "missing .claude/commands/$c.md"; exit 1; }
           done
           if grep -rniE 'maestro|/home/|/opt/' .claude; then
