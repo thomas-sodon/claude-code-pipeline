@@ -21,43 +21,46 @@ flowchart TD
   classDef fixed fill:#e6f4ea,stroke:#1e8449,color:#000
 
   subgraph INSTALL["Install / update (any repo)"]
-    clone{{"Clone a repo with origin"}}:::human
+    clone{{"Clone a repo with origin<br/>(new product: a first commit on main)"}}:::human
+    start("/start-product brief repo<br/>verdict check, brief + builder context,<br/>setup checklist")
     seed("/seed or pipeline-sync.py<br/>.claude files + manifest,<br/>base CLAUDE.md")
     upd("pipeline-sync.py --update<br/>or pipeline-update.yml PR")
-    clone --> seed
+    clone -- "new product" --> start
+    clone -- "existing repo" --> seed
     seed -. "later" .-> upd
   end
 
-  subgraph DESIGN["Design: brief-to-proposals"]
+  subgraph DESIGN["Design: brief-to-proposals, checkpointed on design/date"]
     intake("Intake: blocking questions?")
-    ask{{"Answer questions<br/>re-run with answers"}}:::human
+    ask{{"Answer questions<br/>re-run with answers and from"}}:::human
     panel("Architecture panel<br/>3 sketches, judge, synthesis")
     roadmap("/roadmap<br/>architecture.md, roadmap.md")
     rrev("/review-proposal + /propose --revise<br/>until no bug/concern")
     props("/propose --milestone=N<br/>per code milestone, reviewed")
-    cons("Consistency pass, lint, lane preview")
+    cons("Consistency, two docs at a time;<br/>lint, lane preview")
     intake -- "needs_input" --> ask --> intake
     intake --> panel --> roadmap --> rrev --> props --> cons
   end
 
   accept{{"Read, edit, set Status: accepted"}}:::human
+  landdesign{{"Land the design branch<br/>on main via PR"}}:::human
 
   subgraph BOOT["Bootstrap (greenfield only)"]
     bgates{{"Do the gates Bootstrap waits on<br/>(name, licence: tick + Outcome)"}}:::human
-    boot("/bootstrap architecture.md<br/>skeleton, CI, gates green,<br/>1 commit on bootstrap/date")
-    bship("plan-to-merged-pr ship_only")
+    boot("bootstrap-repo<br/>/bootstrap: skeleton, CI, gates green,<br/>1 commit on bootstrap/date;<br/>then plan-to-merged-pr ship_only")
     bmerge{{"Merge, protect main,<br/>add secrets, tick Bootstrap gate<br/>via docs PR"}}:::human
-    bgates --> boot --> bship --> bmerge
+    bgates --> boot --> bmerge
   end
 
   landdocs{{"Existing repo: land .claude,<br/>CLAUDE.md and docs via PR"}}:::human
 
   subgraph MILESTONE["Per milestone (lint --roadmap names the next)"]
-    hgates{{"Do the human gates it waits on<br/>tick + Outcome; /propose --revise<br/>if the Outcome changes the plan;<br/>re-accept"}}:::human
+    hgates{{"Do the human gates it waits on<br/>tick + Outcome; refresh-proposal<br/>if the Outcome changes the plan;<br/>re-accept"}}:::human
+    refresh("Later milestone: its proposal written<br/>(brief-to-proposals from: proposals)<br/>or refreshed (refresh-proposal), accepted")
     chain("proposal-build-chain<br/>derive lanes from origin/main")
     blocked["blocked lanes reported<br/>(gate, doc, milestone, draft)"]:::stop
     shipplan["ship_plan per chain,<br/>in merge order"]:::stop
-    hgates --> chain
+    hgates --> refresh --> chain
     chain --> blocked
     chain --> shipplan
   end
@@ -80,6 +83,13 @@ flowchart TD
   merge{{"Review and merge the PR"}}:::human
   closeout{{"Apply the reported closeout:<br/>Status: done, tick roadmap milestone"}}:::human
 
+  subgraph ORCH["The orchestrating session, at any step"]
+    guard("Context guard: at 40% of the window,<br/>no new work; auto-compaction blocked")
+    handoff("/handoff<br/>STATE.md on pipeline/state")
+    newsess{{"New session in the repo:<br/>Continue from the pipeline handoff"}}:::human
+    guard --> handoff --> newsess
+  end
+
   subgraph BUGS["Bugs: bug-fix-backlog"]
     lanes{{"Confirm the lanes the Intake<br/>proposes (key, issues)"}}:::human
     triage("/bug-fix --dry-run triage")
@@ -91,9 +101,10 @@ flowchart TD
     verify --> nh
   end
 
+  start --> intake
   seed --> intake
   cons -- "docs, all draft" --> accept
-  accept -- "greenfield" --> bgates
+  accept -- "greenfield" --> landdesign --> bgates
   accept -- "existing repo" --> landdocs
   bmerge --> hgates
   landdocs --> hgates
@@ -114,6 +125,12 @@ flowchart TD
   G7["G7 fixed: --claude-md<br/>drift check in the docs job"]:::fixed
   G8["G8 partly fixed: Intake proposes<br/>lanes from issues, no production intake"]:::partial
   G9["G9 fixed: sync reports the<br/>CLAUDE.md section diff"]:::fixed
+  G10["G10 partly fixed: guard + /handoff;<br/>no hooks in multi-repo cloud sessions"]:::partial
+  G11["G11 partly fixed: state branch;<br/>brief and builder context stay local"]:::partial
+  G12["G12 fixed: re-runs start from<br/>from, plan_ref, recreated checkouts"]:::fixed
+  G13["G13 partly fixed: size budgets;<br/>older docs fail them"]:::partial
+  G14["G14 partly fixed: gh or connector;<br/>connector in workflow runs unverified"]:::partial
+  G15["G15 partly fixed: /start-product;<br/>repo and first commit by hand"]:::partial
   G1 -.- shiplane
   G2 -.- merge
   G3 -.- closeout
@@ -123,6 +140,12 @@ flowchart TD
   G7 -.- boot
   G8 -.- lanes
   G9 -.- upd
+  G10 -.- guard
+  G11 -.- handoff
+  G12 -.- newsess
+  G13 -.- cons
+  G14 -.- pr
+  G15 -.- start
 ```
 
 ## Gaps in the flow
@@ -188,10 +211,14 @@ instead of a review finding.
 accepting each milestone after the first, or propose only the next milestone
 (`max_milestones: 1`) and propose the rest as they come up.
 *Status:* fixed. When `brief-to-proposals` writes more than one proposal, its
-`next_steps` say to accept them one milestone at a time and to re-run
-`/review-proposal` and `/propose --revise` against the tree before each later one,
-and recommend `max_milestones: 1` for a long roadmap. `/review-proposal`'s grounding
-step treats a doc that no longer matches the tree as a concern.
+`next_steps` say to accept them one milestone at a time and to run
+`refresh-proposal` before each later one, and recommend `max_milestones: 1` for a
+long roadmap. `refresh-proposal` runs `/review-proposal` against the tree, whose
+grounding step treats a doc that no longer matches it as a concern, and
+`/propose --revise` on its findings, in subagents, until clean; it lints the doc
+(with a lane preview) and says to re-accept it after a revise. With
+`max_milestones: 1`, a `brief-to-proposals` re-run with `from: 'proposals'` writes
+each later proposal once the milestones before it have merged.
 
 **G5. Design docs are not linted in the product repo's CI.** The pipeline's own CI
 lints its examples, but `/bootstrap`'s CI template runs only `QUALITY_GATES`. Every
@@ -262,6 +289,126 @@ update.
 `claude_md` (current, differs, unmarked, missing or no_template) with a diff;
 `--check-claude-md` makes a marked, differing section count as pending. It only
 reports: `CLAUDE.md` is never edited.
+
+**G10. The orchestrating session runs out of context.** The session that runs the
+workflows and relays their questions keeps every result, question and answer, and
+`/bootstrap` and a doc's re-review ran in it directly, an estimated 100k tokens or
+more each at real doc sizes. Past half its window it compacted and lost exact args
+and answers, and handoffs to a fresh session were written by hand.
+*Fix:* hand off before half the window and never compact; run the heavy commands in
+subagents.
+*Status:* partly fixed. The context guard (`.claude/scripts/context-guard.py`,
+registered in `.claude/settings.json`) has the main session hand off at 40% of its
+window (`PIPELINE_HANDOFF_PCT`): the status line shows `handoff due`, tool results
+say to start no new work and run `/handoff`, the turn cannot end until a handoff is
+recorded, and the first auto-compaction is blocked; subagents and workflow agents
+are never told to. `/handoff` writes `STATE.md` to the state branch, and a new
+session continues from it. `bootstrap-repo` and `refresh-proposal` run `/bootstrap`
+and the re-review in subagents. Still open: Claude Code runs a repository's hooks
+only where it reads its `.claude/settings.json`, so the guard does not run in a
+cloud session with several repositories attached or in a project's cloud threads,
+where the orchestrator runs `/handoff` itself; the guard measures from the status
+line or, without one, from the transcript's token counts, a format Claude Code does
+not document; whether the status line runs in cloud sessions is not verified; and
+the guard and `/handoff` act on the repository the session runs in, so an
+orchestrator in the pipeline checkout (where `/start-product` runs) hands off to the
+wrong repository.
+
+**G11. State lived outside the repo.** Plans, review ledgers and the design panel's
+synthesis lived in `~/.claude/` or only in a run, so a cloud container took them
+with it, and a new session had only the repository to go on.
+*Fix:* keep what must outlive a container on a branch of origin.
+*Status:* partly fixed. `.claude/scripts/pipeline-state.py` saves files to
+`pipeline/state` on origin without a checkout: `STATE.md`, each lane's plan
+(`plans/<branch-slug>.md`), the review ledgers (restored when the local copy is
+missing) and the panel synthesis
+([REFERENCE.md](REFERENCE.md#the-state-branch)). Saves are best effort, and a
+branch rule that blocks new branches blocks them too. The brief and the builder
+context stay local by design, since the branch is as visible as the repository: a
+new container needs both copied back from their source, which the handoff records.
+
+**G12. Re-running in a new session started over.** `resumeFromRunId` replays a run
+only in the session that ran it. A design re-run after the docs existed repeated
+Seed, Intake and the panel, then stopped at `/roadmap` with `exists`; ship-only and
+monitor-only runs needed the plan's text and the lane's worktree, which a new
+container does not have.
+*Fix:* re-runs that start where the repository and the state branch say the work
+is.
+*Status:* fixed for the design and shipping workflows. `brief-to-proposals` starts
+at `from`, inferred from the answers and the docs on disk, and a `needs_input`
+result names `resume_from`; with `branch` it checkpoints the docs on a design
+branch, so a fresh clone continues them. Lanes save their plans (`plan_ref`),
+ship-only and monitor-only runs restore them and recreate a missing checkout from
+origin, and `proposal-build-chain` and `ship-chain` results carry references, not
+plans ([REFERENCE.md](REFERENCE.md#resuming-in-this-session-or-a-new-one)).
+`bug-fix-backlog` is unchanged.
+
+**G13. Design docs outgrew an agent's context.** Architectures reached 155-204 KB
+and proposals up to 198 KB, so an agent building one milestone read 50k tokens or
+more of design before any code, and the consistency pass read every doc at once
+(1.49 MB in one repository).
+*Fix:* size budgets in the lint, authors that split instead of squeezing, and docs
+compared two at a time.
+*Status:* partly fixed. `proposal-lint.py` warns above 48 / 24 / 40 KB
+(architecture / roadmap / proposal), 12 steps or 20 milestones, and errors above
+96 / 48 / 80 KB or 20 steps (`doc_too_big`, `too_many_steps`,
+`too_many_milestones`); `/roadmap` and `/propose` write within the warning limits
+and split what does not fit, `/review-proposal` reports a warning as a `concern`
+and an error as a `bug`, and `/propose --revise` brings a doc under the warning
+limits ([PROPOSALS.md](PROPOSALS.md#size-budgets)). `brief-to-proposals` compares
+the architecture with each proposal, dependent proposals pairwise, and the brief
+with the roadmap. Still open: docs written before the budgets fail them (below).
+
+**G14. GitHub stages failed in cloud sessions.** `gh` is not logged in inside
+Claude Code cloud sessions, so every PR and issue stage failed there; the
+workaround was to push branches and open PRs through the GitHub MCP connector by
+hand.
+*Fix:* reach GitHub through `gh` or the connector.
+*Status:* partly fixed. Commands and workflows resolve the access (`GITHUB_ACCESS`
+or a workflow's `github_access`, else `gh` when it is authenticated, else the
+connector) and name the connector call beside each `gh` one;
+`.claude/scripts/github-access.md` holds the mapping, the polling that replaces
+`gh pr checks --watch`, and what stays with a person (secrets, repository
+settings). Not verified: the connector inside a workflow run (an Agent-tool
+subagent loaded its tools through ToolSearch and its reads worked, but no Workflow
+run has used it yet); whether a subagent that ends its turn is woken by a Monitor
+wait (the reference says never to end the turn while waiting); and a headless or
+scheduled run, which may lack the connector. This connector install has no search
+tool, so a `gh` search becomes a list filtered locally.
+
+**G15. No bridge from an idea to a repository.** A brief from the
+`new-software-idea` skill was copied into a new repository by hand, nothing checked
+that its idea had passed vetting, and the builder framing (who writes the code,
+with what time and money) reached the design authors only when the person passed
+`context`.
+*Fix:* a starter command.
+*Status:* partly fixed. `/start-product <brief> <repo>` checks the brief's verdict
+(and the idea ledger's newest row) and that the repository is new and clean, copies
+the brief to `docs/brief.md`, settles the builder framing in
+`docs/builder-context.md`, keeps both out of every commit, detects the GitHub
+access, and prints a setup checklist and the `brief-to-proposals` call. Still the
+person's: creating the repository and, when it is empty, pushing a first commit to
+`main` (else the design branch becomes the default branch and `/bootstrap` stops
+with `no_main`); and `GITHUB_ACCESS` is not written to `CLAUDE.md`, so it is passed
+to each workflow as `github_access`, or added to the Pipeline config once `/seed`
+has written it.
+
+### Still open
+
+- **No deployed-instance smoke test or post-release step.** Releases are human
+  gates, and after one nothing checks that the deployed instance works (a smoke
+  test against staging or production), watches it, or routes what it finds back
+  into issues (G8). CI checks the code, not the deployment.
+- **Docs written before the size budgets.** A repository whose design docs predate
+  them fails the CI `docs` job once a sync brings in the new lint, and a proposal
+  over 80 KB or 20 steps no longer builds (`proposal_lint_errors`,
+  `doc_malformed`). The escape hatch is `--no-size-limits` on the docs job's lint
+  calls, off by default (the header of
+  [`examples/docs-lint-job.yml`](../examples/docs-lint-job.yml) says how), until the
+  docs are split with `refresh-proposal`. The builds never pass the flag,
+  so a proposal over an error limit is split before its next lane builds; one whose
+  built steps alone pass the step limit cannot be split under it, and nothing
+  handles that case yet.
 
 ### Fixed: keeping the pipeline current
 
