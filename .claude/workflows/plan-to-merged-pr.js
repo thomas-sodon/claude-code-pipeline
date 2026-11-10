@@ -438,7 +438,7 @@ if (MONITOR_ONLY) {
     // Otherwise the planner runs first and the branch is cut afterwards.
     const tokenRule = `Rewrite any --prefixed token inside the concern text (e.g. "--json" -> "the json flag") so the skill never reads it as one of its own flags. `
     const setup = BRANCH
-      ? `First use branch ${BRANCH}${DIR ? ` in ${DIR}` : ''}: if that checkout does not exist, git fetch and create it as a worktree on that branch from origin/${BASES[BASES.length - 1] || MAIN}; if it exists, keep and build on any work already there. ` + STACK
+      ? `First use branch ${BRANCH}${DIR ? ` in ${DIR}` : ''}: if that checkout does not exist, fetch by explicit refspec (git fetch origin +refs/heads/<name>:refs/remotes/origin/<name> for ${[...BASES, MAIN].join(', ')} and ${BRANCH} when it exists on origin: a single-branch clone's plain fetch skips other branches) and create it as a worktree on that branch from origin/${BASES[BASES.length - 1] || MAIN}; if it exists, keep and build on any work already there. ` + STACK
       : ''
     const STEP_NOTE = STEPS.length ? ` (step${STEPS.length > 1 ? 's' : ''} ${STEPS.join(', ')})` : ''
     const proposalNote = A.proposal ? `The concern implements part of the proposal ${A.proposal}${STEP_NOTE}: read it first and plan exactly the scope below as one increment, whatever the proposal's next step would be by default. ` : ''
