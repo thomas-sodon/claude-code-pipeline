@@ -4,9 +4,10 @@
 Run from the repo root: python3 ci/test_proposal_lint.py
 
 The tests check the documented format (docs/PROPOSALS.md) and CLI, not the
-implementation: every error and warning code, --repo, --as, --tick, --lanes,
---roadmap and --claude-md. The script is always run as a subprocess, in temp
-directories.
+implementation: every error and warning code, the size budgets, --repo, --as,
+--tick, --lanes, --roadmap and --claude-md. The script is always run as a
+subprocess, in temp directories; docs at the size limits are generated, not
+committed as fixtures.
 It also checks ci/lint-doc-examples.py finds the examples it must lint, and that the
 `docs` CI job script in /bootstrap's template and examples/docs-lint-job.yml is one
 script that works.
@@ -49,6 +50,8 @@ INLINE_WARNINGS = {'file_not_found', 'new_file_exists', 'missing_section', 'unex
                    'milestone_ticked_incomplete', 'milestone_complete_unticked'}
 # Errors only a mode reports (--lanes, --roadmap, --claude-md): each is exercised by a test below.
 MODE_ERRORS = {'lane_cycle', 'not_a_proposal', 'not_a_roadmap', 'not_an_architecture', 'claude_md_drift'}
+# Size budgets, W at the soft limit and E at the hard one: exercised by TestSizeBudgets on generated docs.
+BUDGET_CODES = {'doc_too_big', 'too_many_steps', 'too_many_milestones'}
 
 
 def run(*args, cwd=None):
@@ -241,7 +244,7 @@ class TestFixtures(Base):
         for line in table.splitlines():
             if line.startswith('| `'):
                 documented.update(re.findall(r'`([a-z_]+)`', line.split('|')[1]))
-        self.assertEqual(documented, ERROR_CODES | WARNING_CODES | INLINE_WARNINGS | MODE_ERRORS)
+        self.assertEqual(documented, ERROR_CODES | WARNING_CODES | INLINE_WARNINGS | MODE_ERRORS | BUDGET_CODES)
 
 
 # ---- output and exit codes ---------------------------------------------------------------------
@@ -1108,6 +1111,230 @@ class TestClaudeMd(Base):
         self.assertEqual(run(a, '--claude-md', c, '--roadmap')[0], 2)
 
 
+# ---- size budgets ------------------------------------------------------------------------------
+
+KB = 1024
+# The budgets (docs/PROPOSALS.md, Size budgets): KB per doc kind and items per list, as (warning above, error above).
+SIZE_BUDGETS = {'architecture': (48, 96), 'roadmap': (24, 48), 'proposal': (40, 80)}
+STEP_BUDGET = (12, 20)
+MILESTONE_BUDGET = (20, None)
+PAD = 'Padding prose that a size-budget test adds; no lint rule reads it.\n'
+# Where padding goes: a section (or the roadmap's paragraph before its list) the lint does not parse.
+PAD_AFTER = {'architecture': '## Context\n\n', 'roadmap': 'Status: accepted\n\n', 'proposal': '## Context\n\n'}
+
+
+def grow(text, size, after):
+    """TEXT as UTF-8 bytes, grown to exactly SIZE bytes by prose lines inserted after the first AFTER."""
+    data, mark = text.encode('utf-8'), after.encode('utf-8')
+    need = size - len(data)
+    assert need >= 0, 'the doc is already %d bytes' % len(data)
+    unit = PAD.encode('utf-8')
+    pad = unit * (need // len(unit))
+    if need > len(pad):
+        pad += b'p' * (need - len(pad) - 1) + b'\n'
+    at = data.index(mark) + len(mark)
+    return data[:at] + pad + data[at:]
+
+
+def steps_doc(n):
+    return proposal(*[step(i) for i in range(1, n + 1)])
+
+
+def milestones_doc(n):
+    return roadmap(*[milestone(i, gate_kind='ops') for i in range(1, n + 1)])
+
+
+def sized(kind, size, text=None):
+    """A doc of KIND that lints clean (or TEXT), grown to SIZE bytes."""
+    base = {'architecture': architecture, 'roadmap': lambda: milestones_doc(1), 'proposal': lambda: steps_doc(1)}
+    return grow(text if text is not None else base[kind](), size, PAD_AFTER[kind])
+
+
+class TestSizeBudgets(Base):
+    def found(self, out, code):
+        return [e for e in out['errors'] if e['code'] == code], [w for w in out['warnings'] if w['code'] == code]
+
+    def line_text(self, out, finding):
+        with open(out['doc'], encoding='utf-8') as f:
+            return f.read().splitlines()[finding['line'] - 1]
+
+    def test_doc_size_limits_per_kind(self):
+        for kind, (soft, hard) in sorted(SIZE_BUDGETS.items()):
+            for size, want in ((soft * KB, (0, 0, 0)), (soft * KB + 1, (0, 0, 1)), (hard * KB, (0, 0, 1)),
+                               (hard * KB + 1, (1, 1, 0))):
+                with self.subTest(kind=kind, size=size):
+                    rc, out = self.lint_text(sized(kind, size), name='%s.md' % kind)
+                    self.assertEqual(out['kind'], kind)
+                    errors, warnings = self.found(out, 'doc_too_big')
+                    self.assertEqual((rc, len(errors), len(warnings)), want)
+                    self.assertEqual([x for x in out['errors'] + out['warnings'] if x['code'] != 'doc_too_big'], [])
+
+    def test_size_messages_name_the_size_the_limit_and_the_fix(self):
+        fixes = {'architecture': 'to the proposal that builds it', 'roadmap': 'one or two sentences',
+                 'proposal': 'new milestone after the last one'}
+        for kind, (soft, hard) in sorted(SIZE_BUDGETS.items()):
+            with self.subTest(kind=kind):
+                _, out = self.lint_text(sized(kind, soft * KB + 1), name='%s.md' % kind)
+                w = self.found(out, 'doc_too_big')[1][0]
+                self.assertEqual(w['line'], 1)
+                self.assertIn('is %d.1 KB, over the %d KB warning limit (error above %d KB): ' % (soft, soft, hard),
+                              w['message'])
+                self.assertIn(fixes[kind], w['message'])
+                _, out = self.lint_text(sized(kind, hard * KB + 1), name='%s.md' % kind)
+                e = self.found(out, 'doc_too_big')[0][0]
+                self.assertIn('is %d.1 KB, over the %d KB error limit: ' % (hard, hard), e['message'])
+                self.assertIn(fixes[kind], e['message'])
+
+    def test_size_counts_bytes_not_characters(self):
+        text = steps_doc(1).replace('## Context\n\n', '## Context\n\n' + '—' * (14 * KB) + '\n', 1)
+        self.assertLess(len(text), SIZE_BUDGETS['proposal'][0] * KB)
+        self.assertGreater(len(text.encode('utf-8')), SIZE_BUDGETS['proposal'][0] * KB)
+        self.assertWarning(text, 'doc_too_big')
+
+    def test_a_doc_with_no_kind_is_measured_as_a_proposal(self):
+        rc, out = self.lint_text(grow('Status: draft\n\n## Steps\n\n' + step(1), 40 * KB + 1, 'Status: draft\n\n'))
+        self.assertEqual((rc, out['kind']), (0, 'proposal'))
+        self.assertIn('no_kind', codes(out['warnings']))
+        self.assertIn('this proposal is 40.1 KB', self.found(out, 'doc_too_big')[1][0]['message'])
+
+    def test_step_limits(self):
+        soft, hard = STEP_BUDGET
+        for n, want in ((soft, (0, 0, 0)), (soft + 1, (0, 0, 1)), (hard, (0, 0, 1)), (hard + 1, (1, 1, 0))):
+            with self.subTest(steps=n):
+                rc, out = self.lint_text(steps_doc(n))
+                errors, warnings = self.found(out, 'too_many_steps')
+                self.assertEqual((rc, len(errors), len(warnings)), want)
+                self.assertEqual([x for x in out['errors'] + out['warnings'] if x['code'] != 'too_many_steps'], [])
+                for f in errors + warnings:
+                    self.assertEqual(self.line_text(out, f), '## Steps')
+                    self.assertIn('new milestone after the last one', f['message'])
+        out = self.assertWarning(steps_doc(soft + 1), 'too_many_steps')
+        self.assertIn('this proposal has %d steps, over the %d-step warning limit (error above %d): '
+                      % (soft + 1, soft, hard), self.found(out, 'too_many_steps')[1][0]['message'])
+        out = self.assertError(steps_doc(hard + 1), 'too_many_steps')
+        self.assertIn('this proposal has %d steps, over the %d-step error limit: ' % (hard + 1, hard),
+                      self.found(out, 'too_many_steps')[0][0]['message'])
+
+    def test_every_step_counts_ticked_and_gated(self):
+        steps = [step(1, done=True), gate(2, kind='ops', done=True), gate(3)]
+        steps += [step(n) for n in range(4, STEP_BUDGET[0] + 2)]
+        out = self.assertWarning(proposal(*steps), 'too_many_steps')
+        self.assertIn('has %d steps' % (STEP_BUDGET[0] + 1), self.found(out, 'too_many_steps')[1][0]['message'])
+
+    def test_milestone_limit_warns_and_never_errors(self):
+        soft = MILESTONE_BUDGET[0]
+        for n, warned in ((soft, False), (soft + 1, True), (3 * soft, True)):
+            with self.subTest(milestones=n):
+                rc, out = self.lint_text(milestones_doc(n), name='roadmap.md')
+                self.assertEqual((rc, out['errors']), (0, []))
+                warnings = self.found(out, 'too_many_milestones')[1]
+                self.assertEqual(len(warnings), 1 if warned else 0)
+                for w in warnings:
+                    self.assertEqual(self.line_text(out, w), '## Milestones')
+                    self.assertIn('this roadmap has %d milestones, over the %d-milestone warning limit: merge '
+                                  'milestones that ship together' % (n, soft), w['message'])
+
+    def test_list_budgets_apply_to_their_own_kind(self):
+        out = self.assertClean(roadmap(*[milestone(i, gate_kind='ops') for i in range(1, STEP_BUDGET[1] + 2)]))
+        self.assertNotIn('too_many_steps', codes(out['warnings']))
+        out = self.assertWarning(architecture(extra='## Steps\n\n' + ''.join(step(n) for n in range(1, 30))),
+                                 'unexpected_steps')
+        self.assertEqual(set(codes(out['warnings'])) & BUDGET_CODES, set())
+
+    def test_no_size_limits_turns_every_check_off(self):
+        docs = {'architecture.md': sized('architecture', 97 * KB),
+                'roadmap.md': sized('roadmap', 49 * KB, milestones_doc(MILESTONE_BUDGET[0] + 1)),
+                'p.md': sized('proposal', 81 * KB, steps_doc(STEP_BUDGET[1] + 1))}
+        for name, text in sorted(docs.items()):
+            with self.subTest(doc=name):
+                path = self.write(name, text)
+                rc, out = self.lint(path)
+                self.assertEqual(rc, 1)
+                self.assertIn('doc_too_big', codes(out['errors']))
+                rc, out = self.lint(path, '--no-size-limits')
+                self.assertEqual((rc, out['errors'], out['warnings']), (0, [], []))
+
+    def test_lanes_refuse_a_doc_over_an_error_limit(self):
+        for name, text, code in (('big.md', sized('proposal', 80 * KB + 1), 'doc_too_big'),
+                                 ('long.md', steps_doc(STEP_BUDGET[1] + 1), 'too_many_steps')):
+            with self.subTest(doc=name):
+                path = self.write(name, text)
+                out = self.lanes(path, rc=1)
+                self.assertEqual(codes(out['errors']), [code])
+                self.assertEqual((out['chains'], out['blocked'], out['human_gates_pending'], out['done']),
+                                 ([], [], [], []))
+                self.assertNotIn('slug', out)
+                out = self.lanes(path, '--no-size-limits')
+                self.assertEqual(out['errors'], [])
+                self.assertTrue(out['chains'])
+
+    def test_lanes_derive_over_a_warning_limit(self):
+        out = self.lanes_text(sized('proposal', 40 * KB + 1, steps_doc(STEP_BUDGET[0] + 1)))
+        self.assertEqual(sorted(codes(out['warnings'])), ['doc_too_big', 'too_many_steps'])
+        self.assertEqual(chain_keys(out), sorted([['s%d' % n] for n in range(1, STEP_BUDGET[0] + 2)]))
+
+    def test_roadmap_mode_reports_progress_and_the_budget_error(self):
+        path = self.write('roadmap.md', sized('roadmap', 48 * KB + 1, milestones_doc(MILESTONE_BUDGET[0] + 1)))
+        rc, stdout, _ = run(path, '--roadmap')
+        out = json.loads(stdout)
+        self.assertEqual((rc, codes(out['errors']), codes(out['warnings'])), (1, ['doc_too_big'], ['too_many_milestones']))
+        self.assertEqual(out['next'], list(range(1, MILESTONE_BUDGET[0] + 2)))
+        rc, stdout, _ = run(path, '--roadmap', '--no-size-limits')
+        out = json.loads(stdout)
+        self.assertEqual((rc, out['errors'], out['warnings']), (0, [], []))
+
+    def test_claude_md_mode_reports_the_budget_error_beside_any_drift(self):
+        a = self.write('docs/design/architecture.md', sized('architecture', 96 * KB + 1, arch_with_rules()))
+        for cm, want in ((claude_md(), ['doc_too_big']), (claude_md(testing='Other rules.\n'), ['claude_md_drift', 'doc_too_big'])):
+            with self.subTest(errors=want):
+                c = self.write('CLAUDE.md', cm)
+                rc, out, _ = run(a, '--claude-md', c, '--json')
+                self.assertEqual((rc, sorted(codes(json.loads(out)['errors']))), (1, want))
+        rc, out, _ = run(a, '--claude-md', c, '--json', '--no-size-limits')
+        self.assertEqual((rc, codes(json.loads(out)['errors'])), (1, ['claude_md_drift']))
+
+    def test_tick_ignores_the_budgets(self):
+        path = self.write('d.md', sized('proposal', 80 * KB + 1, steps_doc(STEP_BUDGET[1] + 1)))
+        before = self.read(path)
+        for n, flags in (('21', ()), ('20', ('--no-size-limits',))):
+            code, out, err = run(path, '--tick', n, *flags)
+            self.assertEqual(code, 0, out + err)
+            self.assertEqual(json.loads(out), {'ticked': [int(n)], 'already': [], 'missing': []})
+        self.assertEqual(self.read(path), before.replace(b'\n21. [ ] **', b'\n21. [x] **', 1)
+                         .replace(b'\n20. [ ] **', b'\n20. [x] **', 1))
+
+    def test_only_the_doc_given_is_measured(self):
+        # the roadmap its Source: names, and a doc a step depends on, are over their limits; this doc is not
+        self.write('roadmap.md', sized('roadmap', 48 * KB + 1, roadmap(milestone(1, 'doc.md'))))
+        self.write('other.md', steps_doc(STEP_BUDGET[1] + 1))
+        text = proposal(step(1, deps='other.md#21'), step(2), source='roadmap.md#1')
+        rc, out = self.lint_text(text, name='doc.md')
+        self.assertEqual((rc, out['errors'], out['warnings']), (0, [], []))
+        out = self.lanes_text(text, name='doc.md')
+        self.assertEqual((chain_keys(out), [b['lane'] for b in out['blocked']]), ([['s2']], ['s1']))
+
+    def test_plain_output(self):
+        path = self.write('d.md', sized('proposal', 81 * KB, steps_doc(STEP_BUDGET[1] + 1)))
+        rc, out, _ = run(path)
+        self.assertEqual(rc, 1)
+        lines = out.strip().splitlines()
+        self.assertTrue(lines[0].startswith(path + ':1: E doc_too_big: this proposal is 81.0 KB, over the 80 KB '
+                                            'error limit: '), lines[0])
+        self.assertRegex(lines[1], '^' + re.escape(path) + r':\d+: E too_many_steps: this proposal has 21 steps')
+        self.assertIn('21 steps, 2 errors, 0 warnings', lines[-1])
+
+    def test_budget_table_in_proposals_md_matches(self):
+        with open(os.path.join(ROOT, 'docs', 'PROPOSALS.md'), encoding='utf-8') as f:
+            section = f.read().split('\n## Size budgets\n', 1)[1].split('\n## ', 1)[0]
+        rows = [[c.strip() for c in l.strip().strip('|').split('|')] for l in section.splitlines()
+                if l.startswith('| ')]
+        want = [[kind, '%d KB' % SIZE_BUDGETS[kind][0], '%d KB' % SIZE_BUDGETS[kind][1], '`doc_too_big`']
+                for kind in ('architecture', 'roadmap', 'proposal')]
+        want += [['steps in a proposal', str(STEP_BUDGET[0]), str(STEP_BUDGET[1]), '`too_many_steps`'],
+                 ['milestones in a roadmap', str(MILESTONE_BUDGET[0]), 'none', '`too_many_milestones`']]
+        self.assertEqual(rows[1:], want)
+
+
 # ---- the docs CI job (/bootstrap's template and examples/docs-lint-job.yml) ----------------------
 
 def docs_job_script(path):
@@ -1168,6 +1395,12 @@ class TestDocsJob(Base):
         rc, out = self.run_job()
         self.assertEqual(rc, 1, out)
         self.assertIn('missing_depends', out)
+
+    def test_a_doc_over_an_error_limit_fails(self):
+        self.write('docs/design/02-q.md', steps_doc(STEP_BUDGET[1] + 1))
+        rc, out = self.run_job()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('E too_many_steps', out)
 
     def test_claude_md_drift_fails_only_when_bootstrapped(self):
         with open(os.path.join(self.tmp, 'CLAUDE.md'), encoding='utf-8') as f:
