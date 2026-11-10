@@ -1,7 +1,7 @@
 export const meta = {
   name: 'brief-to-proposals',
   description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: seed the repo with the pipeline and a base CLAUDE.md, architecture panel, /roadmap, /propose per code milestone, /review-proposal and revise until clean, cross-doc consistency two docs at a time, then lint and lanes. A re-run starts at the stage that needs it (args.from, else inferred from the answers and the docs on disk) and keeps the docs already written. Writes only the seeded pipeline files, CLAUDE.md and design docs, never code; it commits only with args.branch, as checkpoints on that design branch (never main)',
-  whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers and from, as its relay says. Pass branch to checkpoint the docs on a design branch, so they outlive the session and a re-run from any clone picks them up.',
+  whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with every answer so far and from set to its resume_from, as its relay says. Pass branch to checkpoint the docs on a design branch, so they outlive the session and a re-run from any clone picks them up.',
   phases: [
     { title: 'Seed', detail: 'with branch, check out the design branch first; /seed installs the pipeline\'s skills, workflows and scripts and a base CLAUDE.md into the repo; then find the design docs that already exist' },
     { title: 'Intake', detail: 'read the source for blocking questions only the person can answer, before any design is written' },
@@ -23,14 +23,16 @@ export const meta = {
 //   context_file?: string     a file (relative to dir) whose text every author reads and treats as binding framing, like context; it is
 //                             never committed and never saved to the state branch
 //   from?: string             brief mode: the stage to start at, 'intake' | 'architecture' | 'proposals' | 'consistency' | 'lint'.
-//                             Default, inferred: the earliest stage among the answers' ids when architecture.md and roadmap.md exist,
-//                             else 'proposals' when they exist, else 'intake'. 'architecture' with the docs resumes their review (no
-//                             /roadmap); without them, /roadmap runs on the panel synthesis saved on the state branch
+//                             Default, inferred: when architecture.md and roadmap.md exist, the earliest stage among the answers'
+//                             ids, the Intake's left out (the docs were written after them), else 'proposals'; without the docs,
+//                             'intake'. Inference counts every non-intake answer passed, earlier runs' included, so answers added
+//                             to earlier ones can start it before the stage that asked. 'architecture' with the docs resumes their
+//                             review (no /roadmap); without them, /roadmap runs on the panel synthesis saved on the state branch
 //                             (design/panel-synthesis.md), or on a new panel when none is saved. 'proposals' or later skips the
 //                             Intake, the panel and /roadmap and uses the existing docs: it re-proposes only the milestones whose
 //                             question was answered or whose proposal does not exist yet (or exactly args.milestones), keeps the
 //                             rest, then checks consistency over all docs and lints. 'consistency' keeps every proposal; 'lint' only
-//                             lints. A needs_input result names the stage to pass (resume_from).
+//                             lints. A needs_input result names the stage to pass (resume_from): pass it with the answers.
 //   branch?: string           a design branch for checkpoints, e.g. 'design/20261110', never main. Before seeding, the checkout switches
 //                             to it: origin's branch when it exists (so a re-run from a fresh clone continues it), else a new branch
 //                             from origin/<MAIN_BRANCH>. After Architecture, Proposals and Consistency an agent commits the docs written
@@ -172,7 +174,9 @@ const tagQuestions = (scope, qs) => qs.map((q, i) => ({ id: `${scope}.q${i + 1}`
 const relay = from => `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
   (from
     ? `Then re-run this workflow with the same args plus answers (each question's id with the person's answer, added to any answers given before) and from: '${from}' (this result's resume_from), ` +
-      `from this session or a new one: it keeps the docs already written and starts again at the stage that asked. In this session, resumeFromRunId set to this run's id also replays the unchanged stages before it from the record.`
+      `from this session or a new one: it keeps the docs already written and starts again at the stage that asked. ` +
+      `Always pass that from with the answers: left out, the run infers its start from all the answers passed (the Intake's aside), so an answer an earlier run already used can restart an earlier stage, whose revisions may reset an accepted doc to draft. ` +
+      `In this session, resumeFromRunId set to this run's id also replays the unchanged stages before it from the record.`
     : `Then re-run this workflow with the same args plus answers (each question's id with the person's answer) and resumeFromRunId set to this run's id: ` +
       `the stages before the ones that asked replay from the record, and docs already written are kept.`)
 const logQuestions = questions => {
@@ -505,7 +509,10 @@ if (BRIEF_MODE) {
     return startFailed(`partial_docs: only ${survey.architecture_exists ? survey.architecture : survey.roadmap} exists. Restore the other one, or pass force to regenerate both from scratch`)
   }
   DOCS_EXIST = !!(survey.architecture_exists && survey.roadmap_exists)
-  FROM = FROM_ARG || (A.force ? 'intake' : DOCS_EXIST ? (ANSWERS.length ? earliestStage(ANSWERS.map(a => a.stage)) : 'proposals') : 'intake')
+  // Inferred with the docs on disk: every answer counts but the Intake's, which the docs were written after. An architecture
+  // answer still counts, since an architecture reviser's question can be pending on docs that exist.
+  const counted = ANSWERS.filter(a => a.stage !== 'intake')
+  FROM = FROM_ARG || (A.force ? 'intake' : DOCS_EXIST ? (counted.length ? earliestStage(counted.map(a => a.stage)) : 'proposals') : 'intake')
   if (at(FROM) >= at('proposals') && !DOCS_EXIST) {
     FROM = null
     return startFailed(`no_docs: from '${FROM_ARG}' keeps the existing ${survey.architecture || 'architecture.md'} and ${survey.roadmap || 'roadmap.md'}, and they do not exist. Run without from (or with from: 'intake') to write them`)

@@ -880,8 +880,8 @@ from, and needs none: each workflow re-run with the same args starts where the
 repository, origin and the [state branch](#the-state-branch) say the work is.
 
 - `brief-to-proposals`: the same args plus every answer and `from` (the result's
-  `resume_from`, or the inferred default: below). With `branch`, a fresh clone
-  checks the branch out and continues from the docs on it. The brief and the
+  `resume_from`; inferred, it can start earlier: below). With `branch`, a fresh
+  clone checks the branch out and continues from the docs on it. The brief and the
   context file are never committed: copy them into the checkout first, or the run
   stops with `failed_at_start` (`brief_not_found`).
 - `proposal-build-chain`: the same args and `date`: lanes already on origin come
@@ -911,11 +911,17 @@ read it with plain git: `git fetch origin pipeline/state`, then
 
 ### Re-running a design run
 
-`brief-to-proposals` starts at `from`. Without it, the run starts at the earliest
-stage among the answers' ids once `architecture.md` and `roadmap.md` exist
-(`intake.q<N>` → `intake`, `architecture.q<N>` → `architecture`, `m<N>.q<N>` →
-`proposals`, `consistency.q<N>` → `consistency`), at `proposals` when they exist
-and no answer is given, and at the Intake otherwise, or with `force`.
+`brief-to-proposals` starts at `from`. Without it, once `architecture.md` and
+`roadmap.md` exist, the run starts at the earliest stage among the answers' ids,
+the Intake's left out (`architecture.q<N>` → `architecture`, `m<N>.q<N>` →
+`proposals`, `consistency.q<N>` → `consistency`; the docs were written after every
+`intake.q<N>` answer), at `proposals` when no other answer is given, and at the
+Intake when the docs do not exist, or with `force`. Inference counts every
+non-intake answer passed, an earlier run's included, so a re-run with answers added
+to earlier ones can start before the stage that asked: an `architecture.q1` the
+docs already reflect re-runs the architecture review, whose revisions can reset an
+accepted `Status:` to draft. Pass `from` set to the result's `resume_from`, as its
+relay says.
 
 | `from` | What it runs |
 |---|---|

@@ -85,14 +85,18 @@ const WF = 'brief-to-proposals'
 const DESIGN_AGENTS = /^(intake|sketch:|judge|save-panel|roadmap$|review:architecture|revise:architecture|milestones$)/
 const proposed = labels => labels.filter(l => l.startsWith('propose:')).sort()
 
-await test('brief-to-proposals: from is inferred from the answers\' ids once the docs exist, else it is the Intake', async () => {
+await test('brief-to-proposals: from is inferred from the answers\' ids but the Intake\'s once the docs exist, else it is the Intake', async () => {
   const cases = [
     [[], 'proposals'],
     [[{ id: 'm3.q1', answer: 'A3' }], 'proposals'],
     [[{ id: 'architecture.q1', answer: 'AA' }], 'architecture'],
     [[{ id: 'consistency.q1', answer: 'AC' }], 'consistency'],
     [[{ id: 'consistency.q1', answer: 'AC' }, { id: 'm3.q2', answer: 'A3' }], 'proposals'],
-    [[{ id: 'intake.q1', answer: 'AI' }, { id: 'm3.q1', answer: 'A3' }], 'intake'],
+    // The docs were written after every intake answer, so one never sends the run back to the Intake ...
+    [[{ id: 'intake.q1', answer: 'AI' }, { id: 'm3.q1', answer: 'A3' }], 'proposals'],
+    [[{ id: 'intake.q1', answer: 'AI' }], 'proposals'],
+    // ... while an architecture answer still counts: a reviser of the existing docs may have asked it.
+    [[{ id: 'intake.q1', answer: 'AI' }, { id: 'architecture.q1', answer: 'AA' }, { id: 'm3.q1', answer: 'A3' }], 'architecture'],
   ]
   for (const [answers, from] of cases) {
     const { result } = await run(WF, { ...BRIEF, answers }, design())
@@ -108,11 +112,17 @@ await test('brief-to-proposals: from is inferred from the answers\' ids once the
   const conA = await run(WF, { ...BRIEF, answers: [{ id: 'consistency.q1', answer: 'ANSWER-CON' }] }, design())
   assert.ok(!conA.labels.some(l => DESIGN_AGENTS.test(l) || l.startsWith('propose:') || l.startsWith('review:m')), conA.labels.join(' '))
   for (const l of conA.labels.filter(x => x.startsWith('consistency:'))) assert.match(conA.prompt(l), /ANSWER-CON/, l)
-  // An intake answer among them starts at the Intake, which still never rewrites the docs on disk.
-  const intakeA = await run(WF, { ...BRIEF, answers: [{ id: 'intake.q1', answer: 'AI' }, { id: 'm3.q1', answer: 'A3' }] }, design())
-  assert.ok(intakeA.labels.includes('intake') && intakeA.labels.includes('review:architecture-1'))
-  assert.ok(!intakeA.labels.includes('roadmap'))
+  // An intake answer among them starts no Intake and no architecture review, and every stage that runs still gets it.
+  const intakeA = await run(WF, { ...BRIEF, answers: [{ id: 'intake.q1', answer: 'ANSWER-INTAKE' }, { id: 'm3.q1', answer: 'A3' }] }, design())
+  assert.ok(!intakeA.labels.some(l => DESIGN_AGENTS.test(l)), intakeA.labels.join(' '))
   assert.deepEqual(proposed(intakeA.labels), ['propose:m3', 'propose:m5'])
+  for (const l of ['propose:m3', 'propose:m5', 'review:m3-1', 'consistency:arch-m2']) assert.match(intakeA.prompt(l), /ANSWER-INTAKE/, l)
+  // An explicit from: 'intake' still runs the Intake, which never rewrites the docs on disk.
+  const intakeFrom = await run(WF, { ...BRIEF, from: 'intake', answers: [{ id: 'intake.q1', answer: 'AI' }, { id: 'm3.q1', answer: 'A3' }] }, design())
+  assert.equal(intakeFrom.result.from, 'intake')
+  assert.ok(intakeFrom.labels.includes('intake') && intakeFrom.labels.includes('review:architecture-1'))
+  assert.ok(!intakeFrom.labels.includes('roadmap'))
+  assert.deepEqual(proposed(intakeFrom.labels), ['propose:m3', 'propose:m5'])
   // No docs on disk: the Intake, whatever the answers say, and /roadmap writes them.
   const fresh = await run(WF, { ...BRIEF, answers: [{ id: 'architecture.q1', answer: 'AA' }] }, design({}, NO_DOCS))
   assert.equal(fresh.result.from, 'intake')
@@ -338,6 +348,35 @@ await test('brief-to-proposals: needs_input results name the stage to resume fro
   const concern = await run(WF, { concern: 'big change', dir: '/abs/p' }, design({ propose: { questions: [Q] } }))
   assert.equal(concern.result.resume_from, undefined)
   assert.match(concern.result.relay, /resumeFromRunId/)
+})
+
+await test('brief-to-proposals: every needs_input relay says to pass from, set to the result\'s resume_from, with the answers so far', async () => {
+  const consistencyAsks = { 'consistency:arch-m2': { findings: [{ doc: PATH.m2, severity: 'bug', description: 'y' }] }, 'revise:consistency-1': { questions: [Q] } }
+  const stops = [
+    await run(WF, BRIEF, design({ intake: { questions: [Q] } }, NO_DOCS)),
+    await run(WF, BRIEF, design({ roadmap: { questions: [Q] } }, NO_DOCS)),
+    await run(WF, { ...BRIEF, from: 'proposals' }, design({ 'propose:m5': { questions: [Q] } })),
+    await run(WF, { ...BRIEF, from: 'consistency' }, design(consistencyAsks)),
+  ]
+  assert.deepEqual(stops.map(s => s.result.resume_from), ['intake', 'architecture', 'proposals', 'consistency'])
+  for (const { result } of stops) {
+    assert.equal(result.status, 'needs_input')
+    assert.ok(result.relay.includes(`from: '${result.resume_from}' (this result's resume_from)`), result.relay)
+    assert.match(result.relay, /added to any answers given before/)
+    assert.match(result.relay, /Always pass that from with the answers/)
+  }
+  // Why: the answers pile up from run to run. With an architecture answer an earlier run applied, a milestone's question
+  // resumes at the proposals, as the relay says; inferred, the re-run would go back to the architecture review.
+  const carried = [{ id: 'intake.q1', answer: 'AI' }, { id: 'architecture.q1', answer: 'AA' }]
+  const asking = await run(WF, { ...BRIEF, from: 'proposals', answers: carried }, design({ 'propose:m5': { questions: [Q] } }))
+  assert.equal(asking.result.resume_from, 'proposals')
+  const answers = carried.concat({ id: 'm5.q1', answer: 'A5' })
+  const followed = await run(WF, { ...BRIEF, answers, from: asking.result.resume_from }, design())
+  assert.ok(!followed.labels.some(l => DESIGN_AGENTS.test(l)), followed.labels.join(' '))
+  assert.deepEqual(proposed(followed.labels), ['propose:m5'])
+  const inferred = await run(WF, { ...BRIEF, answers }, design())
+  assert.equal(inferred.result.from, 'architecture')
+  assert.ok(inferred.labels.includes('review:architecture-1'))
 })
 
 await test('brief-to-proposals: args that cannot be honoured throw, and a run that cannot start says why', async () => {
