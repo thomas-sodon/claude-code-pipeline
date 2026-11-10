@@ -185,6 +185,24 @@ class StatusLine(Guard):
                                                                                  'current_usage': None}}), 'ctx --')
         self.assertIsNone(self.record('s2')['used_percentage'])
 
+    def test_a_smaller_auto_compaction_window_moves_the_line_as_it_moves_the_hooks(self):
+        payload = {'session_id': 's1', 'context_window': {'used_percentage': 25, 'context_window_size': 1000000}}
+        early = {'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '400000'}
+        # 25% of a 1M window is 62.5% of a 400k one, which the line rounds as it always does (round(62.5) is 62).
+        self.assertEqual(self.statusline(payload, env=early), 'ctx 62%',
+                         'a session that runs no workflow is never due')
+        self.orchestrate()
+        self.assertEqual(self.statusline(payload, env=early), 'ctx 62% \u00b7 handoff due')
+        self.assertEqual(self.record()['used_percentage'], 25, "the record keeps Claude Code's own figure")
+        u = self.status(env=early)['usage']
+        self.assertEqual((u['source'], u['window'], u['window_source']),
+                         ('statusline', 400000, 'auto_compact_window'))
+        self.assertAlmostEqual(u['pct'], 62.5)
+        self.assertEqual(self.hook_json('Stop', env=early)['decision'], 'block', 'the hooks see what the line shows')
+        self.assertEqual(self.statusline(payload), 'ctx 25%')
+        self.assertEqual(self.statusline(payload, env={'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '2000000'}), 'ctx 25%',
+                         'a larger compaction window changes nothing')
+
     def test_garbage_input_still_prints_and_exits_0(self):
         for raw in (b'', b'not json', b'[1, 2]', b'\x00\xff', b'{"session_id": "../../x", "context_window": 7}'):
             self.assertEqual(self.statusline(raw), 'ctx --')

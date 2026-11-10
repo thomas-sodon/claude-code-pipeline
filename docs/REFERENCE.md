@@ -992,7 +992,7 @@ cache-creation and cache-read tokens over the window. The window is the status
 line's last `context_window_size`, else `PIPELINE_CONTEXT_WINDOW`, else 1,000,000
 for a model whose window is 1M (the 5-series and later, Fable, Mythos, an id ending
 `[1m]`), else 200,000, and 1,000,000 once a count passes 200,000. A smaller
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW` becomes the window, and
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` becomes the window, for the status line too, and
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` lowers the threshold to 10 points under it (half
 of it, below 20), so an earlier auto-compaction never comes first. Events fired
 inside a subagent or a workflow agent (hook input with `agent_id`) are ignored, so a

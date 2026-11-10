@@ -2,8 +2,9 @@
 """Context guard: the orchestrating Claude Code session hands off before its context passes 50% (stdlib only, 3.8+).
 
 context-guard.py statusline     the status-line command: reads Claude Code's status-line JSON on stdin,
-                                records this session's context usage and prints "ctx NN%" (" · handoff due"
-                                added at or over the threshold in an orchestrating session).
+                                records this session's context usage and prints "ctx NN%", as the hooks
+                                measure it (" · handoff due" added at or over the threshold in an
+                                orchestrating session).
 context-guard.py hook           one hook entry for SessionStart, UserPromptSubmit, PostToolUse, Stop and
                                 PreCompact; it dispatches on hook_event_name and always exits 0.
 context-guard.py mark-handoff   record that a handoff was written now (/handoff runs it after saving STATE.md).
@@ -44,7 +45,8 @@ additionalContext says when the handoff was written, to read it before acting, a
 Environment:
   PIPELINE_HANDOFF_PCT     handoff threshold, percent of the context window (default 40)
   PIPELINE_CONTEXT_WINDOW  window size in tokens when no status line reports one
-  CLAUDE_CODE_AUTO_COMPACT_WINDOW  read, not set: a smaller compaction window is the one usage is measured against
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW  read, not set: a smaller compaction window is the one usage is measured against,
+                                   by the hooks and the status line alike
   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE  read, not set: the threshold stays at least 10 points (or half) below it
   PIPELINE_ORCHESTRATOR    1: the session orchestrates from its first event, without a Workflow call, under CI too
   CI, GITHUB_ACTIONS       read, not set: either truthy, nothing nags, blocks or injects, and the status line drops
@@ -295,6 +297,16 @@ def window_for(recorded, model, tokens):
     return DEFAULT_WINDOW, 'default'
 
 
+def against_compact_window(pct, window):
+    """(pct, window) rescaled to CLAUDE_CODE_AUTO_COMPACT_WINDOW when that is smaller than window, else as given:
+    auto-compaction fires against the smaller window, so the handoff is measured against it too. measure() and the
+    status line both go through here, so the hooks and the line agree."""
+    cap = compact_window()
+    if pct is not None and cap and window and window > cap:
+        return pct * window / cap, cap
+    return pct, window
+
+
 def measure(sid, transcript_path):
     """{'pct', 'source', 'window', 'tokens', 'window_source'}: pct is None when usage is unknown."""
     rec = statusline_record(sid)
@@ -310,11 +322,9 @@ def measure(sid, transcript_path):
         window, wsrc = window_for(posint(rec.get('context_window_size')), model, tokens)
         m = {'pct': tokens * 100.0 / window, 'source': 'transcript', 'window': window, 'tokens': tokens,
              'window_source': wsrc}
-    # Auto-compaction measured against a smaller window (CLAUDE_CODE_AUTO_COMPACT_WINDOW) fires against that window.
-    cap = compact_window()
-    if cap and m['window'] and m['window'] > cap:
-        m['pct'] = m['pct'] * m['window'] / cap
-        m['window'], m['window_source'] = cap, 'auto_compact_window'
+    pct, window = against_compact_window(m['pct'], m['window'])
+    if window != m['window']:
+        m['pct'], m['window'], m['window_source'] = pct, window, 'auto_compact_window'
     return m
 
 
@@ -605,7 +615,7 @@ def cmd_hook():
 # ---- status line, marks, status -----------------------------------------------------------------
 
 def cmd_statusline():
-    pct = sid = None
+    pct = size = sid = None
     try:
         d = json.loads(sys.stdin.buffer.read().decode('utf-8', 'replace'))
         if not isinstance(d, dict):
@@ -626,6 +636,8 @@ def cmd_statusline():
                 'exceeds_200k_tokens': d.get('exceeds_200k_tokens') is True})
     except Exception as e:
         log_error('statusline', e)
+    # The record keeps Claude Code's own figure, which measure() rescales; the line shows what the hooks measure.
+    pct = against_compact_window(pct, size)[0]
     line = 'ctx %d%%' % round(pct) if pct is not None else 'ctx --'
     st = read_json(state_file(sid)) if sid else {}
     if pct is not None and enabled() and pct >= threshold() and orchestrating(st):
