@@ -43,7 +43,8 @@ export const meta = {
 //   same args plus answers: [{ lane, id, answer }], and each lane gets only its own answers.
 // Each lane's result is slim, never the plan text: { status, branch, plan_ref, review_clean, polish_clean, assumptions,
 //   questions?, left_uncommitted? }, plus, on a lane that did not push, what stopped it (stage, stop_reason, blocked_reason,
-//   review_findings).
+//   review_findings). The one exception is explicit mode, which has no ship plan: a lane that pushed with plan_ref '' (its
+//   plan could not be saved) also carries plan_text, the text derive mode's ship plan would carry for it, for its ship-only run.
 const A = args || {}
 const DERIVE = !A.lanes && !!A.proposal
 if (!DERIVE && (!A.lanes || !A.lanes.length)) throw new Error('proposal-build-chain: pass args.lanes, or args.proposal (with dir and root) to derive the lanes from the proposal (see the pipeline README)')
@@ -87,7 +88,8 @@ const stateSlug = name => {
 }
 // A lane's plan on the pipeline state branch: plans/<branch-slug>.md, where the lane's own run saved it.
 const planRefFor = b => `plans/${stateSlug(b)}.md`
-// Plan text kept out of this result: the ship plan's fallback for a lane whose plan could not be saved (plan_ref '').
+// Plan text kept out of the lane results: the fallback for a lane whose plan could not be saved (plan_ref ''), read by derive
+// mode's ship plan, and in explicit mode added to that lane's own result once it pushed.
 const PLAN_TEXT = {}
 // A lane's plan-to-merged-pr result without its plan text. What stopped a lane that did not push stays, so a person can act on it.
 const slimLane = r => {
@@ -131,19 +133,22 @@ async function buildLane(l) {
     log(`Lane ${l.key}: ${err && err.message ? err.message : err}`)
   }
   const status = (r && r.status) || 'failed'
-  log(`Lane ${l.key}: ${status}${r && r.status === 'pushed' ? (r.plan_ref ? ` (plan saved as ${r.plan_ref})` : ' (plan not saved: the ship plan carries its text)') : ''}`)
-  if (r && !r.plan_ref && typeof r.plan === 'string' && r.plan) PLAN_TEXT[l.key] = r.plan
+  log(`Lane ${l.key}: ${status}${r && r.status === 'pushed' ? (r.plan_ref ? ` (plan saved as ${r.plan_ref})` : ` (plan not saved: ${DERIVE ? 'the ship plan' : 'the lane\'s result'} carries its text)`) : ''}`)
+  PLAN_TEXT[l.key] = r && !r.plan_ref && typeof r.plan === 'string' ? r.plan : ''
   const questions = status === 'needs_input' ? ((r && r.questions) || []).map(q => ({ lane: l.key, ...q })) : []
   return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result: slimLane(r), ...(questions.length ? { questions, relay: RELAY } : {}) }
 }
 
 if (!DERIVE) {
   // ---- Explicit lanes: in the order given; a later lane stacks on this one, so stop at the first that does not push.
+  // No ship plan carries the fallback here, so a lane that pushed without saving its plan keeps the text in its own result,
+  // for the ship-only run that opens its PR. One that did not push is planned again by a re-run, so it stays slim.
   phase('Lanes')
   const results = []
   for (const l of A.lanes) {
     if (!l.key || !l.dir || !l.branch || !l.concern || !l.proposal) throw new Error(`proposal-build-chain: lane ${l.key || '?'} needs key, dir, branch, proposal and concern`)
     const r = await buildLane(l)
+    if (r.status === 'pushed' && r.result && !r.result.plan_ref && PLAN_TEXT[l.key]) r.result.plan_text = PLAN_TEXT[l.key]
     results.push(r)
     if (r.status !== 'pushed') break
   }

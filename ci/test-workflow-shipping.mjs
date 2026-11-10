@@ -272,6 +272,28 @@ await test('proposal-build-chain: a lane that did not push keeps what stopped it
   await assert.rejects(run('proposal-build-chain', { lanes, github_access: 'mcp' }, () => ({}), { workflow }), /github_access must be 'gh', 'connector' or ''/)
 })
 
+await test('proposal-build-chain: an explicit lane pushed without a saved plan keeps its text, as the derive-mode ship plan does', async () => {
+  const lanes = [{ key: 's1', dir: '/w/s1', branch: 'feat/p-s1', proposal: 'p.md', concern: 'c1' },
+    { key: 's2', dir: '/w/s2', branch: 'feat/p-s2', proposal: 'p.md', concern: 'c2', bases: ['feat/p-s1'] }]
+  const { result } = await run('proposal-build-chain', { lanes }, () => ({}), { workflow: async (n, a) => built(a) })
+  assert.deepEqual(result.map(r => r.status), ['pushed', 'pushed'])
+  assert.equal(result[0].result.plan_ref, 'plans/feat-p-s1-80775a7d.md')
+  assert.equal(result[0].result.plan_text, undefined, 'a saved plan travels by reference only')
+  assert.equal(result[1].result.plan_ref, '')
+  assert.equal(result[1].result.plan_text, 'PLAN-TEXT for feat/p-s2', 'the plan whose save failed comes back with its lane')
+  // The same fallback derive mode puts in its ship plan for that lane.
+  const respond = label => label === 'derive-lanes' ? { lanes_json: LANES_JSON, exit_code: 0, source: 'origin', repo: 'acme/app' } : {}
+  const derived = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w' }, respond, { workflow: async (n, a) => built(a) })
+  assert.equal(derived.result.ship_plan[0].order[1].args.plan_text, result[1].result.plan_text)
+  // A lane that did not push is planned again when it is rebuilt, never shipped as it is: it stays slim.
+  const unpushed = await run('proposal-build-chain', { lanes }, () => ({}), { workflow: async (n, a) => ({ ...built(a), status: 'failed_at_push', plan_ref: '' }) })
+  assert.deepEqual(unpushed.result.map(r => [r.status, r.result.plan_text]), [['failed_at_push', undefined]])
+  // A lane key given twice never carries the other lane's text.
+  const twice = await run('proposal-build-chain', { lanes: [{ ...lanes[1], key: 'k' }, { ...lanes[1], key: 'k', branch: 'feat/p-s2b' }] }, () => ({}),
+    { workflow: async (n, a) => a.branch === 'feat/p-s2' ? built(a) : { ...built(a), plan_ref: '', plan: null } })
+  assert.deepEqual(twice.result.map(r => r.result.plan_text), ['PLAN-TEXT for feat/p-s2', undefined])
+})
+
 // ---- the state branch's slug: each workflow's copy (stateSlug, behind planRefFor) prints what pipeline-state.py slug does
 const SLUG_NAMES = ['feat/x', 'feat-x', 'feat:x', 'feat x', 'feat/42-foo', 'Feat/Foo_bar.baz@x y', 'feat/p_s1.v2+x@1',
   'bootstrap/20261110', 'main', 'v1.2_rc-3', '.hidden', 'a--b', 'feat//x/', 'feat/ünïcødé', 'feat/日本語', 'feat/😀-x',

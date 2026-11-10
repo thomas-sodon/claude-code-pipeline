@@ -648,7 +648,9 @@ After monitoring, the result also carries:
 `proposal-build-chain`, explicit mode: an array of `{ lane, branch, steps, status, result }`,
 one per lane attempted, `status` being the lane's `plan-to-merged-pr` status (or
 `failed`) and `result` slim, as in derive mode (below); a `needs_input` lane also carries `questions` (each with its `lane`) and
-`relay`. Derive mode: `{ status, proposal, source, chains, blocked, human_gates_pending, milestone_waits, ship_plan }`, where:
+`relay`. There is no ship plan in explicit mode, so a lane that pushed with `plan_ref` `''`
+(its plan could not be saved) also carries `plan_text` in its `result`: the fallback
+derive mode's `ship_plan` gives it, for the ship-only run that opens its PR. Derive mode: `{ status, proposal, source, chains, blocked, human_gates_pending, milestone_waits, ship_plan }`, where:
 
 - `pushed` — every lane is pushed or `already_built`
 - `needs_input` — some lane stopped with `needs_input` (its chain stopped there; other chains carried on); `questions` lists every lane's questions, each with its `lane`, and `relay` says what to do
