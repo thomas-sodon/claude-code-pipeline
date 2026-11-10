@@ -147,6 +147,8 @@ await test('plan-to-merged-pr: a merged PR with a proposal reports the close-out
 const btp = (over = {}) => (label, prompt) => {
   if (over[label] !== undefined) return typeof over[label] === 'function' ? over[label](prompt) : over[label]
   if (label === 'seed') return { copied: 1, claude_md: 'written' }
+  // No design docs on disk yet: the run starts at the Intake (see ci/test-workflow-design.mjs for resumed runs).
+  if (label === 'existing-docs') return { brief_exists: true, out_dir: 'docs/design', architecture: 'docs/design/architecture.md', roadmap: 'docs/design/roadmap.md' }
   if (label === 'roadmap' || label === 'milestones') return {
     out_dir: 'docs/design', architecture: 'docs/design/architecture.md', roadmap: 'docs/design/roadmap.md', lint_clean: true,
     milestones: [{ n: 1, title: 'Bootstrap', done: false, human_gate: 'ops', proposal: '' },
@@ -154,7 +156,7 @@ const btp = (over = {}) => (label, prompt) => {
   }
   if (label.startsWith('propose:m')) return { doc: `docs/design/${label.slice(9)}.md`, steps: 3, lint_clean: true }
   if (label.startsWith('review:')) return { findings: [], completed: true }
-  if (label === 'consistency') return { findings: [], coverage_gaps: [] }
+  if (label.startsWith('consistency:')) return { findings: [], coverage_gaps: [] }
   if (label === 'lint') return { docs: [], lanes: [], next_milestones: [] }
   return {}
 }
@@ -164,14 +166,15 @@ await test('brief-to-proposals: an intake question stops the run before any desi
   const { result, calls } = await run('brief-to-proposals', BRIEF, btp({ intake: { questions: [Q] } }))
   assert.equal(result.status, 'needs_input')
   assert.deepEqual(result.questions.map(q => q.id), ['intake.q1'])
-  assert.deepEqual(calls.map(c => c.label), ['seed', 'intake'])
+  assert.deepEqual(calls.map(c => c.label), ['seed', 'existing-docs', 'intake'])
   assert.ok(result.seeded)
+  assert.equal(result.resume_from, 'intake')
 })
 
 await test('brief-to-proposals: on_question assume turns intake recommendations into shared answers', async () => {
   const { result, prompt } = await run('brief-to-proposals', { ...BRIEF, on_question: 'assume' }, btp({ intake: { questions: [Q] } }))
   assert.equal(result.status, 'ready')
-  for (const l of ['roadmap', 'propose:m2', 'review:m3-1', 'consistency']) assert.match(prompt(l), /per process \(assumed/, l)
+  for (const l of ['roadmap', 'propose:m2', 'review:m3-1', 'consistency:arch-m2', 'consistency:brief-roadmap']) assert.match(prompt(l), /per process \(assumed/, l)
   assert.ok(result.assumptions.some(a => a.stage === 'intake' && a.assumption.includes('per process')))
 })
 
@@ -187,7 +190,8 @@ await test('brief-to-proposals: one milestone asking lets the others finish and 
   assert.equal(result.status, 'needs_input')
   assert.deepEqual(result.questions.map(q => q.id), ['m2.q1'])
   assert.ok(calls.some(c => c.label === 'review:m3-1'), 'milestone 3 was still reviewed')
-  assert.ok(!calls.some(c => c.label === 'consistency'), 'Consistency waits on the answers')
+  assert.ok(!calls.some(c => c.label.startsWith('consistency')), 'Consistency waits on the answers')
+  assert.equal(result.resume_from, 'proposals')
   assert.equal(result.proposals.find(p => p.milestone === 2).needs_input, true)
   assert.match(result.next_steps[0], /answer the 1 question/)
 })
@@ -197,7 +201,7 @@ await test('brief-to-proposals: a milestone answer reaches only that milestone a
   const { result, prompt } = await run('brief-to-proposals', { ...BRIEF, answers }, btp())
   assert.equal(result.status, 'ready')
   for (const l of ['intake', 'roadmap', 'review:architecture-1', 'propose:m3', 'review:m3-1']) assert.doesNotMatch(prompt(l), /ANSWER-M2/, l)
-  for (const l of ['propose:m2', 'review:m2-1', 'consistency']) assert.match(prompt(l), /ANSWER-M2/, l)
+  for (const l of ['propose:m2', 'review:m2-1', 'consistency:arch-m2', 'consistency:arch-m3']) assert.match(prompt(l), /ANSWER-M2/, l)
 })
 
 await test('brief-to-proposals: next steps say to re-review each later proposal before accepting it', async () => {
