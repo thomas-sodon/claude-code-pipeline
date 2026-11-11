@@ -984,7 +984,7 @@ session:
 | PostToolUse | context for Claude: start no new work, finish or park the step, run `/handoff`, end the session. Rate-limited: the first crossing (the Workflow call that makes the session orchestrating counts), then every 5 more points or every 10th tool call | nothing |
 | UserPromptSubmit | context for Claude beside the prompt; never blocks it | nothing |
 | Stop | blocks (`decision: block`) until `/handoff` in this session has recorded a handoff since the crossing (another session's, in another worktree of the repository say, does not count); a stop already continued once (`stop_hook_active`) goes through | nothing |
-| PreCompact (auto) | the first in a session is blocked with the handoff instruction; a later one goes ahead, with summary instructions that keep the pipeline state | allowed, with the same instructions |
+| PreCompact (auto) | the first in a session is blocked with the handoff instruction; a later one goes ahead, with summary instructions that keep the pipeline state and say to run `/handoff` first after it | allowed, with summary instructions that keep the pipeline state and no handoff: the guard asked for none, so the session goes on |
 | PreCompact (manual) | allowed | allowed |
 | SessionStart | at any usage, and in a session that does not orchestrate too: when the state branch has `STATE.md`, says when it was saved, to read it first (`python3 .claude/scripts/pipeline-state.py get STATE.md`), and quotes its `## Next` (up to 2,000 characters) | the same |
 

@@ -35,7 +35,10 @@ At or over the threshold (env PIPELINE_HANDOFF_PCT, default 40), in an orchestra
                     session's does not count); a Stop that stop_hook_active marks as already continued is
                     allowed, so it never loops.
   PreCompact        auto: the first one in a session is blocked with the handoff instruction; a later one is
-                    allowed, with summary instructions on stdout to keep the pipeline state. manual: allowed.
+                    allowed, with summary instructions on stdout to keep the pipeline state and to run /handoff
+                    first after it. manual: allowed.
+Under the threshold, an orchestrating session's auto PreCompact is allowed with summary instructions to keep the
+pipeline state and no handoff: the guard asked for none, so the session goes on after it.
 A session that is not orchestrating gets none of these, at any usage, and no PreCompact summary instructions.
 SessionStart, at any usage and whether or not the session orchestrates (outside CI): when the state branch has
 STATE.md (a git fetch of at most 10 s; env PIPELINE_STATE_OFFLINE=1 skips it and reads the local refs),
@@ -419,9 +422,13 @@ SUMMARY_INSTRUCTIONS = (
     'Keep the pipeline state in this summary, exact where it is exact: the goal; each workflow run in flight or '
     'stopped, with its exact args; branches and open pull requests; open questions with their ids, options and '
     'the recommendation; the answers the person gave, by question id; assumptions not yet reviewed; environment '
-    'notes; and the exact next action. Keep this too: the context guard asked for a handoff, so the first thing '
-    'after this compaction is to run /handoff (it saves STATE.md to the state branch) and end the session; the '
-    'work continues in a fresh session.')
+    'notes; and the exact next action.')
+
+# Added only over the threshold, where the guard did ask for a handoff. Under it the guard asked for none: an early
+# auto-compaction keeps the state, and the session goes on with the budget it has left.
+SUMMARY_HANDOFF = (
+    ' Keep this too: the context guard asked for a handoff, so the first thing after this compaction is to run '
+    '/handoff (it saves STATE.md to the state branch) and end the session; the work continues in a fresh session.')
 
 
 # ---- SessionStart: the handoff on the state branch ----------------------------------------------
@@ -581,11 +588,12 @@ def on_precompact(ev, sid, st):
         return None                        # nothing to hand off: no block, and no pipeline summary to keep
     m = measure(sid, ev.get('transcript_path'))
     if m['pct'] is not None and m['pct'] < threshold():
-        return SUMMARY_INSTRUCTIONS        # under the threshold (an idle compaction): nothing to hand off yet
+        return SUMMARY_INSTRUCTIONS        # under the threshold (an early or idle compaction): no handoff asked for
     if not st.get('precompact_blocked'):
         st['precompact_blocked'] = iso(now())
         return json.dumps({'decision': 'block', 'reason': MSG_PRECOMPACT_BLOCK})
-    return SUMMARY_INSTRUCTIONS            # a second auto-compaction goes ahead: a guard failure never bricks it
+    # A second auto-compaction goes ahead (a guard failure never bricks it), and its summary carries the handoff.
+    return SUMMARY_INSTRUCTIONS + SUMMARY_HANDOFF
 
 
 HANDLERS = {'SessionStart': on_session_start, 'UserPromptSubmit': on_prompt, 'PostToolUse': on_post_tool,

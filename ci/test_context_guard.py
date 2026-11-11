@@ -419,6 +419,25 @@ class PreCompact(Orchestrating):
         self.at(93)
         self.assertEqual(self.hook_json('PreCompact', trigger='auto')['decision'], 'block')
 
+    def test_an_early_auto_compaction_keeps_the_state_and_asks_for_no_handoff(self):
+        self.at(15)
+        text = self.hook('PreCompact', trigger='auto')
+        self.assertTrue(text.startswith('Keep the pipeline state in this summary'), text)
+        self.assertTrue(text.endswith('and the exact next action.'), text)
+        for said in ('handoff', 'end the session', 'fresh session'):
+            self.assertNotIn(said, text, 'the guard asked for no handoff, so the session goes on with its budget')
+        self.assertIsNone(self.status()['precompact_blocked'])
+
+    def test_over_the_threshold_the_compaction_that_goes_ahead_keeps_the_state_and_the_handoff(self):
+        self.at(92)
+        self.assertEqual(self.hook_json('PreCompact', trigger='auto')['decision'], 'block')
+        text = self.hook('PreCompact', trigger='auto')
+        self.assertTrue(text.startswith('Keep the pipeline state in this summary'), text)
+        self.assertIn('the exact next action. Keep this too: the context guard asked for a handoff, so the first '
+                      'thing after this compaction is to run /handoff', text)
+        self.assertTrue(text.endswith('and end the session; the work continues in a fresh session.'), text)
+        self.assertEqual(self.hook('PreCompact', trigger='auto'), text, 'every later one says the same')
+
     def test_the_block_is_per_session(self):
         self.orchestrate(sid='s2')
         self.at(92, sid='s1')
