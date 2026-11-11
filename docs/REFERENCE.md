@@ -976,8 +976,9 @@ of compacting. `.claude/settings.json` registers it as the status line
 (`context-guard.py hook`, which dispatches on the event).
 
 It acts only on the orchestrator. A main session becomes one with its first
-Workflow tool call (PostToolUse sees `tool_name` `Workflow` and records
-`orchestrating` in the session's record), or from its start with
+Workflow tool call (PostToolUse sees `tool_name` `Workflow` and creates the
+session's orchestration mark, `<session>.orchestrating`, which is never rewritten,
+so no hook writing the session's record can clear it), or from its start with
 `PIPELINE_ORCHESTRATOR=1`. A session that runs no workflow, such as an ordinary
 coding session or a `claude -p` run, gets the SessionStart pointer and a plain
 `ctx NN%`, at any usage, and nothing else: it is never told to hand off, so it never
@@ -1007,7 +1008,10 @@ for a model whose window is 1M (the 5-series and later, Fable, Mythos, an id end
 of it, below 20), so an earlier auto-compaction never comes first. Events fired
 inside a subagent or a workflow agent (hook input with `agent_id`) are ignored, so a
 subagent's Workflow call makes no session orchestrating, and any error exits 0 with
-no output, so the hooks never fail a session.
+no output, so the hooks never fail a session. A session's hooks take turns: each
+holds `<session>.hook.lock` while it reads, changes and writes the session's record,
+so two close together (parallel tool calls, or a prompt and a stop) keep both
+changes, and one that cannot take it within 2 seconds does nothing.
 
 | Variable | Default | Effect |
 |---|---|---|

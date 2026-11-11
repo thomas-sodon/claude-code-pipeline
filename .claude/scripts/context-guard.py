@@ -14,7 +14,7 @@ Main session only: an event fired inside a subagent or a workflow agent (its inp
 hooks reference) is ignored, so a subagent is never told to hand off.
 
 Orchestrating session only: the nags and blocks below, and "handoff due", apply to a main session that has made a
-Workflow tool call (PostToolUse sees tool_name Workflow and records orchestrating: true in its state file) or runs
+Workflow tool call (PostToolUse sees tool_name Workflow and creates the session's orchestration mark) or runs
 with env PIPELINE_ORCHESTRATOR=1. An ordinary coding session, a claude -p run or a CI review bot is never told to
 hand off, so it never pushes a state branch. Under CI (a truthy CI or GITHUB_ACTIONS: anything but empty, 0, false,
 no or off) none of them apply and SessionStart injects nothing, unless PIPELINE_ORCHESTRATOR=1.
@@ -61,13 +61,17 @@ Environment:
   CLAUDE_CODE_SESSION_ID   the session mark-handoff and status act on (set by Claude Code in Bash commands)
 
 Files in the guard directory: <session>.json (status line: used_percentage, context_window_size, at),
-<session>.hook.json (orchestrating, crossing and rate-limit state), <session>.handoff.json and
-handoff-<repo-key>.json (handoff marks; the repository's, shared by its worktrees, names the session that wrote
-it and counts only for that one, or for every session when it names none), errors.log. Records older than 30 days
-are removed at SessionStart.
-The hook never fails the session: any error exits 0 with no output (and a line in errors.log).
+<session>.hook.json (crossing and rate-limit state), <session>.orchestrating (the orchestration mark: created by
+the session's first Workflow call and never rewritten, so no write of the state file can clear it),
+<session>.hook.lock (each hook holds it while it loads, handles and writes <session>.hook.json, so two hooks close
+together never undo each other's changes), <session>.handoff.json and handoff-<repo-key>.json (handoff marks; the
+repository's, shared by its worktrees, names the session that wrote it and counts only for that one, or for every
+session when it names none), errors.log. Records older than 30 days are removed at SessionStart.
+The hook never fails the session: any error exits 0 with no output (and a line in errors.log), and so does a hook
+that cannot take its session's lock within 2 s.
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -75,6 +79,11 @@ import re
 import subprocess
 import sys
 import time
+
+try:
+    import fcntl
+except ImportError:            # Windows: the hooks run unlocked there
+    fcntl = None
 
 DEFAULT_PCT = 40.0
 DEFAULT_WINDOW = 200000
@@ -85,6 +94,8 @@ WARN_EVERY_CALLS = 10
 NEXT_MAX = 2000
 FETCH_TIMEOUT = 10
 KEEP_DAYS = 30
+LOCK_WAIT = 2.0                # seconds a hook waits for another hook of its session before it does nothing
+LOCK_POLL = 0.02
 TAIL_CHUNKS = (262144, 2097152, 8388608)
 STATE_BRANCH = 'pipeline/state'
 # Models whose context window is 1M by default (claude-api model table): the 5-series and later, Fable, Mythos.
@@ -125,9 +136,11 @@ def quiet_ci():
     return (truthy('CI') or truthy('GITHUB_ACTIONS')) and not forced()
 
 
-def orchestrating(st):
-    """Whether the guard acts on this session: forced, or a Workflow tool call recorded in its state, outside CI."""
-    return forced() or (st.get('orchestrating') is True and not quiet_ci())
+def orchestrating(sid, st=None):
+    """Whether the guard acts on this session: forced, or a Workflow tool call recorded (its orchestration mark, or
+    the orchestrating: true an earlier version of this script kept in the state file), outside CI."""
+    recorded = bool(sid and os.path.exists(orchestration_mark(sid))) or (st or {}).get('orchestrating') is True
+    return forced() or (recorded and not quiet_ci())
 
 
 def threshold():
@@ -337,6 +350,51 @@ def state_file(sid):
     return path_for('%s.hook.json' % sid)
 
 
+def orchestration_mark(sid):
+    return path_for('%s.orchestrating' % sid)
+
+
+def mark_orchestrating(sid):
+    """Create the session's orchestration mark. It is only ever created, never rewritten, so a hook that writes back a
+    state file it read before the Workflow call cannot clear it."""
+    os.makedirs(guard_dir(), exist_ok=True)
+    try:
+        fd = os.open(orchestration_mark(sid), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(iso(now()) + '\n')
+
+
+@contextlib.contextmanager
+def session_lock(sid):
+    """Hold <session>.hook.lock exclusively while a hook loads, handles and writes the session's state, so two hooks
+    close together (PostToolUse for parallel tool calls, or UserPromptSubmit and Stop) never write over each other's
+    changes. Yields False when another hook keeps it for LOCK_WAIT seconds: the hook then does nothing, so it never
+    hangs. Without fcntl (Windows), or on a file system that refuses locks, it yields True unlocked."""
+    if fcntl is None:
+        yield True
+        return
+    os.makedirs(guard_dir(), exist_ok=True)
+    fd = os.open(path_for('%s.hook.lock' % sid), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        deadline, held = time.monotonic() + LOCK_WAIT, None
+        while held is None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    held = False
+                else:
+                    time.sleep(LOCK_POLL)
+            except OSError:
+                held = True              # no locks on this file system: run unlocked, as before
+        yield held
+    finally:
+        os.close(fd)                     # closing it releases the lock
+
+
 def repo_key(cwd):
     """A key for the repository cwd is in, shared by all its worktrees (its common git dir), or None."""
     common = (git(cwd, 'rev-parse', '--git-common-dir') or '').strip() if cwd else ''
@@ -507,7 +565,7 @@ def cleanup():
     except OSError:
         return
     for n in names:
-        if n.endswith('.json') or '.json.tmp.' in n:
+        if n.endswith(('.json', '.orchestrating', '.hook.lock')) or '.json.tmp.' in n:
             p = os.path.join(d, n)
             try:
                 if os.path.getmtime(p) < cutoff:
@@ -541,7 +599,7 @@ def on_session_start(ev, sid, st):
 
 
 def on_prompt(ev, sid, st):
-    if not orchestrating(st):
+    if not orchestrating(sid, st):
         return None
     m = measure(sid, ev.get('transcript_path'))
     if not track(st, m['pct']):
@@ -552,9 +610,7 @@ def on_prompt(ev, sid, st):
 
 
 def on_post_tool(ev, sid, st):
-    if ev.get('tool_name') == 'Workflow':
-        st['orchestrating'] = True         # it runs workflows: it orchestrates from this call on (CI aside)
-    if not orchestrating(st):
+    if not orchestrating(sid, st):         # a Workflow call made the session's mark before the lock (run_hook)
         return None                        # not measured either: an ordinary session pays no transcript read
     m = measure(sid, ev.get('transcript_path'))
     if not track(st, m['pct']):
@@ -572,7 +628,7 @@ def on_post_tool(ev, sid, st):
 
 
 def on_stop(ev, sid, st):
-    if ev.get('stop_hook_active') or not orchestrating(st):
+    if ev.get('stop_hook_active') or not orchestrating(sid, st):
         return None
     m = measure(sid, ev.get('transcript_path'))
     if not track(st, m['pct']):
@@ -584,7 +640,7 @@ def on_stop(ev, sid, st):
 
 
 def on_precompact(ev, sid, st):
-    if ev.get('trigger') == 'manual' or not orchestrating(st):
+    if ev.get('trigger') == 'manual' or not orchestrating(sid, st):
         return None                        # nothing to hand off: no block, and no pipeline summary to keep
     m = measure(sid, ev.get('transcript_path'))
     if m['pct'] is not None and m['pct'] < threshold():
@@ -600,19 +656,33 @@ HANDLERS = {'SessionStart': on_session_start, 'UserPromptSubmit': on_prompt, 'Po
             'Stop': on_stop, 'PreCompact': on_precompact}
 
 
-def cmd_hook():
-    try:
-        ev = json.loads(sys.stdin.buffer.read().decode('utf-8', 'replace'))
-        if not isinstance(ev, dict) or not enabled() or in_subagent(ev):
-            return 0
-        handler = HANDLERS.get(ev.get('hook_event_name'))
-        sid = safe_id(ev.get('session_id'))
-        if handler is None or sid is None:
-            return 0
+def run_hook(ev):
+    """The output of one hook event, or None. The session's state is loaded, handled and written under its lock."""
+    if not isinstance(ev, dict) or not enabled() or in_subagent(ev):
+        return None
+    event = ev.get('hook_event_name')
+    handler = HANDLERS.get(event)
+    sid = safe_id(ev.get('session_id'))
+    if handler is None or sid is None:
+        return None
+    if event == 'PostToolUse' and ev.get('tool_name') == 'Workflow':
+        # It runs workflows: it orchestrates from this call on (CI aside). Marked before the lock, so even a hook that
+        # finds the lock taken and does nothing records it.
+        mark_orchestrating(sid)
+    with session_lock(sid) as held:
+        if not held:
+            log_error('hook', '%s skipped: another hook of the session held its lock for %gs' % (event, LOCK_WAIT))
+            return None
         st = read_json(state_file(sid))
         result = handler(ev, sid, st)
         st['updated_at'] = iso(now())
         write_json(state_file(sid), st)
+    return result
+
+
+def cmd_hook():
+    try:
+        result = run_hook(json.loads(sys.stdin.buffer.read().decode('utf-8', 'replace')))
         if result:
             emit(result)
     except Exception as e:   # never fail the session
@@ -648,7 +718,7 @@ def cmd_statusline():
     pct = against_compact_window(pct, size)[0]
     line = 'ctx %d%%' % round(pct) if pct is not None else 'ctx --'
     st = read_json(state_file(sid)) if sid else {}
-    if pct is not None and enabled() and pct >= threshold() and orchestrating(st):
+    if pct is not None and enabled() and pct >= threshold() and orchestrating(sid, st):
         line += ' · handoff due'
     emit(line + '\n')
     return 0
@@ -693,7 +763,7 @@ def cmd_status(argv):
     st = read_json(state_file(sid)) if sid else {}
     m = measure(sid, transcript or st.get('main_transcript'))
     handed = last_handoff(sid, os.getcwd())
-    print(json.dumps({'session_id': sid, 'enabled': enabled(), 'orchestrating': orchestrating(st),
+    print(json.dumps({'session_id': sid, 'enabled': enabled(), 'orchestrating': orchestrating(sid, st),
                       'threshold': threshold(), 'usage': m,
                       'over': m['pct'] is not None and m['pct'] >= threshold(),
                       'crossed_at': st.get('crossed_at'), 'handoff_at': iso(handed) if handed else None,

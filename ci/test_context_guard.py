@@ -10,14 +10,18 @@ pipeline-state.py. The guard nags and blocks only an orchestrating session, so t
 start each session with a Workflow tool call (Orchestrating); CI and GITHUB_ACTIONS are cleared, as CI sets them.
 """
 
+import fcntl
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUARD = os.path.join(ROOT, '.claude', 'scripts', 'context-guard.py')
@@ -115,6 +119,10 @@ class Guard(unittest.TestCase):
     def hook_state(self, sid='s1'):
         with open(os.path.join(self.dir, '%s.hook.json' % sid)) as f:
             return json.load(f)
+
+    def marked(self, sid='s1'):
+        """Whether the session's orchestration mark, <session>.orchestrating, exists."""
+        return os.path.exists(os.path.join(self.dir, '%s.orchestrating' % sid))
 
     def repo_mark(self):
         """The repository's handoff mark, handoff-<repo-key>.json: the tests use one repository."""
@@ -488,18 +496,19 @@ class Orchestration(Guard):
         self.assertEqual((st['orchestrating'], st['over'], st['crossed_at'], st['precompact_blocked']),
                          (False, True, None, None), 'nothing measured, crossed or used up')
         self.assertNotIn('orchestrating', self.hook_state())
+        self.assertFalse(self.marked())
 
     def test_a_workflow_call_marks_the_session_and_the_next_event_over_the_threshold_nags(self):
         self.at(80)
         self.assertEqual(self.events(), ['', '', '', ''])
         out = json.loads(self.orchestrate())
         self.assertIn('/handoff', out['hookSpecificOutput']['additionalContext'], 'the Workflow call is measured')
-        self.assertIs(self.hook_state()['orchestrating'], True)
+        self.assertTrue(self.marked())
         out = self.hook_json('UserPromptSubmit', prompt='go on')
         self.assertIn('/handoff', out['hookSpecificOutput']['additionalContext'])
         self.assertEqual(self.hook_json('Stop', stop_hook_active=False)['decision'], 'block')
         self.assertEqual(self.hook_json('PreCompact', trigger='auto')['decision'], 'block')
-        self.assertIs(self.hook_state()['orchestrating'], True, 'the mark stays for the rest of the session')
+        self.assertTrue(self.marked(), 'the mark stays for the rest of the session')
         self.assertTrue(self.status()['orchestrating'])
         self.assertEqual(self.line(), 'ctx 80% · handoff due')
         self.at(80, sid='s2')
@@ -538,6 +547,114 @@ class Orchestration(Guard):
         out = self.hook_json('SessionStart', env=forced, source='startup')
         self.assertIn('Read it before acting', out['hookSpecificOutput']['additionalContext'])
         self.assertEqual(self.line(env=forced), 'ctx 80% · handoff due')
+
+
+class SessionState(Orchestrating):
+    """Hooks close together (PostToolUse for parallel tool calls, or UserPromptSubmit and Stop) each load, change and
+    write the session's state file: orchestration is kept apart from it, and the hooks take turns on its lock."""
+
+    def event(self, name, **fields):
+        ev = {'session_id': 's1', 'transcript_path': '', 'cwd': self.repo, 'hook_event_name': name}
+        ev.update(fields)
+        return ev
+
+    def test_a_full_rewrite_of_the_state_file_cannot_clear_orchestration(self):
+        mark = os.path.join(self.dir, 's1.orchestrating')
+        self.assertTrue(self.marked(), "setUp's Workflow call created the mark")
+        self.assertNotIn('orchestrating', self.hook_state(), 'the state file does not hold it')
+        def seen():
+            with open(mark) as f:
+                return os.stat(mark).st_ino, os.stat(mark).st_mtime_ns, f.read()
+        before = seen()
+        # A hook that loaded the state before the Workflow call writes all of it back after it.
+        with open(os.path.join(self.dir, 's1.hook.json'), 'w') as f:
+            json.dump({'source': 'startup', 'updated_at': '2026-11-11T00:00:00Z'}, f)
+        self.at(80)
+        self.assertTrue(self.status()['orchestrating'])
+        self.assertEqual(self.statusline({'session_id': 's1', 'context_window': {'used_percentage': 80}}),
+                         'ctx 80% · handoff due')
+        self.assertEqual(self.hook_json('Stop', stop_hook_active=False)['decision'], 'block')
+        self.assertIn('/handoff', self.orchestrate())
+        self.assertEqual(seen(), before, 'the mark is only ever created, never rewritten')
+
+    def test_two_interleaved_updates_keep_both_changes(self):
+        """PreCompact (A) records its one block while PostToolUse (B) records the crossing and its rate limit. A has
+        loaded and changed the state and not written it yet when B starts: B waits for the lock A holds, then builds
+        on A's write. The hooks run in this process, in two threads, so the order is forced, never timed."""
+        self.at(92)
+        spec = importlib.util.spec_from_file_location('context_guard_in_process', GUARD)
+        g = importlib.util.module_from_spec(spec)
+        # No bytecode cache: .claude/scripts/__pycache__ would carry this machine's paths, which CI's
+        # project-agnostic grep over .claude/ rejects.
+        keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+        try:
+            spec.loader.exec_module(g)
+        finally:
+            sys.dont_write_bytecode = keep
+        g.LOCK_WAIT = 60                    # B waits for as long as the test takes: nothing here is timed
+        a_changed, release_a, b_stopped = threading.Event(), threading.Event(), threading.Event()
+        precompact = g.HANDLERS['PreCompact']
+
+        def paused(ev, sid, st):             # A, between its handler and its write
+            out = precompact(ev, sid, st)
+            a_changed.set()
+            release_a.wait(30)
+            return out
+        g.HANDLERS['PreCompact'] = paused
+
+        class Flock:                         # tells the test when B finds the session's lock taken
+            def __getattr__(self, name):
+                return getattr(fcntl, name)
+
+            def flock(self, fd, op):
+                try:
+                    return fcntl.flock(fd, op)
+                except BlockingIOError:
+                    b_stopped.set()
+                    raise
+        g.fcntl = Flock()
+        out = {}
+
+        def run(key, ev):
+            out[key] = g.run_hook(ev)
+            if key == 'B':
+                b_stopped.set()
+
+        a = threading.Thread(target=run, args=('A', self.event('PreCompact', trigger='auto')), daemon=True)
+        b = threading.Thread(target=run, args=('B', self.event('PostToolUse', tool_name='Bash')), daemon=True)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            a.start()
+            try:
+                self.assertTrue(a_changed.wait(30), 'A loaded and changed the state')
+                b.start()
+                self.assertTrue(b_stopped.wait(30), 'B finds the lock taken (unlocked, it would finish first)')
+            finally:
+                release_a.set()
+                a.join(30)
+                if b.ident is not None:
+                    b.join(30)
+        self.assertEqual(json.loads(out['A'])['decision'], 'block')
+        self.assertIn('/handoff', json.loads(out['B'])['hookSpecificOutput']['additionalContext'])
+        st = self.hook_state()
+        self.assertIn('precompact_blocked', st, "A's change is kept")
+        self.assertEqual((st.get('crossed_pct'), st.get('last_warn_pct'), st.get('calls_since_warn')), (92, 92, 0),
+                         "and so is B's")
+
+    def test_a_hook_that_cannot_take_the_lock_does_nothing_and_never_hangs(self):
+        self.at(92, sid='s2')
+        fd = os.open(os.path.join(self.dir, 's2.hook.lock'), os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)   # another hook of session s2, holding it
+            t = time.monotonic()
+            self.assertEqual(self.orchestrate(sid='s2'), '', 'no warning built on a state it could not lock')
+            self.assertLess(time.monotonic() - t, 8, 'it gives up well inside the 10 s hook timeout')
+            self.assertFalse(os.path.exists(os.path.join(self.dir, 's2.hook.json')), 'and it writes no state')
+        finally:
+            os.close(fd)
+        self.assertTrue(self.marked('s2'), 'the Workflow call is marked before the lock, so a busy lock never loses it')
+        with open(os.path.join(self.dir, 'errors.log')) as f:
+            self.assertIn('PostToolUse skipped', f.read())
+        self.assertEqual(self.hook_json('Stop', sid='s2', stop_hook_active=False)['decision'], 'block')
 
 
 class SessionStart(Guard):
