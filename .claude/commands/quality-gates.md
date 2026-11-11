@@ -7,6 +7,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `QUALITY_GATES_FAST` — optional quicker subset for re-running a single failure (default `QUALITY_GATES`).
 - `GATE_WRAPPER` — optional prefix for every gate run (e.g. `.claude/scripts/gate-slot.sh`: exit 75 = all slots busy, wait and re-run; 125 = the wrapper cannot run, surface it).
 - `GH_WRAPPER` — optional prefix for `gh` / `git fetch` / `git push`.
+- `GITHUB_ACCESS` — `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. Only step 2 and its log read in step 4 touch GitHub; `git fetch` and `git push` stay plain git either way.
 - `MAIN_BRANCH` — integration branch (default `main`).
 - `TEST_GUIDELINES` — where the project's testing rules live (default `CLAUDE.md`).
 
@@ -23,8 +24,8 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 1. **Locate the repo root.** `cd "$(git rev-parse --show-toplevel)"`; stop on failure.
 
 2. **Inspect the current PR's CI** (skip under `no-ci`). Read-only.
-   - `$GH_WRAPPER gh pr view --json number,state,url`. Skip the rest of this step — noting why — when there is no PR, the branch is `$MAIN_BRANCH`, `gh` is unavailable, or the PR is not `OPEN`.
-   - `$GH_WRAPPER gh pr checks <PR#> --json name,state,bucket,link,workflow`. Capture output regardless of exit code (it exits non-zero when checks are pending or failing). Buckets: `fail`/`cancel` = failing, `pending` = inconclusive, `pass`/`skipping` = fine.
+   - `$GH_WRAPPER gh pr view --json number,state,url` (connector: `list_pull_requests` with `head: "<owner>:<branch>"` and `state: "open"`). Skip the rest of this step — noting why — when there is no PR, the branch is `$MAIN_BRANCH`, no GitHub access is usable (note `github_unavailable`; the local gates still run), or the PR is not `OPEN`.
+   - `$GH_WRAPPER gh pr checks <PR#> --json name,state,bucket,link,workflow`. Capture output regardless of exit code (it exits non-zero when checks are pending or failing). Buckets: `fail`/`cancel` = failing, `pending` = inconclusive, `pass`/`skipping` = fine. Connector: `pull_request_read` `get_check_runs`, plus `get_status` for commit statuses; derive each run's bucket as the reference's *Checks on the head* row says, and use its `details_url` as the `link`.
    - Classify each failing check: a **gate check** is one whose job runs (part of) the same lint / type-check / test / coverage commands as `$QUALITY_GATES` — read the CI workflow files to map it. Gate checks are folded into this run: their failure class must be reproduced and fixed here even if the local run is otherwise green. Any other check (AI review, deploy, …) is **out of scope** — record it for the report; route AI review findings to `/process-comments`.
    - Record each failing gate check's `link` for step 4.
 
@@ -37,7 +38,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
    Capture which stage failed (lint, types, tests, coverage, browser/e2e, …) and the concrete errors.
 
 4. **Fix failures** (skip in `check` mode). Fix in upstream-first order — lint → types → tests → coverage → browser/e2e — so earlier noise doesn't mask later signal. After each fix, re-run the narrowest gate that covers it (`$QUALITY_GATES_FAST` or the single failing tool, in the step 3 form); allow **3 fix rounds per failure class**, then stop and surface what remains. Finish with one full run in the step 3 form.
-   - **CI-red class that is green locally.** Pull the failing log: derive the run id from the recorded `link` and run `$GH_WRAPPER gh run view <run-id> --log-failed`. The usual cause is drift from `$MAIN_BRANCH` (CI tested a tree with commits you lack) — the merge in step 5 normally resolves it; let the fresh CI run confirm. A genuine runner-only failure you cannot reproduce goes in the report, never silently pushed over.
+   - **CI-red class that is green locally.** Pull the failing log: derive the run id from the recorded `link` and run `$GH_WRAPPER gh run view <run-id> --log-failed` (connector: `get_job_logs` with `run_id`, `failed_only: true` and `return_content: true`). The usual cause is drift from `$MAIN_BRANCH` (CI tested a tree with commits you lack) — the merge in step 5 normally resolves it; let the fresh CI run confirm. A genuine runner-only failure you cannot reproduce goes in the report, never silently pushed over.
 
 5. **Commit and push** (fix mode only; skip in `check` / `no-commit`, or when nothing changed). Only when the final full run is green.
    - Stop and skip if on `$MAIN_BRANCH`.
@@ -66,6 +67,6 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 
 - Never commit or push in `check` / `no-commit` mode, while any gate is red, or on `$MAIN_BRANCH`.
 - Never force-push, rebase, `reset`, `checkout --`, or `git stash` (parallel worktrees share the stash). The only git mutations allowed are staging fix files, committing, merging upstream, and a plain push of the current branch.
-- The CI inspection is read-only: never re-run, cancel, or restart CI, edit the PR, or post comments.
+- The CI inspection is read-only, through either access: never re-run, cancel, or restart CI, edit the PR, or post comments.
 - Never fix out-of-scope (non-gate) CI checks here; name them and point to the right place.
 - Respect the 3-round budget per failure class; surface what remains rather than looping.

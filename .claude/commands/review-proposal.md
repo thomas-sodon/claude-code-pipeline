@@ -2,7 +2,7 @@ Review one design doc — a proposal, `architecture.md` or `roadmap.md` (read-on
 
 `$ARGUMENTS`:
 - `<doc>` — required: path of the doc to review. Its kind comes from the H1: `# Proposal:`, `# Architecture:` or `# Roadmap:` (anything else is reviewed as a proposal, and that is a finding).
-- `--roadmap` — also review the doc against the whole roadmap: read the roadmap and every proposal it names, and check milestone coverage, work planned twice or by no doc, and the `--roadmap` progress the lint reports. Without it, only the docs this one references, or that reference it, are read.
+- `--roadmap` — also review the doc against the whole roadmap: read the roadmap and every proposal it names, and check milestone coverage, work planned twice or by no doc, and the `--roadmap` progress the lint reports. Read each proposal other than the reviewed doc through its lint JSON (`proposal-lint.py <proposal> --json`: step titles, descriptions, files, dependencies and acceptance), opening one in full only where a finding needs it, so the review stays within the budget an agent reads at once (the architecture, the roadmap and one proposal). Without it, only the docs this one references, or that reference it, are read.
 
 No `<doc>` → stop with `error=missing_doc`; a path that does not exist → `error=doc_not_found`; an unrecognized `--`-prefixed token → `error=invalid_argument`, naming it.
 
@@ -24,13 +24,13 @@ The lint is `python3 .claude/scripts/proposal-lint.py`, run from the working dir
    - Architecture and roadmap: the `Source:` brief, in full.
    - Every doc: its `Architecture:` doc in full, and the project's invariants: `CLAUDE.md`, else the architecture's, else the rules the repo already enforces (structural tests, CI checks, lint configs, contributing docs).
 
-   Synthesize a 3–5 line **Source Context**. A source that cannot be read is said so — never invent intent. Then recall this doc's **review ledger** (below).
+   Synthesize a 3–5 line **Source Context**. A source that cannot be read is said so — never invent intent. Then recall this doc's **review ledger** (below), restoring its saved copy when the local file is missing.
 
-2. **Run the lint.** `python3 .claude/scripts/proposal-lint.py <doc> --repo . --json` (a roadmap: again with `--roadmap`, for progress); a draft kept outside the repo gets `--as $PROPOSALS_DIR/<its file name>` so `Source:` and cross-doc refs resolve. Every error is a `bug` at its line, titled by its code. Judge each warning: a missing proposal section, `step_too_big`, `new_file_exists` or `lane_mixed` is usually a `concern`; a `file_not_found` is a grounding question (step 3). Script missing → check the format by hand and say so.
+2. **Run the lint.** `python3 .claude/scripts/proposal-lint.py <doc> --repo . --json` (a roadmap: again with `--roadmap`, for progress); a draft kept outside the repo gets `--as $PROPOSALS_DIR/<its file name>` so `Source:` and cross-doc refs resolve. Every error is a `bug` at its line, titled by its code. Judge each warning: a missing proposal section, `step_too_big`, `new_file_exists` or `lane_mixed` is usually a `concern`; a `file_not_found` is a grounding question (step 3). A size budget (`doc_too_big`, `too_many_steps`, `too_many_milestones`; the pipeline's `docs/PROPOSALS.md`, *Size budgets*) is a `concern` when the lint warns and a `bug` when it errors, and its fix names the split: for a proposal, which steps ship first and stay, and which move to a new milestone after the last one (for a concern, to a follow-up proposal), or which sections' detail goes; for an architecture, which milestone detail its proposals carry instead; for a roadmap, which milestones merge or stay coarse. Script missing → check the format by hand (sizes with `wc -c`) and say so.
 
 3. **Grounding.** Read the doc in full. Every claim about today's tree must hold: cited files and symbols exist (for every non-`(new)` path in `Files:`, read the file), `## Current state` describes what the code does, a `(new)` file does not already exist. Greenfield: `No code yet` is true and every path matches the architecture's Repository layout (Bootstrap creates those files, so no `(new)`, unless the entry says `(from milestone N)`) or an earlier milestone's proposal. A doc that no longer matches the tree — a `Files:` path moved or removed, a `(new)` file that now exists, a function, type, endpoint or schema the doc builds on whose name or shape has changed (typically because an earlier milestone landed after the doc was written) — is a `concern` at each step it affects, naming what the tree has now and the fix. Claims about the source must match its text. An unverified assumption stated as fact, where a public source would settle it, is a `concern`; a desk-researchable question turned into a research gate is a `suggestion`.
 
-4. **Coverage of its source.** Proposal: every exit criterion of its milestone (or the whole concern) is met by some step's Acceptance; nothing from a neighbouring milestone is built here unannounced. Architecture and roadmap: every requirement, constraint, risk and validation step the brief states is planned for, and the roadmap ships the cheapest validation first. A gap is a `concern`; a requirement contradicted is a `bug`.
+4. **Coverage of its source.** Proposal: every exit criterion of its milestone (or the whole concern) is met by some step's Acceptance; nothing from a neighbouring milestone is built here unannounced. A proposal split for the budget (its `## Out of scope` names the part split off, with that part's exit criteria) is judged against the part it keeps, which must ship on its own; the criteria it hands off are a `concern` against the roadmap, which must add them as a new milestone, not against this doc. Architecture and roadmap: every requirement, constraint, risk and validation step the brief states is planned for, and the roadmap ships the cheapest validation first. A gap is a `concern`; a requirement contradicted is a `bug`.
 
 5. **Feasibility and step sizing.** Each code step is one focused, independently mergeable PR that leaves the tree working, with its tests in the same step. A step too big for one PR, a step that breaks the tree until a later one lands (and shares no `Lane:` with it), or a `Lane:` that could be split, is a `concern`.
 
@@ -48,11 +48,11 @@ The lint is `python3 .claude/scripts/proposal-lint.py`, run from the working dir
 
 11. **Contradictions with the architecture.** A proposal or roadmap that contradicts an architecture decision, component boundary, data model or invariant without a Decision naming what it supersedes is a `bug`; with one, it is a `concern` that the architecture needs the matching revise.
 
-12. **By kind.** Architecture: each major decision weighs ≥2 options; Quality gates give the exact commands in backticks, and an optional `Required checks` line names each CI check beyond the gates job (a check the roadmap plans no step to create is a `concern`); Invariants are bullets fit for `CLAUDE.md`; Repository layout is concrete; Environments and deployment covers how each component reaches its users (for a hosted service CI/CD, secrets, migrations, monitoring, backups; for distributed software build, signing, review or publishing, versioning; for every component how a bad release is withdrawn or superseded), with `n/a: <why>` for what does not apply; Testing states the fixture policy. Roadmap: when greenfield, the Bootstrap ops gate is the first milestone that writes anything, preceded only by the decision or research gates whose outcome the skeleton bakes in, which it depends on; every non-gated milestone names a `Proposal:` and has testable exit criteria; every person-only milestone is a gate; the order validates the riskiest assumptions before building on them. With `--roadmap`, also the cross-doc checks named under *Arguments*.
+12. **By kind.** Architecture: each major decision weighs ≥2 options; Quality gates give the exact commands in backticks, and an optional `Required checks` line names each CI check beyond the gates job (a check the roadmap plans no step to create is a `concern`); Invariants are bullets fit for `CLAUDE.md`; Repository layout is concrete; Environments and deployment covers how each component reaches its users (for a hosted service CI/CD, secrets, migrations, monitoring, backups; for distributed software build, signing, review or publishing, versioning; for every component how a bad release is withdrawn or superseded), with `n/a: <why>` for what does not apply; Testing states the fixture policy. Roadmap: when greenfield, the Bootstrap ops gate is the first milestone that writes anything, preceded only by the decision or research gates whose outcome the skeleton bakes in, which it depends on; every non-gated milestone names a `Proposal:` and has testable exit criteria; a code milestone whose exit criteria need more than about 12 PR-sized steps (more than one proposal's budget) is a `concern` naming the split; every person-only milestone is a gate; the order validates the riskiest assumptions before building on them. With `--roadmap`, also the cross-doc checks named under *Arguments*.
 
 13. **Assess the whole.** Would building every step, and doing every gate, deliver the source? Is there a simpler design? `Status:` other than `draft` on a doc with blocking findings is worth saying in the summary.
 
-14. **Persist the ledger** (below) — on every run, clean or not. This is the command's only write.
+14. **Persist the ledger** (below) — on every run, clean or not — and save its copy to the state branch. These are the command's only writes.
 
 15. **Hand off — do not revise.** Never invoke `/propose` from here; recommend `/propose --revise <doc>` in a fresh session when there are findings. Each finding must carry enough for the reviser to act on it alone: the doc, the section or step title, what is wrong, and the fix.
 
@@ -66,6 +66,8 @@ The lint is `python3 .claude/scripts/proposal-lint.py`, run from the working dir
 ## Review ledger
 
 A durable per-doc record at `~/.claude/reviews/proposal-<slug>.json` (outside the repo) so `/propose --revise` can apply what was raised and a later review can see what was fixed. `<slug>`: the working directory's base name, `-`, then the doc's path relative to the working directory without `.md`; lowercased, non-alphanumeric runs → `-`, repeats collapsed, leading/trailing `-` trimmed (`docs/design/01-Free_Checker.md` in `~/src/acme` → `acme-docs-design-01-free-checker`). Every repo has an `architecture.md`, so the file name alone would collide.
+
+A copy lives on the pipeline's state branch (default `pipeline/state` on origin), so the ledger outlives the machine: a fresh session, or a new cloud container, restores it. The copy is `reviews/proposal-<doc-slug>.json`, where `<doc-slug>` is what `python3 .claude/scripts/pipeline-state.py slug <path>` prints for the doc's path relative to the repository root without `.md` (`docs/design/01-Free_Checker` → `docs-design-01-Free_Checker-8ac7605a`; run the script, never spell it by hand); a doc outside the repository has no copy. `.claude/scripts/pipeline-state.py` reads and writes it from this checkout without touching the working tree, the index or HEAD. The copy is best effort: when the script is missing or exits 2, warn and go on with the local file alone.
 
     {
       "repo": "<absolute working directory>",
@@ -88,12 +90,12 @@ A durable per-doc record at `~/.claude/reviews/proposal-<slug>.json` (outside th
 
 Titles name the section or step title, not its number.
 
-**Recall.** Treat the file as absent when missing, malformed (warn; never overwrite blindly), or when its `repo`/`doc` do not match this working directory and doc. A recalled finding whose `detail` carries `Declined: <reason>` (written by `/propose --revise`): re-report it only if the reason does not hold, and say why.
+**Recall.** When the local file is missing, restore the copy first: `python3 .claude/scripts/pipeline-state.py get reviews/proposal-<doc-slug>.json --to ~/.claude/reviews/proposal-<slug>.json.restore.<pid>`. Exit 3 means none was saved: there is no ledger yet. On exit 0, a file that parses, has a `findings` list and names this doc in `doc` is written to `~/.claude/reviews/proposal-<slug>.json` with `repo` set to this working directory (it may have been saved from another checkout or machine); anything else gets a warning. Delete the `.restore.<pid>` file either way. Then treat the file as absent when missing, malformed (warn; never overwrite blindly), or when its `repo`/`doc` do not match this working directory and doc. A recalled finding whose `detail` carries `Declined: <reason>` (written by `/propose --revise`): re-report it only if the reason does not hold, and say why.
 
 **Persist & reconcile** (after the review is written; timestamps `YYYY-MM-DDTHH:MM:SSZ` UTC):
 1. Match recalled findings to this run's by `file` + semantic `title`, never by line.
 2. Recalled `new`/`open` still present → `open`, keep `first_seen`, refresh `line`/`detail`. Recalled `new`/`open` absent → `fixed`, `resolved_at` now (report as *fixed since last review*). Recalled `fixed` that reappears → `open`, clear `resolved_at`, call it a **regression**. Unmatched new finding → append with next `r<N>`, `status: new`. Recalled `fixed` still absent → leave as history.
-3. Set `repo`, `doc`, `updated_at`; create `~/.claude/reviews/` if needed; write `proposal-<slug>.json.tmp.<pid>` then rename. On failure, warn and continue — the ledger is an aid, not a correctness requirement. Never overwrite a malformed or foreign file.
+3. Set `repo`, `doc`, `updated_at`; create `~/.claude/reviews/` if needed; write `proposal-<slug>.json.tmp.<pid>` then rename. Then save the copy: `python3 .claude/scripts/pipeline-state.py save ~/.claude/reviews/proposal-<slug>.json --as reviews/proposal-<doc-slug>.json -m "review ledger: <doc>"`. On failure of either, warn and continue — the ledger is an aid, not a correctness requirement. Never overwrite a malformed or foreign file (and then save nothing).
 
 ## What to skip
 
@@ -111,7 +113,7 @@ Plain text in the response:
 3. `Lint: <E> errors, <W> warnings`.
 4. A 2–3 sentence summary and overall assessment.
 5. Findings grouped **Bugs**, **Concerns**, **Suggestions**, **Nits** — each with `path:line`, the step or section title, the quoted text, what is wrong, why it matters, and a concrete fix or question.
-6. **Ledger** line: new, carried over, fixed since last review, regressions.
+6. **Ledger** line: new, carried over, fixed since last review, regressions; whether it was restored from the state branch, and whether its copy was saved there.
 
 If the doc is good, say so briefly — don't manufacture issues. End with exactly one of:
 - `Run /propose --revise <doc> in a fresh session to apply the findings.`
@@ -119,7 +121,7 @@ If the doc is good, say so briefly — don't manufacture issues. End with exactl
 
 ## Safety
 
-- Read-only: never modify the doc, any other design doc, or the working tree. The sole write is the ledger under `~/.claude/reviews/`.
+- Read-only: never modify the doc, any other design doc, or the working tree. The sole writes are the ledger under `~/.claude/reviews/` and its copy on the state branch.
 - Never invoke `/propose` or any other command.
-- No git-state changes: no fetch, switch, commit, stage or stash.
-- Redact credentials and personal data (names, addresses, emails, phone and account numbers) from anything quoted into the review or the ledger; a doc that contains them gets a `bug` that says where, without repeating them.
+- No git-state changes: no fetch, switch, commit, stage or stash, apart from `pipeline-state.py` fetching and pushing the state branch for the ledger's copy, which never touches the working tree, the index, HEAD or another branch.
+- Redact credentials and personal data (names, addresses, emails, phone and account numbers) from anything quoted into the review or the ledger, whose copy is as visible as the repository; a doc that contains them gets a `bug` that says where, without repeating them.

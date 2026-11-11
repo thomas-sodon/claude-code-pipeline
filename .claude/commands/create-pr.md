@@ -5,6 +5,7 @@ Create a non-draft pull request for the current changes, or report the open PR t
 Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `MAIN_BRANCH` — integration branch (default `main`); the PR's base unless the caller names another (*Arguments*).
 - `GH_WRAPPER` — optional prefix for every `gh`, `git push` and `git fetch` command (e.g. a script that loads a token from `.env`). When unset, run them bare and rely on the ambient `gh auth`.
+- `GITHUB_ACCESS` — `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. `git push` and `git fetch` stay plain git either way.
 - `PLANS_DIR` — where plan files live (default `~/.claude/plans`).
 - `QUALITY_GATES` — the project's gate command; named only in the PR body's test plan (this command never runs it).
 
@@ -12,13 +13,13 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 
 `$ARGUMENTS` is optional free text: a branch-name hint or a short description of the change. Tokens:
 - `--no-issue` skips Step 7 (issue detection); a caller (e.g. a workflow that already knows there is no issue, or that writes its own closing keyword) may also say "skip step 7".
-- `--base=<branch>` — the PR's base branch; a caller may instead say "its base branch is <branch>". `<base>` below is that branch, else `$MAIN_BRANCH`; it overrides `$MAIN_BRANCH` for the work check, the existing-PR check, the issue-detection commit range and `gh pr create --base`. Empty after `=`, containing whitespace, or a bare `--base` → stop with `error=invalid_argument`.
+- `--base=<branch>` — the PR's base branch; a caller may instead say "its base branch is <branch>". `<base>` below is that branch, else `$MAIN_BRANCH`; it overrides `$MAIN_BRANCH` for the work check, the existing-PR check, the issue-detection commit range and the new PR's base (`gh pr create --base`, or the connector's `base`). Empty after `=`, containing whitespace, or a bare `--base` → stop with `error=invalid_argument`.
 
 A caller may also hand over the branch's plan (a path or its text); it is then *the plan* for Steps 7 and 8, ahead of any plan file found by name or pointer.
 
 ## Steps
 
-1. **Check prerequisites.** Confirm `gh` is authenticated (`$GH_WRAPPER gh auth status`); if not, stop with `error=gh_unauthenticated`. If `origin/<base>` does not resolve (`git rev-parse --verify --quiet origin/<base>`), run `$GH_WRAPPER git fetch origin <base>` once; still missing → stop with `error=base_not_found`. Then confirm there is work to turn into a PR — *either*:
+1. **Check prerequisites.** Resolve the GitHub access (`.claude/scripts/github-access.md`, *Which access*). When the access named is `gh`, confirm `gh` is authenticated (`$GH_WRAPPER gh auth status`); if not, stop with `error=gh_unauthenticated`. When no access is usable, stop with `error=github_unavailable`. If `origin/<base>` does not resolve (`git rev-parse --verify --quiet origin/<base>`), run `$GH_WRAPPER git fetch origin <base>` once; still missing → stop with `error=base_not_found`. Then confirm there is work to turn into a PR — *either*:
    - uncommitted work: `git status --porcelain` is non-empty, or
    - unpushed commits: `git log @{u}..HEAD` is non-empty when an upstream exists, otherwise `git log origin/<base>..HEAD`.
 
@@ -42,6 +43,7 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
    ```
    $GH_WRAPPER gh pr view --json number,url,state,baseRefName
    ```
+   Connector: `list_pull_requests` with `head: "<owner>:<branch>"` and `state: "all"`; an empty list is "no pull requests found", and `base.ref` is the base.
    - **Open PR exists** (`state` is `OPEN`) → report its URL and stop. Do not run `gh pr create`. If its `baseRefName` is not `<base>`, never retarget it: report both and stop with `error=pr_base_mismatch`.
    - **No PR** (output says "no pull requests found"), or the branch's PR is `CLOSED`/`MERGED` → continue; only an *open* PR short-circuits.
    - **Any other error** (auth, network, rate limit) → stop and surface it. Do not treat it as "no PR".
@@ -53,7 +55,7 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
 
    Reconcile: no number → not an issue-closing PR, add no keyword. All surfaced numbers agree → that issue. Distinct numbers → ask the user; never guess.
 
-   Verify a settled number with `$GH_WRAPPER gh issue view <N> --json number,state,title`. Open → use it. Closed or not found → omit the keyword and tell the user what was found.
+   Verify a settled number with `$GH_WRAPPER gh issue view <N> --json number,state,title` (connector: `issue_read` `get`). Open → use it. Closed or not found → omit the keyword and tell the user what was found.
 
 8. **Create the PR** (only when Step 6 found no open PR). Non-draft; include `Fixes #<N>` only when Step 7 settled an open issue. **Deploy notes:** find the plan as Step 7's *Plan file* bullet does, even when Step 7 was skipped — but take the folder pointer's plan only when its `## Critical files` overlap the files `git diff --name-only origin/<base>...HEAD` lists. When that plan has a `## Rollout` section, copy its body verbatim (credentials redacted) under `## Deploy notes`; omit the section when there is no such plan or no Rollout.
    ```
@@ -72,6 +74,7 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
    EOF
    )"
    ```
+   Connector: `create_pull_request` with `head: <branch>`, `base: <base>`, the same title, the body as a plain string, and `draft: false`.
    Keep the title under 70 characters. End the body with the attribution line the session uses for PRs.
 
 9. **Report.** Show the PR URL (new from Step 8, or the existing one from Step 6), its base, which issue, if any, auto-closes on merge, and whether deploy notes were included (from which plan). Unless a workflow that called this command monitors the PR itself, add that nothing watches it now: CI, review comments and conflicts are babysat by the `plan-to-merged-pr` workflow in monitor-only mode, `{ pr: <N>, branch: <branch>, dir: <this checkout> }`, re-run (or scheduled) whenever the PR may have moved.

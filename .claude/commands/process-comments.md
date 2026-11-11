@@ -7,7 +7,8 @@ This command collects **every** unresolved PR comment that asks for a change or 
 Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 
 - `QUALITY_GATES` (required). If it is missing, stop with `error=missing_quality_gates` and ask the user to add it.
-- `GH_WRAPPER` (optional). When it is set, put it in front of every `gh`, `git fetch` and `git push` command. When it is not set, use the ambient `gh auth`. If `gh` cannot authenticate, stop with `error=gh_auth_failed`.
+- `GH_WRAPPER` (optional). When it is set, put it in front of every `gh`, `git fetch` and `git push` command. When it is not set, use the ambient `gh auth`.
+- `GITHUB_ACCESS` (optional): `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. `git fetch` and `git push` stay plain git either way. When the access named is `gh` and `gh` cannot authenticate, stop with `error=gh_auth_failed`. When no access is usable, stop with `error=github_unavailable`.
 - `GATE_WRAPPER` (optional). When it is set, put it in front of every gate run. With `.claude/scripts/gate-slot.sh`, exit 75 means all slots are busy, so re-run. Exit 125 means the wrapper cannot run, so report it.
 - `MAIN_BRANCH` (default `main`), `PLANS_DIR` (default `~/.claude/plans`), `TEST_GUIDELINES` (default: the project's CLAUDE.md).
 
@@ -21,7 +22,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 
 ## Resolve the PR
 
-1. **PR number.** Use the first token if it is a positive integer. Otherwise run `gh pr view --json number,headRefName,baseRefName,state`. If no PR exists for the branch, stop with `error=no_pr_for_branch`. If `state` is not `OPEN`, stop with `error=pr_not_open`.
+1. **PR number.** Use the first token if it is a positive integer. Otherwise run `gh pr view --json number,headRefName,baseRefName,state` (connector: `list_pull_requests` with `head: "<owner>:<branch>"` and `state: "all"`, then `pull_request_read` `get` for its `head.ref`, `base.ref`, `state` and `merged`; with a PR number, `pull_request_read` `get` alone). If no PR exists for the branch, stop with `error=no_pr_for_branch`. If `state` is not `OPEN`, stop with `error=pr_not_open`.
 2. **Branch.** `git rev-parse --abbrev-ref HEAD` must equal `headRefName`. If it does not, stop with `error=wrong_branch` and tell the user to check out that branch. Never switch branches yourself.
 3. **Dirty tree.** If `git status --porcelain` shows changes unrelated to the comments, list them and ask before you continue. Don't mix concerns.
 
@@ -50,14 +51,15 @@ Use the plan as the design reference. It helps keep each change consistent rathe
            }}
          }}}' -f owner=<owner> -f repo=<repo> -F pr=<PR#>
    ```
+   Connector: take `<owner>/<repo>` from `origin` as the reference says, then call `pull_request_read` `get_review_comments` with `perPage: 100`, following `after` to the last page. `is_resolved` and `is_outdated` are the flags; a comment's `databaseId` is the number after `#discussion_r` in its `html_url`.
 2. **Classify each thread's root comment:**
    - **AI finding.** It matches your AI reviewer's finding format. Take the severity (bug / suggestion / nit) from the reviewer's tag, for example a leading 🐛 / 💡 / ✏️ or a `[bug]` label.
-   - **Human comment.** It does not match that format, and `author.login` is a real user. Skip any other root whose author ends in `[bot]`.
+   - **Human comment.** It does not match that format, and `author.login` is a real user. Skip any other root whose author ends in `[bot]` (thread authors read through GraphQL or the connector drop the suffix, so `github-actions` is a bot too).
 3. **Pick the eligible threads.** A thread is eligible when all of these hold:
    - `isResolved` is false. **`isOutdated` does not exclude a thread.** Keep the flag, because it changes how you validate the thread.
    - The root is an AI finding or a human comment.
    - No reply in it carries a **terminal marker**: `Fixed locally`, `Could not prove this defect`, `Declined with`, `Answered with` or `Tracked in #`.
-4. **Overflow findings (if your reviewer emits them).** Read the review bodies with `gh pr view <PR#> --json reviews`. In the most recent review that has them, parse the findings it lists in the body instead of as threads. Each one needs a stable handle. Use the reviewer's fingerprint if it gives one; otherwise use `<file>:<line>:<short title>`. Then read `gh pr view <PR#> --json comments` and find the comment that contains `<!-- pipeline:overflow-ack -->`. Skip a finding whose handle is already there on a line with a terminal marker.
+4. **Overflow findings (if your reviewer emits them).** Read the review bodies with `gh pr view <PR#> --json reviews` (connector: `pull_request_read` `get_reviews`). In the most recent review that has them, parse the findings it lists in the body instead of as threads. Each one needs a stable handle. Use the reviewer's fingerprint if it gives one; otherwise use `<file>:<line>:<short title>`. Then read `gh pr view <PR#> --json comments` (connector: `pull_request_read` `get_comments`) and find the comment that contains `<!-- pipeline:overflow-ack -->`. Skip a finding whose handle is already there on a line with a terminal marker.
 5. **Top-level human comments.** From the same comments payload, keep the comments written by a real user (not `[bot]`) that ask for a change or ask a question. Exclude this command's own roll-ups (the ones that contain `<!-- pipeline:overflow-ack -->` or `<!-- pipeline:human-ack -->`), automation output, and chatter such as "LGTM" or "thanks". Skip a comment whose id already appears on a terminal-marker line of the `<!-- pipeline:human-ack -->` comment.
 6. **Build the work list:**
    - **Pinned `<comment-id>`.** The list is that one thread only. If the thread is resolved or already terminal, stop and say so. If it is outdated, process it as normal.
@@ -95,6 +97,7 @@ The push gates the replies. Never post `Fixed locally …` for a change that is 
    {"body":"<reply>","in_reply_to":<root comment databaseId>}
    EOF
    ```
+   Connector: `add_reply_to_pull_request_comment` with `pullNumber: <PR#>`, `commentId: <root comment databaseId>` and `body: <reply>`.
    Use exactly one of these replies:
    - **Applied:** `Fixed locally with implementation-plan context.\n\n<one-line reasoning>`
    - **Bug not proven:** `Could not prove this defect — <reasoning>`
@@ -104,7 +107,7 @@ The push gates the replies. Never post `Fixed locally …` for a change that is 
    - **Out of scope:** `Surfaced for human review — out of scope for automated remediation.\n\n<what acting on it would take>`. This reply is **not** terminal, so later runs process the thread again. Don't post it if the thread already has a reply that starts with this prefix.
 
    If a single reply fails to post, record it and carry on with the rest.
-5. **Overflow acknowledgements.** Find the PR comment that contains `<!-- pipeline:overflow-ack -->`. If there isn't one, create it with `gh pr comment <PR#>`, putting the sentinel on the first line. Append one line per finding: `<handle> — <reply marker as above> — <reasoning>`. Update the comment with `gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id> -f body=...`. Only append; never rewrite or remove existing lines. For an out-of-scope line, skip it if the same handle already has the out-of-scope prefix.
+5. **Overflow acknowledgements.** Find the PR comment that contains `<!-- pipeline:overflow-ack -->`. If there isn't one, create it with `gh pr comment <PR#>` (connector: `add_issue_comment` with `issue_number: <PR#>`), putting the sentinel on the first line. Append one line per finding: `<handle> — <reply marker as above> — <reasoning>`. Update the comment with `gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id> -f body=...` (connector: `update_issue_comment` with `comment_id: <id>` and the whole new body). `<id>` is the comment's numeric id: the connector's `id`, or with gh the number after `#issuecomment-` in its `url`. Only append; never rewrite or remove existing lines. For an out-of-scope line, skip it if the same handle already has the out-of-scope prefix.
 6. **Human top-level acknowledgements.** Do the same on a comment that contains `<!-- pipeline:human-ack -->`, with one line per comment id: `<id> — <reply marker> — <reasoning or answer summary>`.
 7. **Completion check.** Re-fetch the threads and both acknowledgement comments. Confirm that every work-list item now has a reply or an acknowledgement line. Retry a missing post once. If it is still missing, report the run as **incomplete** and list the items. The only acceptable reason for a missing reply is an aborted push.
 

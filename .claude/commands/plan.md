@@ -12,6 +12,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 - `PLANS_DIR` — where plans are written (default `~/.claude/plans`).
 - `PROPOSALS_DIR` — optional design/proposal docs (default: none; skip proposal checks).
 - `GH_WRAPPER` — optional prefix for `gh` and git network commands (default: none; use ambient auth).
+- `GITHUB_ACCESS` — `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. The only GitHub read is the best-effort open-PR check in *Report*: with no access usable, skip it and say so (`github_unavailable`); the plan is still written. `git fetch` stays plain git either way.
 - `QUALITY_GATES` / `QUALITY_GATES_FAST` — named in the plan's `## Verification` section. If `QUALITY_GATES` is missing, still write the plan but add a report addendum asking the user to add it (`/impl` will stop with `error=missing_quality_gates` without it).
 - `TEST_GUIDELINES` — where the project's testing rules live (default: the project's `CLAUDE.md`).
 
@@ -185,7 +186,7 @@ Add bullet addenda only when they apply:
 - An existing plan was superseded — the path overwritten.
 - The concern was cut to an increment — what moved to `## Out of scope`.
 - The switch or refresh was skipped (dirty tree, unmerged branch, `--no-switch`, fetch failure, diverged main) — say which tree the plan was grounded in.
-- An open PR or branch already touches the implicated code (`$GH_WRAPPER gh pr list --search <noun>`) — name it.
+- An open PR or branch already touches the implicated code (`$GH_WRAPPER gh pr list --search <noun>`; connector: `list_pull_requests` with `state: "open"`, matching the noun in titles and branch names) — name it.
 - `QUALITY_GATES` is missing from the pipeline config.
 - Under `--proposal`: the doc has no `Status:` line (a legacy doc), or was planned from a `draft` or `done` doc under `--allow-draft`; a legacy doc's lint errors, its steps read by hand; a named step depends on a pending step; a cited file is missing or a `(new)` file already exists; the doc collides with `CLAUDE.md` or the architecture doc — name each.
 

@@ -39,6 +39,8 @@ It copies, for each of `.claude/commands/`, `.claude/skills/` (when the source h
 
 Exit 2 (`error`) → stop and report it. When the source has no `pipeline-sync.py` (an older pipeline), apply the same rules by hand without a manifest: copy what is absent, keep what differs unless `--update`, delete nothing.
 
+**An existing `.claude/settings.json`** (the target had one, so `settings_json_copied` is false) is never edited, by an install or an `--update`. Compare it with the source's: when it lacks the source's `statusLine` or any of its hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `PreCompact`, each running `.claude/scripts/context-guard.py`, the context guard that has the orchestrating session hand off before its context passes 50%), report the missing entries as a JSON snippet, copied from the source's file, for a person to merge by hand. A target with a `statusLine` of its own can keep it: the hooks still work without the guard's status line, measuring the context from the session transcript.
+
 ## Write CLAUDE.md
 
 - **No `CLAUDE.md`** → write one (atomically: write `CLAUDE.md.tmp.<pid>` beside it, `<pid>` being your shell's, then rename it into place). `<repository name>` is the repo root's directory name. The `## How work happens here` section is the pipeline's template, `<source>/.claude/scripts/claude-md-base.md`, copied verbatim with its marker comment (`<!-- How work happens here written by /seed ... -->`): `pipeline-sync.py` compares a marked section with the template of the pipeline it syncs from and reports the difference (it never edits `CLAUDE.md`). When the source has no `claude-md-base.md` (an older pipeline), write that section as the source's own `/seed` gives it.
@@ -68,7 +70,7 @@ Exit 2 (`error`) → stop and report it. When the source has no `pipeline-sync.p
 
     Seeded: <target> from <source>
 
-Then: files added, identical, updated, deleted, and those kept back (outdated, differs, local edits, conflicts, obsolete) per directory, and the source commit installed (and the one it replaced); whether `CLAUDE.md` was written, appended to or left alone, and, when its `## How work happens here` section differs from the template, the sync report's `claude_md` status and diff, for a person to apply by hand (an existing section is never edited); the candidate `QUALITY_GATES` for an existing repository, and its AI review check (the `ai_review_check` value, or the offer above when it has none). Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
+Then: files added, identical, updated, deleted, and those kept back (outdated, differs, local edits, conflicts, obsolete) per directory, and the source commit installed (and the one it replaced); whether `.claude/settings.json` was copied, and, when the target's own lacks the context guard's entries, the snippet to merge; whether `CLAUDE.md` was written, appended to or left alone, and, when its `## How work happens here` section differs from the template, the sync report's `claude_md` status and diff, for a person to apply by hand (an existing section is never edited); the candidate `QUALITY_GATES` for an existing repository, and its AI review check (the `ai_review_check` value, or the offer above when it has none). On a first install, add that the pipeline keeps its handoff, lane plans and review ledgers on origin's `pipeline/state` branch, which the first save creates (a rule that blocks pushing new branches to origin blocks it too). Close with the next step: `/roadmap <brief>` or the `brief-to-proposals` workflow for a new product (the seeded files are committed with `/bootstrap`'s branch), or `/create-pr` to land them in an existing repository.
 
 ## What to skip
 
@@ -79,4 +81,4 @@ Then: files added, identical, updated, deleted, and those kept back (outdated, d
 ## Safety
 
 - Never overwrite a target file without `--update`, never overwrite an edited one without `--update --force`, never overwrite `CLAUDE.md` content. The only deletions are `--update`'s: pipeline files the manifest recorded, that the source no longer ships and nobody edited.
-- Copy only the pipeline directories named above and, when the target has none, `.claude/settings.json`; never copy secrets, `.env` files or `settings.local.json`.
+- Copy only the pipeline directories named above and, when the target has none, `.claude/settings.json`; never edit a target's existing `settings.json` (report the snippet instead); never copy secrets, `.env` files or `settings.local.json`.

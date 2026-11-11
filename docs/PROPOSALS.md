@@ -546,6 +546,50 @@ those checkboxes, byte for byte, and accepts gates and milestones too.
   `Human gate: decision — superseded by step M; tick to retire`, with no `Files:`
   or `Lane:`.
 
+## Size budgets
+
+The agents that build a milestone read the architecture, the roadmap and that
+milestone's proposal together, so each doc has a budget. Size is the file's bytes
+as written (KB = 1,024 bytes); a list counts every item, ticked or not, gates
+included. The kind comes from the H1, so a doc with no kind is measured as a
+proposal.
+
+| Budget | W above | E above | Code |
+|---|---|---|---|
+| architecture | 48 KB | 96 KB | `doc_too_big` |
+| roadmap | 24 KB | 48 KB | `doc_too_big` |
+| proposal | 40 KB | 80 KB | `doc_too_big` |
+| steps in a proposal | 12 | 20 | `too_many_steps` |
+| milestones in a roadmap | 20 | none | `too_many_milestones` |
+
+At the warning limits the three docs come to 112 KB, about 28k tokens at roughly
+four bytes a token (twice that at the error limits). That leaves room for the code
+and the work while the agent stays under half of a 200k-token window.
+
+A doc over a budget is split, not squeezed:
+
+- **Proposal.** The steps that ship first stay; the rest become a new milestone
+  after the last one in the roadmap (so no number moves), with its own proposal,
+  depending on this one: `/propose --revise <roadmap>`, then
+  `/propose --milestone=N`. A concern's proposal splits into a follow-up proposal
+  whose steps depend on this one's as `<file>.md#N`. Bytes also go by citing the
+  architecture instead of restating it and keeping each step to one to three
+  sentences.
+- **Architecture.** It keeps what binds every milestone (components, interfaces,
+  the data model's entities, decisions, rules) and leaves each milestone's detail
+  (its endpoints, columns, screens) to the proposal that builds it. Research is
+  linked with the date checked, not quoted.
+- **Roadmap.** Each milestone is a title, a sentence or two, `Depends on:` and
+  `Acceptance:`. Milestones that ship together merge, and those after the
+  go/no-go stay coarse until its `Outcome:` is recorded.
+
+An error is a lint error like any other: `--lanes` gives the doc no lanes,
+`/plan --proposal`, `/impl` and `/bootstrap` stop on it (`doc_malformed`), and
+the CI `docs` job fails. `/review-proposal` reports a warning as a `concern` and
+an error as a `bug`, naming the split. `--tick` never lints, so a person can still
+tick a gate in an oversized doc. `--no-size-limits` turns the checks off, for a
+doc written before the budgets until it is split.
+
 ## Lint codes
 
 | Code | | Meaning |
@@ -568,8 +612,11 @@ those checkboxes, byte for byte, and accepts gates and milestones too.
 | `lane_cycle` | E | `--lanes`: `Lane:` groups, dependencies and shared files form a cycle (over every lane, blocked or not) |
 | `not_a_proposal`, `not_a_roadmap`, `not_an_architecture` | E | `--lanes` on a non-proposal, `--roadmap` on a non-roadmap, `--claude-md` on a non-architecture |
 | `claude_md_drift` | E | `--claude-md`: `CLAUDE.md`'s `## Invariants` or `## Testing` body differs from the architecture's, or is missing (blank lines at either end, and one pointer line naming `architecture.md` first or last under `## Invariants`, are ignored) |
+| `doc_too_big` | E / W | the file is over its kind's byte budget: W above the warning limit, E above the error limit (see *Size budgets*) |
+| `too_many_steps` | E / W | a proposal has more than 12 steps (W) or more than 20 (E) |
 | `no_kind`, `missing_status`, `unknown_key` | W | see *Common rules* and *Steps* |
 | `step_too_big` | W | more than 8 files or about 7 sentences |
+| `too_many_milestones` | W | a roadmap has more than 20 milestones |
 | `lane_mixed` | W | a lane mixes ticked and unticked steps |
 | `gate_without_outcome`, `outcome_on_code_step` | W | see *Outcome* |
 | `xref_unreadable` | W | a `<file>.md#N` doc cannot be read |

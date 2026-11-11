@@ -44,7 +44,7 @@ Concern mode only. Recommendations, never delegations: do not invoke another com
 **Milestone mode.**
 
 1. Read `ROADMAP` in full (missing → `error=roadmap_not_found`) and run the lint on it with `--roadmap`. Milestone `N` missing → `error=milestone_not_found`; human-gated (a person does it, no proposal) → `error=milestone_human_gated`; ticked `[x]` → `error=milestone_done`.
-2. The milestone's title, description, `Acceptance:` (its exit criteria) and `Depends on:` are the scope. Every exit criterion must be met by some step's Acceptance. Neighbouring milestones are the boundary: their work goes in `## Out of scope`, by milestone number.
+2. The milestone's title, description, `Acceptance:` (its exit criteria) and `Depends on:` are the scope. Every exit criterion must be met by some step's Acceptance, unless the milestone is too big for one proposal and is split (see *Budget*). Neighbouring milestones are the boundary: their work goes in `## Out of scope`, by milestone number.
 3. Read the roadmap's `Source:` brief and its `Architecture:` doc (default `architecture.md` beside the roadmap) in full. The architecture's Repository layout, Components, Data model, Decisions, Invariants, Quality gates and Environments bind the proposal; a missing architecture doc is a report addendum, not a stop.
 4. Read the proposals of the milestones this one depends on, if they exist: what they create (`(new)` files, tables, endpoints, secrets) is what this proposal builds on.
 5. Output path: the milestone's `Proposal:` file, relative to the roadmap's directory. If it exists, update it in place (*Updating an existing doc*).
@@ -96,6 +96,8 @@ The doc reads as freshly authored: no quoted request, no mention of this command
 9. `## Risks and open questions` — each with its mitigation and the step that retires it.
 10. `## Steps` — below.
 11. `## Out of scope` — later milestones, adjacent improvements, constraints ruled out.
+
+**Budget.** The doc stays within 40 KB and 12 steps, every step counted (ticked ones and gates too): the agents that build it read it beside the architecture and the roadmap. The lint warns above those limits (`doc_too_big`, `too_many_steps`) and errors above 80 KB or 20 steps, which leaves the doc with no lanes (the pipeline's `docs/PROPOSALS.md`, *Size budgets*). Keep it lean: one to three sentences per step description, and Design and Decisions that cite what the architecture settles instead of restating it. Work that still does not fit is split, never squeezed: the doc keeps the steps that ship first, meeting a coherent part of the exit criteria, and `## Out of scope` names the rest as the part to split off, with its exit criteria. Milestone mode: the report says that `/propose --revise <roadmap>` must add that part as a new milestone after the last one (no number moves), depending on this one, with every milestone that needs it depending on it too, and then `/propose --milestone=N` writes its proposal. Concern mode: the report names the follow-up `/propose` for the rest, whose steps depend on this doc's as `<file>.md#N`.
 
 ### Steps
 
@@ -197,6 +199,7 @@ Applies to a milestone proposal that exists, a superseded concern proposal, and 
 - **Protected numbers** rest on facts, never on a status a person must remember to set. Every pending step keeps its number when the doc has any ticked step; or has ever been accepted (its `Status:` is `accepted`, `in-progress` or `done` now, or `git log -S'Status: accepted' --oneline -- <doc>` finds a commit); or another doc references it (`grep -rn "<file>.md#" <proposals dir>` — `Depends on:` refs and `Source:` headers). New steps then go after the last step. A change that would shift a protected number is not made: leave that part unapplied and report which docs must change with it.
 - **Built lanes are frozen.** A pending step whose lane was already built — a branch matching `*<slug>-s<N>-*` (its default lane key) or `*<slug>-<lane>-*` (its `Lane:` key) exists locally or among remote-tracking refs: `git branch -a --list '*<slug>-s<N>-*'` (`<slug>`: the doc's file name without `.md`, lowercased, non-alphanumeric runs → `-`) — is treated like an `[x]` step: never rewritten. A change to its work goes into a new follow-up step after the last step.
 - **Retiring a step.** To retire a pending step in a protected doc, keep its number and turn it into `Human gate: decision — superseded by step M; tick to retire`, with no `Files:` or `Lane:`.
+- **Budget.** An update keeps the doc within its budget: a new step that would take it past a limit goes to a new milestone, or a follow-up proposal, as *Budget* says.
 - Renumbering unprotected pending steps updates every same-doc `Depends on:` to match.
 - Keep existing `Proposal:` file names in a roadmap; renaming one orphans its doc.
 - The rewritten doc gets `Status: draft`. If it was `accepted`, `in-progress` or `done`, the report says a person must re-accept it before lanes build.
@@ -204,19 +207,19 @@ Applies to a milestone proposal that exists, a superseded concern proposal, and 
 ## Revise mode
 
 1. **Read `DOC` in full**; its kind comes from the H1 (`# Proposal:`, `# Architecture:`, `# Roadmap:`). Read what it rests on: its `Source:`, its `Architecture:`, every doc it references or that references it, and the tree it cites.
-2. **Recall the ledger** `~/.claude/reviews/proposal-<slug>.json` (`<slug>`: the working directory's base name, `-`, then `DOC`'s path relative to the working directory without `.md`, lowercased, non-alphanumeric runs → `-`, collapsed, trimmed — exactly as `.claude/commands/review-proposal.md` defines it, with the schema). Treat it as absent when missing, malformed (warn) or when its `repo` or `doc` do not match this working directory and `DOC`. Its `new`/`open` findings, unioned with the findings passed in (de-duplicated by meaning), are the work list.
+2. **Recall the ledger** `~/.claude/reviews/proposal-<slug>.json` (`<slug>`: the working directory's base name, `-`, then `DOC`'s path relative to the working directory without `.md`, lowercased, non-alphanumeric runs → `-`, collapsed, trimmed — exactly as `.claude/commands/review-proposal.md` defines it, with the schema). When the file is missing, first restore its saved copy, `reviews/proposal-<doc-slug>.json` on the state branch (`<doc-slug>`: what `python3 .claude/scripts/pipeline-state.py slug <path>` prints for `DOC`'s path relative to the repository root without `.md`, as review-proposal.md's *Review ledger* defines it), exactly as its *Recall* does; under `--dry-run`, read the copy (`pipeline-state.py get` without `--to`) and write no local file. Treat it as absent when missing, malformed (warn) or when its `repo` or `doc` do not match this working directory and `DOC`. Its `new`/`open` findings, unioned with the findings passed in (de-duplicated by meaning), are the work list.
 3. **Follow recorded outcomes.** Every ticked research or decision gate with an `Outcome:` whose dependent pending steps or milestones still describe the open alternatives (or are coarse placeholders): rewrite them to the chosen alternative, and in a proposal its Design and Decision too.
-4. **Apply every finding.** Verify each against the doc, the tree and its sources. Decline one only when you can show it is wrong (it misreads the doc, cites code that says otherwise, or contradicts a binding source), with the reason. Preference is not a reason. Each fix follows the layout rules above and *Updating an existing doc*.
-5. **By kind.** Architecture: all twelve sections stay present; a changed Invariant, Testing rule or Quality gate on a bootstrapped repo also needs `CLAUDE.md` changed in a PR — say so, do not edit it. `## Invariants` and `## Testing` are copied verbatim in a bootstrapped repo's `CLAUDE.md` (its `## Pipeline config` carries the `/bootstrap` marker): after writing, run `python3 .claude/scripts/proposal-lint.py <doc> --claude-md CLAUDE.md`; each `claude_md_drift` it reports is a section the same PR must copy into `CLAUDE.md` — the CI `docs` job fails on it — so name each in the report. Roadmap: every non-gated milestone keeps `Proposal:` and `Acceptance:`; every person-only milestone stays a human gate.
+4. **Apply every finding.** Verify each against the doc, the tree and its sources. Decline one only when you can show it is wrong (it misreads the doc, cites code that says otherwise, or contradicts a binding source), with the reason. Preference is not a reason. Each fix follows the layout rules above and *Updating an existing doc*. A budget finding (the doc is over a size, step or milestone limit, whether the lint warns or errors) is applied until the doc is within the warning limits: move detail out first, then split, as *Budget* and step 5 say. When only removing protected or built steps would get it there, leave that part unapplied, as for any change that would shift a protected number, and record it as declined with the reason (`Declined: protected steps 9–14`), so a later review does not raise it again while they stay protected.
+5. **By kind.** Architecture: all twelve sections stay present; a changed Invariant, Testing rule or Quality gate on a bootstrapped repo also needs `CLAUDE.md` changed in a PR — say so, do not edit it. `## Invariants` and `## Testing` are copied verbatim in a bootstrapped repo's `CLAUDE.md` (its `## Pipeline config` carries the `/bootstrap` marker): after writing, run `python3 .claude/scripts/proposal-lint.py <doc> --claude-md CLAUDE.md`; each `claude_md_drift` it reports is a section the same PR must copy into `CLAUDE.md` — the CI `docs` job fails on it — so name each in the report. An architecture over its budget cuts the milestone detail its proposals already carry; where a milestone's proposal is not written yet, that detail shrinks to one line naming what the proposal must settle. Decisions, invariants and whatever else binds every milestone stay. Roadmap: every non-gated milestone keeps `Proposal:` and `Acceptance:`; every person-only milestone stays a human gate. A milestone split for the budget keeps its number and `Proposal:` for the part that ships first; the rest becomes a new milestone after the last one, with a new `Proposal:` file, depending on it, and every milestone that needs the moved work depends on the new one too.
 6. Nothing to apply and no outcome to follow → write nothing; report `No revisions needed.`
-7. **Write and lint** (below). Then **mark the ledger**: each applied ledger finding → `status: fixed`, `resolved_at: <now>` (`YYYY-MM-DDTHH:MM:SSZ` UTC); each declined one stays as it is, with `Declined: <reason>` appended to its `detail`. Set `updated_at`; write `<ledger>.tmp.<pid>`, rename. Best-effort: on failure warn and continue; never overwrite a malformed or foreign ledger, and never create one here.
+7. **Write and lint** (below). Then **mark the ledger**: each applied ledger finding → `status: fixed`, `resolved_at: <now>` (`YYYY-MM-DDTHH:MM:SSZ` UTC); each declined one stays as it is, with `Declined: <reason>` appended to its `detail`. Set `updated_at`; write `<ledger>.tmp.<pid>`, rename, then save it to the state branch: `python3 .claude/scripts/pipeline-state.py save <ledger> --as reviews/proposal-<doc-slug>.json -m "review ledger: <DOC>"`. Best-effort: on failure of either, warn and continue; never overwrite a malformed or foreign ledger, and never create one here (restoring the saved copy in step 2 is not creating one).
 
 ## Write and lint
 
 1. Under `--dry-run`, print the doc and stop. To lint it, write a temporary copy outside the repo, lint that with `--as <its real path>` (so `Source:` and cross-doc refs resolve), and delete it; nothing else is written.
 2. **Write atomically:** `<path>.tmp.<pid>` in the same directory, then rename into place. Create the proposals directory if needed.
 3. Run `python3 .claude/scripts/proposal-lint.py <path> --repo .` and fix every error; re-run until it exits 0. Fix the warnings that are real (`missing_section`, `step_too_big`, `new_file_exists`, `missing_acceptance` on a gate, a mistyped path behind `file_not_found`); a `file_not_found` for a file Bootstrap or an earlier milestone's proposal creates stays, and the report names which.
-4. More than ~15 steps → the milestone or concern is too big: say so in the report and propose the split.
+4. A budget warning (`doc_too_big`, `too_many_steps`, `too_many_milestones`) is always real: move detail out or split, as *Budget* says, and lint again. One left (only protected or built steps keep the doc over) is named in the report, with why.
 
 ## Report
 
@@ -231,6 +234,8 @@ Print the resolved path as the final message:
 - Updated in place or superseded — the path, and that every `[x]` step was kept.
 - Status reset to `draft` from `accepted` / `in-progress` / `done` — a person must re-accept it.
 - Steps, human gates (by kind) and lanes in the doc; lint warnings left and why.
+- Split for the budget — the part split off, its exit criteria, and the next commands (`/propose --revise <roadmap>` to add it as a milestone, then `/propose --milestone=N`; or the follow-up `/propose`).
+- The ledger's state-branch copy could not be restored or saved, with the warning.
 - A departure from an architecture decision, or a collision with a `CLAUDE.md` rule.
 - A finding left unapplied because it would shift a protected step number — the docs that must change with it; a built lane's step left as it is, and the follow-up step added instead.
 - Desk-research questions left open because web tools were unavailable.
@@ -242,14 +247,14 @@ Close with the next step: `/review-proposal <path>`. Under `--dry-run`, print th
 ## What to skip
 
 - Do not write code, tests, or any file other than the one doc and the ledger update; do not run the quality gates.
-- Do not commit, stage, push, branch, switch branches, fetch, open a PR, or file issues.
+- Do not commit, stage, push, branch, switch branches, fetch, open a PR, or file issues. The one exception is the ledger's copy on the state branch, which `pipeline-state.py` fetches and pushes in revise mode.
 - Do not tick steps or set `Status:` to anything but `draft`; do not write `Outcome:` lines — a person does.
 - Do not enter plan mode or invoke other commands.
 - One doc per invocation.
 
 ## Safety
 
-- Writes go only to the resolved doc path (atomically) and, in revise mode, the existing ledger under `~/.claude/reviews/`.
+- Writes go only to the resolved doc path (atomically) and, in revise mode, the existing ledger under `~/.claude/reviews/` and its copy on the state branch.
 - Never delete a design doc; never change an `[x]` step, a built lane's step or a protected step number.
-- No destructive git and no git-state change of any kind.
+- No destructive git and no git-state change of any kind, apart from `pipeline-state.py` saving the ledger's copy: it fetches and pushes only the state branch and never touches the working tree, the index, HEAD or another branch.
 - Redact credentials (tokens, `Bearer ` headers, API keys, passwords) and personal data (names, addresses, emails, phone and account numbers) from anything quoted into the doc — secrets are named, never valued; examples are synthetic or redacted. Design docs are committed and shared.

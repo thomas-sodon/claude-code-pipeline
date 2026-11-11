@@ -7,6 +7,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `QUALITY_GATES` — full gate command, exit 0 when green. If missing, stop with `error=missing_quality_gates` and ask the user to add it.
 - `GATE_WRAPPER` — optional prefix for every gate run (e.g. `.claude/scripts/gate-slot.sh`; exit 75 means all slots are busy — re-run).
 - `GH_WRAPPER` — optional prefix for `git fetch` / `git push` / `gh` commands.
+- `GITHUB_ACCESS` — not needed here: this command makes no GitHub API call, and `git fetch` / `git push` stay plain git under either access (`.claude/scripts/github-access.md`), so it runs the same with gh or the connector.
 - `PLANS_DIR` — where plan files live (default `~/.claude/plans`); `PROPOSALS_DIR` — optional proposal docs.
 
 ## Steps

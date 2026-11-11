@@ -7,7 +7,7 @@ A design doc is a proposal (`# Proposal: ...`, with a `## Steps` list), a roadma
 of claude-code-pipeline.
 
 Usage:
-  proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs] [--as PATH]
+  proposal-lint.py DOC [--repo DIR] [--json] [--no-resolve-xrefs] [--as PATH] [--no-size-limits]
   proposal-lint.py DOC --lanes [--root DIR] [--date YYYYMMDD] [--branch-prefix PREFIX]
                                [--remote-heads FILE] [--repo DIR] [--allow-draft]
   proposal-lint.py DOC --tick N[,N...]
@@ -18,12 +18,16 @@ Exit status: 0 = no errors (warnings allowed); 1 = lint errors, or a --tick /
 --lanes request that cannot be met; 2 = usage error or unreadable DOC.
 --lanes, --roadmap and --tick always print JSON. --claude-md lints ARCHITECTURE and checks
 that CLAUDE.md at PATH carries its ## Invariants and ## Testing bodies verbatim
-(claude_md_drift). The script never runs git and never touches the
-network: it reads only the files it is given.
+(claude_md_drift). Every mode that lints (all but --tick) applies the size budgets:
+bytes per doc kind (doc_too_big), steps per proposal (too_many_steps) and milestones
+per roadmap (too_many_milestones), warning above the soft limit and erroring above the
+hard one; --no-size-limits turns them off. The script never runs git and never touches
+the network: it reads only the files it is given.
 """
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -59,6 +63,28 @@ CLAUDE_MD_SECTIONS = ('Invariants', 'Testing')   # /bootstrap copies these bodie
 MAX_FILES = 8
 MAX_SENTENCES = 7
 
+# Size budgets (docs/PROPOSALS.md, Size budgets): (warning above, error above), None = no error. An agent that builds
+# a milestone reads the architecture, the roadmap and its proposal together: ~112 KB, ~28k tokens, at the warning limits.
+KB = 1024
+SIZE_BUDGETS = {'architecture': (48 * KB, 96 * KB), 'roadmap': (24 * KB, 48 * KB), 'proposal': (40 * KB, 80 * KB)}
+LIST_BUDGETS = {'proposal': ('Steps', 'steps', 'step', 'too_many_steps', 12, 20),
+                'roadmap': ('Milestones', 'milestones', 'milestone', 'too_many_milestones', 20, None)}
+SPLIT_PROPOSAL = ('keep the steps that ship first and move the rest to a new milestone after the last one in the roadmap, '
+                  'with its own proposal (for a concern, to a follow-up proposal)')
+SIZE_ADVICE = {
+    'architecture': 'leave each milestone\'s detail (its endpoints, columns, screens, step-level rationale) to the '
+                    'proposal that builds it, keep what binds every milestone, and link research instead of quoting it',
+    'roadmap': 'cut each milestone to its title, one or two sentences, Depends on and Acceptance (its design belongs '
+               'in the architecture or its proposal), and merge milestones that ship together',
+    'proposal': 'move detail out (cite the architecture instead of restating it, and keep each step to one to three '
+                'sentences), or ' + SPLIT_PROPOSAL,
+}
+LIST_ADVICE = {
+    'proposal': SPLIT_PROPOSAL,
+    'roadmap': 'merge milestones that ship together, and keep the milestones after the go/no-go coarse until its '
+               'Outcome is recorded',
+}
+
 
 class Doc(object):
     def __init__(self, path):
@@ -66,6 +92,7 @@ class Doc(object):
         self.ref_dir = os.path.dirname(path)   # where <file>.md#N and Source: refs resolve from (--as moves it)
         self.kind = None
         self.title = ''
+        self.size = 0               # bytes, as the file is written (UTF-8, its own line endings)
         self.header = {}
         self.sections = []          # (name, line)
         self.steps = []
@@ -101,6 +128,7 @@ def parse(path):
     """Parse DOC into a Doc. Raises OSError when the file cannot be read."""
     doc = Doc(path)
     lines = read_lines(path)
+    doc.size = sum(len(raw.encode('utf-8')) for raw in lines)
     in_fence = False
     section = None
     cur = None
@@ -247,12 +275,14 @@ def sentences(text):
     return len([p for p in re.split(r'(?<=[.!?])\s+', text.strip()) if p.strip()])
 
 
-def check(doc, repo=None, resolve_xrefs=True, cache=None):
+def check(doc, repo=None, resolve_xrefs=True, cache=None, size_limits=True):
     """Validate a parsed doc in place."""
     if doc.kind == 'unknown':
         doc.warn(1, 'no_kind', 'the first heading should be "# Proposal: <title>", "# Roadmap: <title>" or '
                  '"# Architecture: <title>"; treating this as a proposal')
         doc.kind = 'proposal'
+    if size_limits:
+        check_budgets(doc)
     status = doc.header.get('status', '')
     if not status:
         doc.warn(1, 'missing_status', 'add a "Status: draft|accepted|in-progress|done" line under the title '
@@ -368,6 +398,38 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None):
             if s['proposal'] and not os.path.isfile(os.path.join(base, s['proposal'])) and not s['done']:
                 doc.warn(s['line'], 'proposal_not_written', 'milestone %d: %s does not exist yet'
                          % (s['n'], s['proposal']))
+
+
+def kb(size):
+    """SIZE in KB, rounded up to one decimal, so a doc one byte over a limit never reads as at it."""
+    return '%.1f KB' % (math.ceil(size * 10.0 / KB) / 10.0)
+
+
+def check_budgets(doc):
+    """doc_too_big on the file's bytes for its kind, and too_many_steps / too_many_milestones on its list:
+    a warning above the soft limit, an error above the hard one (docs/PROPOSALS.md, Size budgets)."""
+    soft, hard = SIZE_BUDGETS[doc.kind]
+    if doc.size > soft:
+        what = 'this %s is %s' % ('architecture doc' if doc.kind == 'architecture' else doc.kind, kb(doc.size))
+        if doc.size > hard:
+            doc.err(1, 'doc_too_big', '%s, over the %d KB error limit: %s' % (what, hard // KB, SIZE_ADVICE[doc.kind]))
+        else:
+            doc.warn(1, 'doc_too_big', '%s, over the %d KB warning limit (error above %d KB): %s'
+                     % (what, soft // KB, hard // KB, SIZE_ADVICE[doc.kind]))
+    if doc.kind not in LIST_BUDGETS:
+        return
+    section, plural, singular, code, soft, hard = LIST_BUDGETS[doc.kind]
+    n = len(doc.steps)      # every item counts: ticked or not, gates included
+    if n <= soft:
+        return
+    line = dict((name.lower(), l) for name, l in doc.sections).get(section.lower(), doc.steps[0]['line'])
+    what = 'this %s has %d %s' % (doc.kind, n, plural)
+    if hard is not None and n > hard:
+        doc.err(line, code, '%s, over the %d-%s error limit: %s' % (what, hard, singular, LIST_ADVICE[doc.kind]))
+    else:
+        doc.warn(line, code, '%s, over the %d-%s warning limit%s: %s'
+                 % (what, soft, singular, ' (error above %d)' % hard if hard is not None else '',
+                    LIST_ADVICE[doc.kind]))
 
 
 def check_lanes_shape(doc):
@@ -861,6 +923,8 @@ def main(argv=None):
     p.add_argument('--branch-prefix', default='feat/', help='--lanes: branch prefix (default feat/)')
     p.add_argument('--remote-heads', help='--lanes: output of `git ls-remote --heads origin`, to find lanes already built')
     p.add_argument('--allow-draft', action='store_true', help='--lanes: derive lanes even when Status is not accepted / in-progress')
+    p.add_argument('--no-size-limits', action='store_true', help='skip the size budgets (doc_too_big, too_many_steps, '
+                   'too_many_milestones), e.g. for a doc written before them until it is split')
     a = p.parse_args(argv)
     if not os.path.isfile(a.doc):
         print('proposal-lint: cannot read %s' % a.doc, file=sys.stderr)
@@ -888,7 +952,7 @@ def main(argv=None):
         if a.remote_heads and not os.path.isfile(a.remote_heads):
             print('proposal-lint: cannot read %s' % a.remote_heads, file=sys.stderr)
             return 2
-        check(doc, repo=a.repo, resolve_xrefs=not a.no_resolve_xrefs, cache=cache)
+        check(doc, repo=a.repo, resolve_xrefs=not a.no_resolve_xrefs, cache=cache, size_limits=not a.no_size_limits)
         if a.lanes:
             if doc.kind != 'proposal':
                 doc.err(1, 'not_a_proposal', '--lanes needs a proposal ("# Proposal: ..."), not a %s' % doc.kind)

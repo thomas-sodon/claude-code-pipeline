@@ -136,6 +136,8 @@ At least two real options each, weighed against the source's constraints: prefer
 
 No step list in the architecture.
 
+**Budget.** Keep architecture.md within 48 KB: every agent that builds a milestone reads it beside the roadmap and that milestone's proposal. The lint warns above 48 KB (`doc_too_big`) and errors above 96 KB (the pipeline's `docs/PROPOSALS.md`, *Size budgets*). It holds what binds every milestone (the components and their interfaces, the data model's entities and key fields, the decisions, the rules) and leaves each milestone's detail (its endpoints, columns, screens, step-level rationale) to the proposal that builds it, which grounds and researches it then. Cite research by its link and the date checked; never paste it.
+
 ## Write roadmap.md
 
 `# Roadmap: <Product>`, then `Status: draft`, `Source:` (as above) and `Architecture: architecture.md`, a short paragraph on the ordering logic, then `## Milestones` in the step grammar:
@@ -155,11 +157,11 @@ The source's cheapest validation is a waitlist, so demand is measured before the
    - Human gate: ops — set architecture.md to Status: accepted, run /bootstrap architecture.md, ship and merge its bootstrap branch, protect main and require the `gates` and `docs` checks
    - Depends on: none
    - Acceptance: CI green on main; main protected; the Outcome records the repository URL
-2. [ ] **Provision hosting.** Accounts the first deploy needs.
-   - Human gate: ops — create the staging and production projects on the host; add DATABASE_URL to each by name
+2. [ ] **Provision hosting.** Accounts and secrets the first deploy needs.
+   - Human gate: ops — create the staging and production projects on the host; add DATABASE_URL to each project and DEPLOY_TOKEN to the CI secret store, by name
    - Depends on: 1
-   - Acceptance: both projects exist; `DATABASE_URL` set in both; CI can deploy to staging
-3. [ ] **Waitlist landing page.** The source's cheapest validation: measure sign-ups before building the product. Its proposal ends with the production release gate, which depends on milestone 4 as roadmap.md#4.
+   - Acceptance: both projects exist; `DATABASE_URL` set in both and `DEPLOY_TOKEN` in CI, each by name
+3. [ ] **Waitlist landing page.** The source's cheapest validation: measure sign-ups before building the product. Its proposal starts with the CI deploy to staging and production on milestone 2's accounts, and ends with the production release gate, which depends on milestone 4 as roadmap.md#4.
    - Proposal: 01-waitlist.md
    - Depends on: 1, 2
    - Acceptance: page live in production; sign-ups stored with recorded consent; daily count visible to the team
@@ -188,10 +190,11 @@ Rules:
 - **Human gates** — `Human gate: <kind> — <what a person does>`, no `Proposal:`:
   - `research` — every assumption only a person can settle (see *Desk research*);
   - `decision` — every legal or compliance sign-off and every go/no-go;
-  - `ops` — every account, domain, store or registry listing, or secret a person must create (secrets by NAME, per environment), placed before the first milestone that needs it;
+  - `ops` — every account, domain, store or registry listing, or secret a person must create (secrets by NAME, per environment), placed before the first milestone that needs it; its Acceptance is what the person creates, never what later code proves (a CI deploy job is a step of the proposal that first deploys);
   - `release` — a launch that ships several milestones' work together (one store submission of an app built across milestones). Each production release, app-store submission or launch is gated exactly **once**: by default as a `release` gate inside the proposal whose code it ships, right after that code (`/propose` writes it), and as a roadmap milestone only in that several-milestones case — never both.
   - A gate milestone that only one step of a proposal must wait for — a legal or privacy sign-off before its release, an `ops` milestone that provisions the accounts the step uses — need not hold back the whole code milestone: that step depends on it as `roadmap.md#N` (the lint resolves it and treats it as satisfied once ticked). Name such gates in the code milestone's description so `/propose` wires them.
-- **Code milestones** — `Proposal: NN-slug.md`: two-digit sequence in roadmap order from `01` (continue after the highest `NN-` already in `$OUT`), kebab-case slug of at most 40 characters. The file is not written here. Size each to one proposal of roughly 3–10 PR-sized steps that is independently valuable; split anything larger.
+- **Code milestones** — `Proposal: NN-slug.md`: two-digit sequence in roadmap order from `01` (continue after the highest `NN-` already in `$OUT`), kebab-case slug of at most 40 characters. The file is not written here. Size each to one proposal of roughly 3–10 PR-sized steps that is independently valuable; split anything larger into milestones that each ship on their own: a proposal over 12 steps or 40 KB draws a lint warning and a review concern, and one over 20 steps or 80 KB is a lint error and gets no lanes.
+- **Budget.** roadmap.md stays within 24 KB and 20 milestones: the lint warns above them (`doc_too_big`, `too_many_milestones`) and errors above 48 KB. Each milestone is its title, one or two sentences, `Depends on:` and `Acceptance:`; its design belongs in the architecture or its proposal. A long product merges milestones that ship together and keeps the milestones after the go/no-go coarse.
 - **Required checks.** For each check in the architecture's `Required checks`, the code milestone that introduces its platform says in its description that its proposal adds that CI job, in a step before any step whose Acceptance needs the check. Acceptance is provable by `QUALITY_GATES`, a named CI check or a human gate — never by a device or OS the agent's Linux host does not have.
 - **Every milestone** has `Depends on:` (`none` written out; only lower-numbered milestones) and `Acceptance:` — the exit criteria, observable and checkable: for a gate, the evidence that closes it and where it is recorded. A milestone whose design turns on a gate's outcome depends on that gate.
 - No `Files:` or `Lane:` in a roadmap: files and lanes belong to proposal steps. No `Outcome:` either: the person writes it when ticking a gate.
@@ -202,7 +205,7 @@ Write each doc — and, for a free-text source, `brief.md` first — atomically:
 
 1. Run `$LINT $OUT/architecture.md` and `$LINT $OUT/roadmap.md` (under `--dry-run`, the scratch copies with `--as $OUT/<doc>`, so refs resolve against the real `$OUT`).
 2. Fix every error in place and re-run until both report no errors. The same error surviving three fix rounds → stop with `error=lint_errors`, leave the docs in place, and quote the remaining lines.
-3. Warnings: `proposal_not_written` is expected (`/propose` writes them). Fix any other warning cheaply, or name it in the report.
+3. Warnings: `proposal_not_written` is expected (`/propose` writes them). A budget warning (`doc_too_big`, `too_many_milestones`) is fixed as the *Budget* rules above say; one that cannot be is named in the report, with why. Fix any other warning cheaply, or name it in the report.
 4. Run `$LINT $OUT/roadmap.md --roadmap --json` and check that the next actionable milestones are the ones the ordering intends.
 
 ## Report

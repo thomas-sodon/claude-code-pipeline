@@ -16,6 +16,14 @@
 # - Pin actions/checkout to the full commit SHA your other jobs use (its release tag in a comment).
 # - Once it has run once, require the `docs` check on main beside your gates check
 #   (Settings -> Rules, or the branch protection's required status checks).
+#
+# Size budgets: the lint errors on a doc over its budget (doc_too_big above 96 / 48 / 80 KB for an
+# architecture / roadmap / proposal, too_many_steps above 20; the pipeline's docs/PROPOSALS.md, Size
+# budgets), so docs written before the budgets can fail this job. Until they are split (refresh-proposal,
+# or /review-proposal and /propose --revise), add --no-size-limits to each of the three python3 "$lint"
+# calls below, which turns those checks off, and take it out again once they pass. Off by default; it
+# covers this job only: a build (proposal-build-chain, /plan --proposal, /impl) still stops on a
+# proposal over an error limit.
 
 jobs:
   docs:
