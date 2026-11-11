@@ -1,0 +1,29 @@
+# This repository's own AI review; examples/answerable-ai-review-replies.yml is the copy for other repositories
+# (identical but for the runner).
+name: Answerable AI Review
+
+on:
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # Same check name as the push-triggered gate, so it updates the same check.
+  replies:
+    name: Reply coverage
+    runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'metronome-light' || 'ubuntu-latest' }}
+    # A review with comments fires pull_request_review and
+    # pull_request_review_comment at once, and each reports its own check.
+    # Group by event so one event's run never cancels the other's, and let
+    # running jobs finish: a cancelled required check blocks the merge.
+    concurrency:
+      group: answerable-replies-${{ github.event.pull_request.number }}-${{ github.event_name }}
+    steps:
+      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+        with:
+          mode: replies
