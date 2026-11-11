@@ -424,8 +424,8 @@ if (BRANCH) {
     GUARD + WHERE + GITHUB + `Check out the design branch ${BRANCH} in ${DIR}, before anything in it is written. Never switch to, commit on or push main. ` +
     `1. git rev-parse --show-toplevel must succeed (else stop: error=not_a_repo), git remote get-url origin too (else error=no_remote), and git check-ref-format --branch ${BRANCH} (else error=invalid_branch). ` +
     `2. MAIN is MAIN_BRANCH from the "## Pipeline config" section of CLAUDE.md when there is one, else main. ${BRANCH} equal to MAIN, or to origin's default branch (git ls-remote --symref origin HEAD), stops with error=branch_is_main. ` +
-    `3. git fetch origin. ` +
-    `4. Already on ${BRANCH} (action current), or else origin/${BRANCH} or a local ${BRANCH} exists (action continued: git switch ${BRANCH}, which tracks origin's): when origin/${BRANCH} has commits HEAD lacks, git merge --ff-only origin/${BRANCH}; ` +
+    `3. git fetch origin, and when git ls-remote --heads origin ${BRANCH} lists it, git fetch origin +refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH} (a single-branch clone's plain fetch skips other branches, so origin/${BRANCH} would be missing or stale). ` +
+    `4. Already on ${BRANCH} (action current), or else origin/${BRANCH} or a local ${BRANCH} exists (action continued: git switch ${BRANCH}, or with no local ${BRANCH} git switch -c ${BRANCH} origin/${BRANCH}, since a single-branch clone's git switch cannot guess it from origin's): when origin/${BRANCH} has commits HEAD lacks, git merge --ff-only origin/${BRANCH}; ` +
     `HEAD and origin/${BRANCH} diverged → stop: error=diverged (never rebase, reset or force). ` +
     `Neither exists (action created): origin/MAIN must exist, else stop: error=no_main (a remote without a main has nothing to branch from: push a first commit to main, or run without branch); then git switch --no-track -c ${BRANCH} origin/MAIN. ` +
     `A switch or fast-forward git refuses because local changes or untracked files would be overwritten → stop: error=switch_blocked, listing them. Never stash, discard, delete, clean or force anything. ` +

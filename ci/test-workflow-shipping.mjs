@@ -1,8 +1,9 @@
 // Behavioural tests for shipping without carried state (plan-to-merged-pr, proposal-build-chain, ship-chain): a lane's plan
 // is saved to the pipeline state branch at its merge check and travels as plan_ref; ship-only and monitor-only restore it and
-// recreate a missing checkout; lane results stay slim; and the GitHub access (github_access) reaches every prompt that
-// touches GitHub and every nested run. The workflows' copy of the state branch's slug is checked against
-// pipeline-state.py slug itself. Same small harness as ci/test-workflow-questions.mjs (copied, not imported).
+// recreate a missing checkout; a stacked lane fetches its bases by explicit refspec and checks them with git ls-remote; lane
+// results stay slim; and the GitHub access (github_access) reaches every prompt that touches GitHub and every nested run.
+// The workflows' copy of the state branch's slug is checked against pipeline-state.py slug itself. Same small harness as
+// ci/test-workflow-questions.mjs (copied, not imported).
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -177,6 +178,40 @@ await test('plan-to-merged-pr: ship-only and monitor-only have their first agent
   for (const c of build.calls) assert.doesNotMatch(c.prompt, /recreate it before anything else/, c.label)
   const noDir = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', title: 'T' }, p2m())
   for (const c of noDir.calls) assert.doesNotMatch(c.prompt, /recreate it before anything else/, c.label)
+})
+
+await test('plan-to-merged-pr: a stacked lane fetches each base by explicit refspec, and tells a deleted or merged base by ls-remote and merge-base', async () => {
+  const args = { concern: 'c', ship: false, branch: 'feat/p-s3', dir: '/w/s3', bases: ['feat/p-s1', 'feat/p-s2'] }
+  const { result, prompt } = await run('plan-to-merged-pr', args, p2m({ plan: { branch: 'feat/p-s3', plan: PLAN } }))
+  assert.equal(result.status, 'pushed')
+  // The stages that merge the bases: the plan's setup and the merge check.
+  for (const l of ['plan', 'merge-check']) {
+    const p = prompt(l)
+    assert.match(p, /This work is stacked on feat\/p-s1, feat\/p-s2, which may not be merged yet\./, l)
+    assert.ok(p.includes('when git ls-remote --heads origin <base> lists nothing, it was deleted: skip it.'), `${l}: a deleted base is told by ls-remote`)
+    assert.ok(p.includes('git fetch origin +refs/heads/<base>:refs/remotes/origin/<base> (a single-branch clone\'s plain fetch skips other branches'), `${l}: each base by explicit refspec`)
+    assert.ok(p.includes('already merged into main (git merge-base --is-ancestor origin/<base> origin/main succeeds, after git fetch origin +refs/heads/main:refs/remotes/origin/main)'), `${l}: a merged base is skipped too`)
+    assert.match(p, /else merge the latest origin\/<base>\. Never rebase, never force-push\./, l)
+    assert.doesNotMatch(p, /git fetch and merge the latest/, `${l}: no plain fetch reads a base`)
+  }
+  assert.match(prompt('merge-check'), /merge origin\/main and the latest origin\/<base> of each stacked branch, fetched and checked as below \(never rebase\)/)
+  // The review is scoped against the last base, checked the same way: its tracking ref still resolving proves nothing.
+  const review = prompt('review-changes-1')
+  assert.ok(review.includes('with args "all:origin/feat/p-s2". First check that base'), 'scoped against the last base')
+  for (const s of ['git fetch origin +refs/heads/main:refs/remotes/origin/main, then git ls-remote --heads origin feat/p-s2.',
+    'If that lists nothing (the base was deleted, usually once merged), use args "all:origin/main" instead.',
+    'Otherwise git fetch origin +refs/heads/feat/p-s2:refs/remotes/origin/feat/p-s2,',
+    'if feat/p-s2 is already merged into main (git merge-base --is-ancestor origin/feat/p-s2 origin/main succeeds), use args "all:origin/main" too.',
+    'Never take origin/feat/p-s2 resolving as the base existing']) assert.ok(review.includes(s), s)
+  assert.doesNotMatch(review, /no longer resolves/)
+  assert.doesNotMatch(review, /feat\/p-s1/, 'only the last base scopes the review')
+  // A given plan's setup carries the same note; an unstacked lane carries none, and its review fetches main.
+  const given = await run('plan-to-merged-pr', { ...args, plan_text: PLAN }, p2m())
+  assert.ok(given.prompt('setup').includes('git fetch origin +refs/heads/<base>:refs/remotes/origin/<base>'))
+  assert.ok(given.prompt('setup').includes('git ls-remote --heads origin <base> lists nothing'))
+  const flat = await run('plan-to-merged-pr', { concern: 'c', ship: false }, p2m())
+  for (const c of flat.calls) assert.doesNotMatch(c.prompt, /refs\/heads\/<base>|ls-remote --heads origin <base>|is-ancestor/, c.label)
+  assert.match(flat.prompt('review-changes-1'), /with args "all:origin\/main"\. Run git fetch origin main first so origin\/main is current\./)
 })
 
 await test('plan-to-merged-pr: a PR that cannot be read stops the monitor at once, with the error in the hand-off', async () => {

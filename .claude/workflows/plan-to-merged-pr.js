@@ -199,8 +199,13 @@ const GATES = `GATE RULES (these override any skill instruction to run gates in 
     : `run ${GATE_CMDS} from the checkout root, prefixed with GATE_WRAPPER from the same Pipeline config when it is set (\`$GATE_WRAPPER bash -c '<command>'\`, writing any ' inside it as '\\'', so a compound command runs whole under it). `) +
   `Run long gates with run_in_background and output to a log, monitor the log, and do not end your turn until the run exits — no hard timeouts. ` +
   `Write any commit message or PR body that names those tools to a file and pass it with -F / --body-file. `
+// A single-branch clone's plain git fetch never updates refs/remotes/origin/<base>, nor prunes it once the base is deleted:
+// each base is fetched by explicit refspec, and git ls-remote says whether origin still has it.
 const STACK = BASES.length
-  ? `This work is stacked on ${BASES.join(', ')}, which may not be merged yet: git fetch and merge the latest origin/<base> of each (skip any already merged into ${MAIN} or deleted) — never rebase, never force-push. Work present on those bases counts as landed, not as a missing dependency. `
+  ? `This work is stacked on ${BASES.join(', ')}, which may not be merged yet. For each base: when git ls-remote --heads origin <base> lists nothing, it was deleted: skip it. ` +
+    `Otherwise fetch it by explicit refspec, git fetch origin +refs/heads/<base>:refs/remotes/origin/<base> (a single-branch clone's plain fetch skips other branches, so origin/<base> would stay stale); ` +
+    `skip it too when it is already merged into ${MAIN} (git merge-base --is-ancestor origin/<base> origin/${MAIN} succeeds, after git fetch origin +refs/heads/${MAIN}:refs/remotes/origin/${MAIN}); ` +
+    `else merge the latest origin/<base>. Never rebase, never force-push. Work present on those bases counts as landed, not as a missing dependency. `
   : ''
 const PREDS_CHECK = PREDS.length
   ? `First confirm each of ${PREDS.map(n => '#' + n).join(', ')} reads MERGED (gh pr view <n> --json state${cxIn('pull_request_read method get, merged true')}). If any does not, change nothing and report blocked=true naming it. `
@@ -258,10 +263,16 @@ const RELAY = `Ask the person these questions yourself, all at once, each with i
   `Then re-run this workflow with the same args plus answers (each question's id with the person's answer) and resumeFromRunId set to this run's id: ` +
   `the stages before the one that asked replay from the record and the work in the checkout is kept.`
 // Review scope: a stacked branch's HEAD carries its bases' commits, so review only this branch's own change.
-// `bases` are ordered so the last one contains the others.
-const REVIEW_SCOPE = BASES.length ? `all:origin/${BASES[BASES.length - 1]}` : `all:origin/${MAIN}`
+// `bases` are ordered so the last one contains the others. Once that base is deleted or merged, the review is scoped
+// against main. git ls-remote and git merge-base tell which, never origin/<base> resolving: a single-branch clone's
+// fetch never prunes that tracking ref.
+const LAST_BASE = BASES[BASES.length - 1]
+const REVIEW_SCOPE = BASES.length ? `all:origin/${LAST_BASE}` : `all:origin/${MAIN}`
 const SCOPE_NOTE = BASES.length
-  ? ` If origin/${BASES[BASES.length - 1]} no longer resolves after a git fetch (merged and deleted), use args "all:origin/${MAIN}" instead. `
+  ? ` First check that base, fetching by explicit refspec (a single-branch clone's plain fetch skips other branches): git fetch origin +refs/heads/${MAIN}:refs/remotes/origin/${MAIN}, then git ls-remote --heads origin ${LAST_BASE}. ` +
+    `If that lists nothing (the base was deleted, usually once merged), use args "all:origin/${MAIN}" instead. ` +
+    `Otherwise git fetch origin +refs/heads/${LAST_BASE}:refs/remotes/origin/${LAST_BASE}, and if ${LAST_BASE} is already merged into ${MAIN} (git merge-base --is-ancestor origin/${LAST_BASE} origin/${MAIN} succeeds), use args "all:origin/${MAIN}" too. ` +
+    `Never take origin/${LAST_BASE} resolving as the base existing: a single-branch clone's fetch never prunes a deleted branch's tracking ref. `
   : ` Run git fetch origin ${MAIN} first so origin/${MAIN} is current. `
 
 const PLAN_SCHEMA = {
@@ -595,7 +606,7 @@ if (MONITOR_ONLY) {
       : '') +
     `1. Commit any uncommitted work first (git status must be clean before merging, apart from the files kept out below): stage the change's files explicitly, with a message that explains why, ending with:\n${TRAILERS}\n` +
     KEEP_OUT + `\n` +
-    `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` +
+    `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch, fetched and checked as below' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` +
     `A conflict where both sides changed the same behaviour incompatibly and neither the plan nor the design doc decides which wins is a blocking question (see QUESTIONS): ` +
     `git merge --abort (the step-1 commit stays), run no gates, push nothing, and return it — never pick a side. ` + STACK + `\n` +
     (SHIP_ONLY || !clean

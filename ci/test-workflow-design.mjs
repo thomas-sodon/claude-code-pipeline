@@ -270,6 +270,16 @@ await test('brief-to-proposals: checkpoint agents appear only with branch, and t
   await assert.rejects(run(WF, { ...args, context_file: '.claude/scripts/notes.md' }, design()), /checkpoints commit/)
 })
 
+await test('brief-to-proposals: the branch stage fetches origin\'s design branch by explicit refspec, so a single-branch clone continues it', async () => {
+  const { prompt } = await run(WF, { ...BRIEF, branch: 'design/20261110' }, design({}, NO_DOCS))
+  const p = prompt('branch')
+  assert.ok(p.includes('3. git fetch origin, and when git ls-remote --heads origin design/20261110 lists it, ' +
+    'git fetch origin +refs/heads/design/20261110:refs/remotes/origin/design/20261110 (a single-branch clone\'s plain fetch skips other branches'), p)
+  assert.doesNotMatch(p, /3\. git fetch origin\. /, 'a plain fetch alone would leave origin/<branch> missing or stale')
+  // A single-branch clone's git switch cannot guess the branch from that ref, so the switch names it.
+  assert.ok(p.includes('git switch design/20261110, or with no local design/20261110 git switch -c design/20261110 origin/design/20261110'), p)
+})
+
 await test('brief-to-proposals: Consistency runs one agent per pair of docs, each naming only its two', async () => {
   const all = { ...ON_DISK, milestones: MILESTONES.map(m => ({ ...m, proposal_exists: !!m.proposal })) }
   const over = {
