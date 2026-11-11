@@ -562,9 +562,9 @@ class SessionState(Orchestrating):
         mark = os.path.join(self.dir, 's1.orchestrating')
         self.assertTrue(self.marked(), "setUp's Workflow call created the mark")
         self.assertNotIn('orchestrating', self.hook_state(), 'the state file does not hold it')
-        def seen():
+        def seen():                          # not its mtime: each hook touches the mark (touch_session)
             with open(mark) as f:
-                return os.stat(mark).st_ino, os.stat(mark).st_mtime_ns, f.read()
+                return os.stat(mark).st_ino, f.read()
         before = seen()
         # A hook that loaded the state before the Workflow call writes all of it back after it.
         with open(os.path.join(self.dir, 's1.hook.json'), 'w') as f:
@@ -655,6 +655,30 @@ class SessionState(Orchestrating):
         with open(os.path.join(self.dir, 'errors.log')) as f:
             self.assertIn('PostToolUse skipped', f.read())
         self.assertEqual(self.hook_json('Stop', sid='s2', stop_hook_active=False)['decision'], 'block')
+
+    def test_a_session_resumed_after_31_days_keeps_its_lock_and_its_mark(self):
+        """SessionStart removes records over 30 days old while its hook holds the session's lock. Removing the
+        session's own would unlink that lock (the next hook would lock a new file and run beside it) and its mark
+        (the guard would stop acting on it). Each hook also touches the lock and the mark, so another session's
+        SessionStart keeps them later; other sessions' old records still go."""
+        self.orchestrate(sid='s2')           # another session, idle as long
+        self.at(80)                          # s1's last status-line record before it went idle
+        old = time.time() - 31 * 86400
+        for n in os.listdir(self.dir):
+            os.utime(os.path.join(self.dir, n), (old, old))
+        lock = os.path.join(self.dir, 's1.hook.lock')
+        inode = os.stat(lock).st_ino
+        self.assertEqual(self.hook('SessionStart', source='resume'), '')
+        self.assertEqual(os.stat(lock).st_ino, inode, 'the lock its hook held is the one the next hook takes')
+        self.assertTrue(self.marked(), 'it keeps its mark')
+        self.assertTrue(os.path.exists(os.path.join(self.dir, 's1.json')), 'and its other records')
+        self.assertEqual([n for n in os.listdir(self.dir) if n.startswith('s2.')], [],
+                         "another session's old records are removed")
+        self.assertEqual(self.hook_json('Stop', stop_hook_active=False)['decision'], 'block',
+                         'the guard still acts on the resumed session')
+        self.assertEqual(self.hook('SessionStart', sid='s3', source='startup'), '')
+        self.assertEqual(os.stat(lock).st_ino, inode, "its hooks touch it: another session's SessionStart keeps it")
+        self.assertTrue(self.marked(), 'and the mark')
 
 
 class SessionStart(Guard):

@@ -67,7 +67,9 @@ the session's first Workflow call and never rewritten, so no write of the state 
 <session>.hook.lock (each hook holds it while it loads, handles and writes <session>.hook.json, so two hooks close
 together never undo each other's changes), <session>.handoff.json and handoff-<repo-key>.json (handoff marks; the
 repository's, shared by its worktrees, names the session that wrote it and counts only for that one, or for every
-session when it names none), errors.log. Records older than 30 days are removed at SessionStart.
+session when it names none), errors.log. Records older than 30 days are removed at SessionStart, never the starting
+session's own, whose lock its hook is holding; each hook that takes the lock also touches it and the orchestration
+mark, which nothing rewrites, so a session in use never ages out.
 The hook never fails the session: any error exits 0 with no output (and a line in errors.log), and so does a hook
 that cannot take its session's lock within 2 s.
 """
@@ -357,6 +359,10 @@ def state_file(sid):
     return path_for('%s.hook.json' % sid)
 
 
+def lock_file(sid):
+    return path_for('%s.hook.lock' % sid)
+
+
 def orchestration_mark(sid):
     return path_for('%s.orchestrating' % sid)
 
@@ -383,7 +389,7 @@ def session_lock(sid):
         yield True
         return
     os.makedirs(guard_dir(), exist_ok=True)
-    fd = os.open(path_for('%s.hook.lock' % sid), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = os.open(lock_file(sid), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         deadline, held = time.monotonic() + LOCK_WAIT, None
         while held is None:
@@ -400,6 +406,17 @@ def session_lock(sid):
         yield held
     finally:
         os.close(fd)                     # closing it releases the lock
+
+
+def touch_session(sid):
+    """Set the mtime of the session's lock and of its orchestration mark, when it has one, to now. Nothing rewrites
+    either, so without this another session's SessionStart (cleanup) would remove them from a session in use for
+    over KEEP_DAYS days."""
+    for p in (lock_file(sid), orchestration_mark(sid)):
+        try:
+            os.utime(p)
+        except OSError:
+            pass                         # no mark (not orchestrating), or no lock file (Windows): nothing to keep
 
 
 def repo_key(cwd):
@@ -572,14 +589,20 @@ def handoff_context(cwd):
     return None
 
 
-def cleanup():
+def cleanup(sid):
+    """Remove the records older than KEEP_DAYS, never this session's own (<sid>.*): SessionStart runs it while its
+    hook holds <sid>.hook.lock, and a session resumed after that long keeps its lock (unlinked, the next hook would
+    lock a new file beside it, and two hooks would run at once) and its orchestration mark."""
     cutoff = now() - KEEP_DAYS * 86400
     d = guard_dir()
     try:
         names = os.listdir(d)
     except OSError:
         return
+    own = sid + '.'
     for n in names:
+        if n.startswith(own):
+            continue
         if n.endswith(('.json', '.orchestrating', '.hook.lock')) or '.json.tmp.' in n:
             p = os.path.join(d, n)
             try:
@@ -606,7 +629,7 @@ def additional(event, text):
 def on_session_start(ev, sid, st):
     st['main_transcript'] = ev.get('transcript_path')
     st['source'] = ev.get('source')
-    cleanup()
+    cleanup(sid)
     if quiet_ci():
         return None                        # a CI job is not continuing a handoff: no fetch, no pointer
     text = handoff_context(ev.get('cwd') or os.environ.get('CLAUDE_PROJECT_DIR') or os.getcwd())
@@ -688,6 +711,7 @@ def run_hook(ev):
         if not held:
             log_error('hook', '%s skipped: another hook of the session held its lock for %gs' % (event, LOCK_WAIT))
             return None
+        touch_session(sid)               # the lock and the mark age only while the session is idle
         st = read_json(state_file(sid))
         result = handler(ev, sid, st)
         st['updated_at'] = iso(now())
