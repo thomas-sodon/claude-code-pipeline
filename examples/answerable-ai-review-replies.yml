@@ -1,0 +1,32 @@
+# The reply half of the AI review: copy this file next to answerable-ai-review.yml in .github/workflows/.
+#
+# Re-checks `Reply coverage` when someone replies to (or reviews) a finding, so the gate turns green
+# without another push. It is kept apart from answerable-ai-review.yml so these runs add no skipped
+# `Review` check to the PR. No Claude call and no credential.
+name: Answerable AI Review
+
+on:
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # Same check name as the push-triggered gate, so it updates the same check.
+  replies:
+    name: Reply coverage
+    runs-on: ubuntu-latest
+    # A review with comments fires pull_request_review and
+    # pull_request_review_comment at once, and each reports its own check.
+    # Group by event so one event's run never cancels the other's, and let
+    # running jobs finish: a cancelled required check blocks the merge.
+    concurrency:
+      group: answerable-replies-${{ github.event.pull_request.number }}-${{ github.event_name }}
+    steps:
+      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+        with:
+          mode: replies

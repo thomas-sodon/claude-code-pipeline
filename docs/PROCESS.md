@@ -244,7 +244,7 @@ does not offer it to users.
 (with the secret to add by name), and pass its check name (`Review`) as
 `ai_review_check` in the ship plan.
 *Status:* partly fixed. [`examples/answerable-ai-review.yml`](../examples/answerable-ai-review.yml)
-ships the workflow with a setup header; `/bootstrap`'s next steps and `/seed`'s
+and its reply gate, `answerable-ai-review-replies.yml`, ship the workflow with a setup header; `/bootstrap`'s next steps and `/seed`'s
 report (for an existing repository with no AI review check) offer it, with the
 secret by name and `Reply coverage` to require. Still open: the ship plan does not
 pass `ai_review_check: 'Review'` by default, so the person passes it to the

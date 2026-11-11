@@ -1,58 +1,60 @@
+# This repository's own AI review; examples/answerable-ai-review.yml is the copy for other repositories
+# (identical but for the runner).
 name: Answerable AI Review
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # Re-check reply coverage when a finding is answered, so the gate turns green
-  # without another push. Only the replies job runs on this event.
-  pull_request_review_comment:
-    types: [created, edited, deleted]
+  # Replies to findings re-run the gate from answerable-ai-review-replies.yml,
+  # so they don't add a skipped `Review` check to the PR.
 
 permissions:
   contents: read
 
 jobs:
-  # Fail while findings are unanswered (no Claude call, no credential). Runs
-  # after the review so this push's own findings count: comments posted with
-  # GITHUB_TOKEN start no workflow, so nothing else would re-run the gate.
-  replies:
-    name: Reply coverage
-    needs: review
-    if: ${{ !cancelled() }}
-    runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'metronome-light' || 'ubuntu-latest' }}
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-    concurrency:
-      group: answerable-ai-replies-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    steps:
-      - uses: thomas-sodon/answerable-ai-review@ab20bdb0dbf2aa5b132ff1f4195e509331587645 # v0.1.0
-        with:
-          mode: replies
-
-  # Review the diff with Claude and post findings. The gate does not gate it,
-  # so pushes that address findings still get reviewed.
-  # Skipped on fork PRs: they get no secrets and a read-only token.
+  # Review the diff with Claude, post findings, and resolve threads whose
+  # defect is fixed. Skipped on fork PRs, which get neither repository secrets
+  # nor a write token.
   review:
     name: Review
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'metronome-light' || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
-    # A newer push supersedes an in-flight review, so stale findings are not posted.
+    # One review per PR at a time; a newer push cancels an older review, so
+    # stale findings are not posted.
     concurrency:
-      group: answerable-ai-review-${{ github.event.pull_request.number }}
+      group: answerable-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: thomas-sodon/answerable-ai-review@ab20bdb0dbf2aa5b132ff1f4195e509331587645 # v0.1.0
+      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # Fail while any finding is still unanswered (no Claude call, no credential).
+  # Runs after the review so this push's own findings count and threads it
+  # resolved as fixed count as answered: comments posted with GITHUB_TOKEN start
+  # no workflow, so nothing else would re-run the gate. Runs whether the review
+  # passed, failed or was skipped, but not when a newer push cancelled it.
+  replies:
+    name: Reply coverage
+    needs: review
+    if: ${{ !cancelled() && needs.review.result != 'cancelled' }}
+    runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'metronome-light' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    # Replies use their own groups (answerable-ai-review-replies.yml), so a
+    # reply never cancels the gate a push's review is waiting on.
+    concurrency:
+      group: answerable-replies-${{ github.event.pull_request.number }}-push
+      cancel-in-progress: true
+    steps:
+      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+        with:
+          mode: replies

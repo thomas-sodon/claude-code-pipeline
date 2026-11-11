@@ -184,15 +184,17 @@ session has it, and connector use inside a workflow run is not verified yet
 ([PROCESS.md](PROCESS.md), G14).
 
 **AI review.** [`examples/answerable-ai-review.yml`](../examples/answerable-ai-review.yml)
-is a GitHub Action that reviews each PR push with Claude and posts findings as review
-comments. Copy it to `.github/workflows/` and add the secret `CLAUDE_CODE_OAUTH_TOKEN`
+is a GitHub Action that reviews each PR push with Claude, posts findings as review
+comments and resolves its threads whose defect is fixed;
+[`answerable-ai-review-replies.yml`](../examples/answerable-ai-review-replies.yml)
+re-runs the reply gate when a finding is answered. Copy both to `.github/workflows/` and add the secret `CLAUDE_CODE_OAUTH_TOKEN`
 by name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN`; never write the value down). Its
 checks:
 
 | Check | Does | Use |
 |---|---|---|
 | `Review` | reviews the diff and posts findings; skipped on fork PRs (no secrets) | pass `ai_review_check: 'Review'` |
-| `Reply coverage` | fails while a finding has no reply; re-runs on each review-comment reply | require it on `main` to block merge on unanswered findings |
+| `Reply coverage` | fails while a finding has no reply; re-runs after each review and on each reply or review (from `answerable-ai-review-replies.yml`) | require it on `main` to block merge on unanswered findings |
 
 `/process-comments`, which the monitor runs, fixes or answers each finding, so
 `Reply coverage` turns green without another push. `/bootstrap`'s next steps offer

@@ -104,7 +104,8 @@ require its check on `main`
 The PR monitor waits for an AI review check before counting comments, but none is
 installed by default: without one, the only independent review is `/review-changes`
 before the PR. [`examples/answerable-ai-review.yml`](examples/answerable-ai-review.yml)
-is the one this repository runs. Copy it to `.github/workflows/`, add the secret by
+and [`answerable-ai-review-replies.yml`](examples/answerable-ai-review-replies.yml) are
+the ones this repository runs. Copy both to `.github/workflows/`, add the secret by
 name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN` prompts for the value, from
 `claude setup-token`), and pass `ai_review_check: 'Review'` to the workflows. It
 posts findings as review comments (check `Review`) and fails `Reply coverage` while
@@ -331,6 +332,7 @@ examples/
   pipeline-update.yml         a scheduled GitHub Action that opens a PR updating the pipeline
   docs-lint-job.yml           the CI job /bootstrap writes to lint the design docs, for an existing repo
   answerable-ai-review.yml    an AI review GitHub Action for the PR monitor (ai_review_check: 'Review')
+  answerable-ai-review-replies.yml  its reply gate, re-run when a finding is answered; copy both
 ci/                           checks: workflow syntax; every skill and flag the workflows call
                               exists; the workflows stop on blocking questions and route the
                               answers; design runs resume and compare docs in pairs; shipping
