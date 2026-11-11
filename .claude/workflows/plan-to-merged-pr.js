@@ -145,7 +145,7 @@ const NO_STASH = `Never run git stash (push, pop, apply or drop): every worktree
 const RECREATE = (SHIP_ONLY || MONITOR_ONLY) && DIR
   ? `If ${DIR} does not exist (a new container, or a removed worktree), recreate it before anything else, on branch ${A.branch} as it is on origin; this is allowed even in a read-only step. ` +
     `If the checkout you started in (your working directory before any cd) is a checkout of this repository, its origin${REPO ? ` being ${REPO} and` : ''} having the branch (git ls-remote --heads origin ${A.branch} lists it), add a worktree from it: ` +
-    `git fetch origin +refs/heads/${A.branch}:refs/remotes/origin/${A.branch} (a single-branch clone's plain fetch skips other branches), git worktree prune, then git worktree add --track -b ${A.branch} ${DIR} origin/${A.branch}, ` +
+    `git fetch origin +refs/heads/${A.branch}:refs/remotes/origin/${A.branch} (a single-branch clone's plain fetch skips other branches), git worktree prune, then git worktree add -b ${A.branch} ${DIR} origin/${A.branch} (no --track: a single-branch clone refuses to track a branch its fetch refspec does not cover, so push with an explicit git push origin ${A.branch}), ` +
     `or, when a local ${A.branch} already exists, git worktree add ${DIR} ${A.branch} and git -C ${DIR} merge --ff-only origin/${A.branch}. ` +
     (REPO
       ? `Otherwise make a fresh clone: git clone https://github.com/${REPO} ${DIR}, then git -C ${DIR} switch ${A.branch}. `

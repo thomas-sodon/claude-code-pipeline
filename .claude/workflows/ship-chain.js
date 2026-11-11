@@ -96,7 +96,7 @@ const HANDS_OFF = `Never merge, approve, close, reopen or edit a PR, never enabl
 const recreate = (dir, branch, repo) =>
   `If ${dir} does not exist (a new container, or a removed worktree), recreate it before anything else, on branch ${branch} as it is on origin; this is allowed even in a read-only step. ` +
   `If the checkout you started in (your working directory before any cd) is a checkout of this repository, its origin${repo ? ` being ${repo} and` : ''} having the branch (git ls-remote --heads origin ${branch} lists it), add a worktree from it: ` +
-  `git fetch origin +refs/heads/${branch}:refs/remotes/origin/${branch} (a single-branch clone's plain fetch skips other branches), git worktree prune, then git worktree add --track -b ${branch} ${dir} origin/${branch}, ` +
+  `git fetch origin +refs/heads/${branch}:refs/remotes/origin/${branch} (a single-branch clone's plain fetch skips other branches), git worktree prune, then git worktree add -b ${branch} ${dir} origin/${branch} (no --track: a single-branch clone refuses to track a branch its fetch refspec does not cover, so push with an explicit git push origin ${branch}), ` +
   `or, when a local ${branch} already exists, git worktree add ${dir} ${branch} and git -C ${dir} merge --ff-only origin/${branch}. ` +
   (repo
     ? `Otherwise make a fresh clone: git clone https://github.com/${repo} ${dir}, then git -C ${dir} switch ${branch}. `

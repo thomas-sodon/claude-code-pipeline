@@ -165,7 +165,8 @@ await test('plan-to-merged-pr: ship-only and monitor-only have their first agent
     const p = ship.prompt(l)
     assert.match(p, recreate, l)
     assert.ok(p.includes('git fetch origin +refs/heads/feat/p-s1:refs/remotes/origin/feat/p-s1'), `${l}: fetches the branch even into a single-branch clone`)
-    assert.ok(p.includes('git worktree prune, then git worktree add --track -b feat/p-s1 /w/s1 origin/feat/p-s1'), l)
+    assert.ok(p.includes('git worktree prune, then git worktree add -b feat/p-s1 /w/s1 origin/feat/p-s1 (no --track'), l)
+    assert.ok(!p.includes('worktree add --track'), l)
   }
   assert.match(ship.prompt('merge-check'), /error=checkout_missing/, 'with no repo arg, a checkout it cannot add is reported')
   const mon = await run('plan-to-merged-pr', { pr: 7, branch: 'feat/x', dir: '/w/x', repo: 'acme/app' }, p2m())
@@ -401,7 +402,8 @@ await test('ship-chain: the lookup and the wait recreate a missing checkout, and
   for (const l of ['lookup-s1', 'wait-s1-1']) {
     const p = prompt(l)
     assert.match(p, /If \/w\/s1 does not exist .*recreate it before anything else, on branch feat\/p-s1/, l)
-    assert.ok(p.includes('git worktree add --track -b feat/p-s1 /w/s1 origin/feat/p-s1'), l)
+    assert.ok(p.includes('git worktree add -b feat/p-s1 /w/s1 origin/feat/p-s1 (no --track'), l)
+    assert.ok(!p.includes('worktree add --track'), l)
     assert.ok(p.includes('git clone https://github.com/acme/app /w/s1'), `${l}: the lane's repo is the clone source`)
     assert.ok(p.includes(SENTENCE), l)
     assert.match(p, /The access for this run is connector/, l)
