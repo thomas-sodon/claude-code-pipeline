@@ -41,9 +41,10 @@ Under the threshold, an orchestrating session's auto PreCompact is allowed with 
 pipeline state and no handoff: the guard asked for none, so the session goes on after it.
 A session that is not orchestrating gets none of these, at any usage, and no PreCompact summary instructions.
 SessionStart, at any usage and whether or not the session orchestrates (outside CI): when the state branch has
-STATE.md (a git fetch of at most 10 s; env PIPELINE_STATE_OFFLINE=1 skips it and reads the local refs),
-additionalContext says when the handoff was written, to read it before acting, and quotes its ## Next section
-(at most 2,000 characters).
+STATE.md (a git fetch of at most 10 s; env PIPELINE_STATE_OFFLINE=1 skips it and reads the local refs, and so does
+a fetch that fails, except that when git ls-remote finds origin without the branch, the stale tracking ref is
+deleted, as pipeline-state.py does, and only the local branch is read), additionalContext says when the handoff
+was written, to read it before acting, and quotes its ## Next section (at most 2,000 characters).
 
 Environment:
   PIPELINE_HANDOFF_PCT     handoff threshold, percent of the context window (default 40)
@@ -237,15 +238,21 @@ def emit(text):
     sys.stdout.buffer.flush()
 
 
-def git(cwd, *args, timeout=5):
+def run_git(cwd, *args, timeout=5):
+    """The finished git command, or None when git cannot run or times out."""
     env = dict(os.environ)
     env['GIT_TERMINAL_PROMPT'] = '0'
     try:
-        r = subprocess.run(['git', '-C', cwd] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env=env, timeout=timeout)
+        return subprocess.run(['git', '-C', cwd] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              env=env, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return r.stdout.decode('utf-8', 'replace') if r.returncode == 0 else None
+
+
+def git(cwd, *args, timeout=5):
+    """git's output, or None when it fails, cannot run or times out."""
+    r = run_git(cwd, *args, timeout=timeout)
+    return r.stdout.decode('utf-8', 'replace') if r is not None and r.returncode == 0 else None
 
 
 # ---- usage ------------------------------------------------------------------------------------
@@ -533,10 +540,18 @@ def handoff_context(cwd):
     local, track_ref = 'refs/heads/' + branch, 'refs/remotes/origin/' + branch
     order = [local, track_ref]
     if os.environ.get('PIPELINE_STATE_OFFLINE') != '1' and git(cwd, 'remote', 'get-url', 'origin') is not None:
-        fetched = git(cwd, 'fetch', '--quiet', '--no-tags', 'origin', '+%s:%s' % (local, track_ref),
-                      timeout=FETCH_TIMEOUT)
-        if fetched is not None:
+        fetched = run_git(cwd, 'fetch', '--quiet', '--no-tags', 'origin', '+%s:%s' % (local, track_ref),
+                          timeout=FETCH_TIMEOUT)
+        if fetched is not None and fetched.returncode == 0:
             order = [track_ref, local]
+        elif fetched is not None:
+            # The fetch failed. ls-remote exits 2 when origin answered and has no such branch: the tracking ref then
+            # holds a deleted branch's last STATE.md, so it is deleted, as pipeline-state.py does, and never read. Any
+            # other failure (a fetch that timed out too) is the network's: the refs are read as last fetched.
+            listed = run_git(cwd, 'ls-remote', '--exit-code', 'origin', local, timeout=FETCH_TIMEOUT)
+            if listed is not None and listed.returncode == 2:
+                git(cwd, 'update-ref', '-d', track_ref)
+                order = [local]
     for ref in order:
         text = git(cwd, 'show', '%s:STATE.md' % ref)
         if text is None:

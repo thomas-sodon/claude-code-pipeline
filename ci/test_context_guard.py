@@ -706,6 +706,24 @@ class SessionStart(Guard):
         self.assertIn('pipeline-state.py get STATE.md\n', text)
         self.assertNotIn('--local', text, "origin's copy is read without --local")
 
+    def test_a_state_branch_deleted_on_origin_is_not_read_from_its_stale_tracking_ref(self):
+        origin = os.path.join(self.tmp, 'origin.git')
+        git(self.tmp, 'init', '-q', '--bare', origin, env=self.env)
+        git(self.repo, 'remote', 'add', 'origin', origin, env=self.env)
+        other = os.path.join(self.tmp, 'other')
+        git(self.tmp, 'clone', '-q', origin, other, env=self.env)
+        self.save_state(other, self.STATE_MD)        # another clone saved it to origin
+        online, track = {'PIPELINE_STATE_OFFLINE': '0'}, 'refs/remotes/origin/pipeline/state'
+        self.assertIn("origin's state branch", self.context(env=online), 'the fetch copies it here')
+        # origin out of reach: a network failure, so the copy last fetched is still read, as before
+        os.rename(origin, origin + '.away')
+        self.assertIn("origin's state branch", self.context(env=online))
+        os.rename(origin + '.away', origin)
+        # origin answers, and its state branch is gone (ls-remote exits 2): the stale copy is neither read nor kept
+        git(other, 'push', '-q', 'origin', '--delete', 'pipeline/state', env=self.env)
+        self.assertIsNone(self.context(env=online), 'no handoff from a branch origin deleted')
+        self.assertEqual(git(self.repo, 'for-each-ref', track, env=self.env), '', 'its tracking ref is deleted')
+
     def test_never_fails_the_session(self):
         for raw in (b'', b'garbage', b'[]', b'{"hook_event_name": 5}', b'\xff\xfe',
                     json.dumps({'hook_event_name': 'SessionStart', 'session_id': 's1', 'cwd': 7}).encode(),
