@@ -115,14 +115,14 @@ await test('brief-to-proposals: from is inferred from the answers\' ids but the 
   // An intake answer among them starts no Intake and no architecture review, and every stage that runs still gets it.
   const intakeA = await run(WF, { ...BRIEF, answers: [{ id: 'intake.q1', answer: 'ANSWER-INTAKE' }, { id: 'm3.q1', answer: 'A3' }] }, design())
   assert.ok(!intakeA.labels.some(l => DESIGN_AGENTS.test(l)), intakeA.labels.join(' '))
-  assert.deepEqual(proposed(intakeA.labels), ['propose:m3', 'propose:m5'])
-  for (const l of ['propose:m3', 'propose:m5', 'review:m3-1', 'consistency:arch-m2']) assert.match(intakeA.prompt(l), /ANSWER-INTAKE/, l)
+  assert.deepEqual(proposed(intakeA.labels), ['propose:m5'])
+  for (const l of ['propose:m5', 'review:m5-1', 'consistency:arch-m2']) assert.match(intakeA.prompt(l), /ANSWER-INTAKE/, l)
   // An explicit from: 'intake' still runs the Intake, which never rewrites the docs on disk.
   const intakeFrom = await run(WF, { ...BRIEF, from: 'intake', answers: [{ id: 'intake.q1', answer: 'AI' }, { id: 'm3.q1', answer: 'A3' }] }, design())
   assert.equal(intakeFrom.result.from, 'intake')
   assert.ok(intakeFrom.labels.includes('intake') && intakeFrom.labels.includes('review:architecture-1'))
   assert.ok(!intakeFrom.labels.includes('roadmap'))
-  assert.deepEqual(proposed(intakeFrom.labels), ['propose:m3', 'propose:m5'])
+  assert.deepEqual(proposed(intakeFrom.labels), ['propose:m5'])
   // No docs on disk: the Intake, whatever the answers say, and /roadmap writes them.
   const fresh = await run(WF, { ...BRIEF, answers: [{ id: 'architecture.q1', answer: 'AA' }] }, design({}, NO_DOCS))
   assert.equal(fresh.result.from, 'intake')
@@ -135,17 +135,17 @@ await test('brief-to-proposals: from is inferred from the answers\' ids but the 
   assert.notEqual((await run(WF, { ...BRIEF, from: 'lint' }, design())).prompt('existing-docs'), before)
 })
 
-await test('brief-to-proposals: from proposals runs no intake, panel or roadmap agent and re-proposes only answered or missing milestones', async () => {
+await test('brief-to-proposals: from proposals runs no intake, panel or roadmap agent and proposes only the missing or listed milestones', async () => {
   const { result, labels, prompt } = await run(WF, { ...BRIEF, panel: 3, from: 'proposals', answers: [{ id: 'm3.q1', answer: 'ANSWER-M3' }] }, design())
   for (const l of labels) assert.doesNotMatch(l, DESIGN_AGENTS)
-  assert.deepEqual(proposed(labels), ['propose:m3', 'propose:m5'])
-  assert.match(prompt('propose:m3'), /ANSWER-M3/)
+  assert.deepEqual(proposed(labels), ['propose:m5'], 'an answer alone re-proposes no written proposal')
+  assert.match(prompt('consistency:arch-m3'), /ANSWER-M3/)
   assert.doesNotMatch(prompt('propose:m5'), /ANSWER-M3/, 'a milestone answer reaches only its milestone')
   assert.equal(result.status, 'ready')
   assert.equal(result.from, 'proposals')
-  assert.deepEqual(result.kept, [{ milestone: 2, title: 'Import', doc: PATH.m2 }])
-  assert.deepEqual(result.proposals.map(p => p.milestone).sort(), [3, 5])
-  // The kept proposal still takes part in Consistency and Lint.
+  assert.deepEqual(result.kept, [{ milestone: 2, title: 'Import', doc: PATH.m2 }, { milestone: 3, title: 'Match', doc: PATH.m3 }])
+  assert.deepEqual(result.proposals.map(p => p.milestone).sort(), [5])
+  // The kept proposals still take part in Consistency and Lint.
   assert.ok(labels.includes('consistency:arch-m2'))
   assert.ok(prompt('lint').includes(PATH.m2))
   // args.milestones names exactly the milestones to propose, written or not.
@@ -414,6 +414,46 @@ await test('brief-to-proposals: every needs_input relay says to pass from, set t
   const inferred = await run(WF, { ...BRIEF, answers }, design())
   assert.equal(inferred.result.from, 'architecture')
   assert.ok(inferred.labels.includes('review:architecture-1'))
+})
+
+await test('brief-to-proposals: answers alone re-propose no written proposal; a listed milestone is, a missing one is written, and the relay lists the ones that asked', async () => {
+  // m2's question was answered two runs ago and its proposal written and reviewed clean since: passed again with the answers
+  // so far, that answer leaves the proposal alone (/propose would rewrite it as a draft), whether from is given or inferred.
+  const old = [{ id: 'm2.q1', answer: 'OLD-M2' }]
+  for (const from of ['proposals', undefined]) {
+    const { result, labels } = await run(WF, { ...BRIEF, from, answers: old }, design())
+    assert.equal(result.from, 'proposals')
+    assert.deepEqual(proposed(labels), ['propose:m5'], `from ${from}: only the milestone with no proposal is written`)
+    assert.deepEqual(result.kept.map(k => k.milestone), [2, 3])
+    assert.equal(result.status, 'ready')
+  }
+  // Listed in milestones, a written proposal is proposed again, with its answer.
+  const listed = await run(WF, { ...BRIEF, from: 'proposals', milestones: [2], answers: old }, design())
+  assert.deepEqual(proposed(listed.labels), ['propose:m2'])
+  assert.match(listed.prompt('propose:m2'), /OLD-M2/)
+  assert.deepEqual(listed.result.kept.map(k => k.milestone), [3])
+  // m3's author asks (writing nothing) and m5's reviser asks (its proposal written): the relay names both, with from.
+  const disk = exists => ({ ...ON_DISK, milestones: MILESTONES.map(m => m.n in exists ? { ...m, proposal_exists: exists[m.n] } : m) })
+  const asking = await run(WF, { ...BRIEF, from: 'proposals', answers: old }, design({
+    'propose:m3': { questions: [Q] },
+    'review:m5-1': { findings: [{ doc: PATH.m5, severity: 'concern', description: 'the brief is silent on retries' }], completed: true },
+    'revise:m5-1': { questions: [Q] } }, disk({ 3: false })))
+  assert.equal(asking.result.status, 'needs_input')
+  assert.deepEqual(asking.result.questions.map(q => q.id), ['m3.q1', 'm5.q1'])
+  assert.ok(asking.result.relay.includes(`from: 'proposals' (this result's resume_from), with milestones: [3, 5] (the milestones that asked`), asking.result.relay)
+  // Following it on the disk that run left re-proposes those two only, each with its answer ...
+  const answers = old.concat({ id: 'm3.q1', answer: 'ANSWER-M3' }, { id: 'm5.q1', answer: 'ANSWER-M5' })
+  const followed = await run(WF, { ...BRIEF, answers, from: 'proposals', milestones: [3, 5] }, design({}, disk({ 3: false, 5: true })))
+  assert.deepEqual(proposed(followed.labels), ['propose:m3', 'propose:m5'])
+  assert.match(followed.prompt('propose:m3'), /ANSWER-M3/)
+  assert.match(followed.prompt('propose:m5'), /ANSWER-M5/)
+  assert.deepEqual(followed.result.kept.map(k => k.milestone), [2])
+  // ... where without milestones only m3, which has no proposal, would be written, and m5's answer would go unused.
+  const unlisted = await run(WF, { ...BRIEF, answers, from: 'proposals' }, design({}, disk({ 3: false, 5: true })))
+  assert.deepEqual(proposed(unlisted.labels), ['propose:m3'])
+  // A question no milestone asked names no milestones.
+  const roadmapQ = await run(WF, BRIEF, design({ roadmap: { questions: [Q] } }, NO_DOCS))
+  assert.doesNotMatch(roadmapQ.result.relay, /milestones:/)
 })
 
 await test('brief-to-proposals: args that cannot be honoured throw, and a run that cannot start says why', async () => {

@@ -1,12 +1,12 @@
 export const meta = {
   name: 'brief-to-proposals',
   description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: seed the repo with the pipeline and a base CLAUDE.md, architecture panel, /roadmap, /propose per code milestone, /review-proposal and revise until clean, cross-doc consistency two docs at a time, then lint and lanes. A re-run starts at the stage that needs it (args.from, else inferred from the answers and the docs on disk) and keeps the docs already written. Writes only the seeded pipeline files, CLAUDE.md and design docs, never code; it commits only with args.branch, as checkpoints on that design branch (never main)',
-  whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with every answer so far and from set to its resume_from, as its relay says. Pass branch to checkpoint the docs on a design branch, so they outlive the session and a re-run from any clone picks them up.',
+  whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with every answer so far, from set to its resume_from and, after a milestone\'s question, the milestones it names, as its relay says. Pass branch to checkpoint the docs on a design branch, so they outlive the session and a re-run from any clone picks them up.',
   phases: [
     { title: 'Seed', detail: 'with branch, check out the design branch first; /seed installs the pipeline\'s skills, workflows and scripts and a base CLAUDE.md into the repo; then find the design docs that already exist' },
     { title: 'Intake', detail: 'read the source for blocking questions only the person can answer, before any design is written' },
     { title: 'Architecture', detail: 'independent sketches and a judge (the synthesis is saved to the state branch), then /roadmap writes architecture.md and roadmap.md (existing ones are resumed instead), reviewed until clean' },
-    { title: 'Proposals', detail: '/propose per roadmap code milestone (when the docs already existed, only the answered or unwritten ones), then /review-proposal and /propose --revise until clean' },
+    { title: 'Proposals', detail: '/propose per roadmap code milestone (when the docs already existed, only the unwritten ones, or exactly args.milestones), then /review-proposal and /propose --revise until clean' },
     { title: 'Consistency', detail: 'the docs compared two at a time (the architecture and each proposal, the proposals of dependent milestones, the brief and the roadmap); findings revised in the doc they name, then re-reviewed' },
     { title: 'Lint', detail: 'proposal-lint.py on every doc, lanes per proposal, roadmap progress' },
   ],
@@ -29,10 +29,11 @@ export const meta = {
 //                             to earlier ones can start it before the stage that asked. 'architecture' with the docs resumes their
 //                             review (no /roadmap); without them, /roadmap runs on the panel synthesis saved on the state branch
 //                             (design/panel-synthesis.md), or on a new panel when none is saved. 'proposals' or later skips the
-//                             Intake, the panel and /roadmap and uses the existing docs: it re-proposes only the milestones whose
-//                             question was answered or whose proposal does not exist yet (or exactly args.milestones), keeps the
+//                             Intake, the panel and /roadmap and uses the existing docs: it proposes only the milestones whose
+//                             proposal does not exist yet (or exactly args.milestones; answers alone re-propose none), keeps the
 //                             rest, then checks consistency over all docs and lints. 'consistency' keeps every proposal; 'lint' only
-//                             lints. A needs_input result names the stage to pass (resume_from): pass it with the answers.
+//                             lints. A needs_input result names the stage to pass (resume_from): pass it with the answers, and
+//                             after a milestone's question the milestones that asked, as its relay says.
 //   branch?: string           a design branch for checkpoints, e.g. 'design/20261110', never main. Before seeding, the checkout switches
 //                             to it: origin's branch when it exists (so a re-run from a fresh clone continues it), else a new branch
 //                             from origin/<MAIN_BRANCH>. After Architecture, Proposals and Consistency an agent commits the docs written
@@ -44,7 +45,8 @@ export const meta = {
 //                             and push stay plain git in either mode.
 //   panel?: number            independent architecture sketches before /roadmap (default 3; 0 = skip the panel)
 //   milestones?: number[]     propose only these roadmap milestones, written or not (default: every pending milestone that names a
-//                             proposal; when the docs already existed, the ones answered or not yet written)
+//                             proposal; when the docs already existed, the ones not yet written). Answers select none, since
+//                             /propose rewrites a written proposal as a draft: a needs_input relay lists the milestones that asked
 //   max_milestones?: number   propose at most the first N of those, in roadmap order (e.g. 1 to try the flow on one milestone; 1 is
 //                             recommended for a long roadmap, since later proposals go stale as earlier milestones change the tree)
 //   force?: boolean           regenerate from scratch: let /roadmap overwrite an existing architecture.md / roadmap.md (default false).
@@ -57,7 +59,8 @@ export const meta = {
 //                             (the Intake's become shared answers for every later stage) and lists them in assumptions
 //   answers?: [{ id, answer }] the questions a needs_input result returned, each with the person's answer (or { <id>: answer });
 //                             each reaches the stage that asked and every later one (a milestone's only that milestone's
-//                             stages); a re-run with from (resume_from) starts at the stage that asked and keeps the docs written
+//                             stages); a re-run with from (resume_from) starts at the stage that asked and keeps the docs written.
+//                             Every run passes the earlier answers again, so they pick no milestone to propose: milestones does
 const A = args || {}
 if (!A.dir) throw new Error('brief-to-proposals: args.dir (absolute project directory) is required')
 if (!A.brief === !A.concern) throw new Error('brief-to-proposals: pass exactly one of args.brief (a product brief path) or args.concern (one large change)')
@@ -134,7 +137,6 @@ const earliestStage = scopes => STAGES.find(s => scopes.some(sc => stageOfScope(
 const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers || {}).map(([id, answer]) => ({ id, answer })))
   .filter(a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
   .map(a => ({ ...a, stage: a.stage || scopeOf(a.id) }))
-const ANSWERED_MILESTONES = new Set(ANSWERS.map(a => /^m(\d+)$/.exec(a.stage)).filter(Boolean).map(x => Number(x[1])))
 const answersFor = scope => {
   const mine = ANSWERS.filter(a => {
     const o = scopeOrder(a.stage)
@@ -177,10 +179,14 @@ const tagQuestions = (scope, qs) => {
   for (const a of ANSWERS) { const m = String(a.id || '').match(/^([a-z0-9_]+)\.q(\d+)$/); if (m && m[1] === scope) n = Math.max(n, Number(m[2])) }
   return qs.map((q, i) => { const { id: _id, stage: _stage, ...rest } = q; return { id: `${scope}.q${n + i + 1}`, stage: scope, ...rest } })
 }
-const relay = from => `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
+// The milestones whose author or reviser asked: answers pick no milestone to propose, so the relay names these for args.milestones.
+const askedMilestones = qs => [...new Set(qs.map(q => /^m(\d+)$/.exec(q.stage)).filter(Boolean).map(x => Number(x[1])))].sort((a, b) => a - b)
+const relay = (from, ms = []) => `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
   (from
-    ? `Then re-run this workflow with the same args plus answers (each question's id with the person's answer, added to any answers given before) and from: '${from}' (this result's resume_from), ` +
+    ? `Then re-run this workflow with the same args plus answers (each question's id with the person's answer, added to any answers given before) and from: '${from}' (this result's resume_from)` +
+      (ms.length ? `, with milestones: [${ms.join(', ')}] (the milestones that asked, in place of any milestones given before)` : '') + `, ` +
       `from this session or a new one: it keeps the docs already written and starts again at the stage that asked. ` +
+      (ms.length ? `Pass exactly those milestones: answers alone re-propose no written proposal, so a reviser's answer would go unused, and any other milestone listed is proposed again, its doc rewritten as a draft. ` : '') +
       `Always pass that from with the answers: left out, the run infers its start from all the answers passed (the Intake's aside), so an answer an earlier run already used can restart an earlier stage, whose revisions may reset an accepted doc to draft. ` +
       `In this session, resumeFromRunId set to this run's id also replays the unchanged stages before it from the record.`
     : `Then re-run this workflow with the same args plus answers (each question's id with the person's answer) and resumeFromRunId set to this run's id: ` +
@@ -198,7 +204,7 @@ const runInfo = () => ({ ...(BRIEF_MODE && FROM ? { from: FROM } : {}), ...(BRAN
 const needsInput = (questions, extra) => {
   logQuestions(questions)
   const from = BRIEF_MODE ? earliestStage(questions.map(q => q.stage)) : ''
-  return { status: 'needs_input', questions, relay: relay(from), ...(from ? { resume_from: from } : {}), assumptions: ASSUMED, ...runInfo(), ...(extra || {}) }
+  return { status: 'needs_input', questions, relay: relay(from, askedMilestones(questions)), ...(from ? { resume_from: from } : {}), assumptions: ASSUMED, ...runInfo(), ...(extra || {}) }
 }
 
 const FINDING = {
@@ -663,12 +669,13 @@ if (BRIEF_MODE) {
   const pendingCode = arch.milestones.filter(m => !m.done && !m.human_gate && m.proposal)
   if (at(FROM) <= at('proposals')) {
     // ---- Proposals: one per pending milestone that names a proposal, each reviewed until clean (no barrier between milestones).
-    // Docs written by /roadmap in this run get every proposal; docs that already existed keep the proposals already written,
-    // except the milestones whose question was answered (or exactly args.milestones).
+    // Docs written by /roadmap in this run get every proposal; docs that already existed get only the missing ones (an author
+    // that asked wrote none), or exactly args.milestones, and keep every other proposal. Answers pick no milestone: each run
+    // passes every earlier one, and /propose rewrites a written proposal as a draft, so the relay names the milestones that asked.
     phase('Proposals')
     const wanted = ONLY ? pendingCode.filter(m => ONLY.includes(m.n))
       : REGEN ? pendingCode
-      : pendingCode.filter(m => !m.proposal_exists || ANSWERED_MILESTONES.has(m.n))
+      : pendingCode.filter(m => !m.proposal_exists)
     const todo = MAX_M ? wanted.slice(0, MAX_M) : wanted
     kept = pendingCode.filter(m => m.proposal_exists && !todo.includes(m))
     const skipped = pendingCode.filter(m => !m.proposal_exists && !todo.includes(m))
@@ -882,7 +889,7 @@ log(`Status: ${status}`)
 const unpushed = checkpoints.some(c => !c.pushed)
 return {
   status,
-  ...(questions.length ? { questions, relay: relay(resumeFrom), ...(resumeFrom ? { resume_from: resumeFrom } : {}) } : {}),
+  ...(questions.length ? { questions, relay: relay(resumeFrom, askedMilestones(questions)), ...(resumeFrom ? { resume_from: resumeFrom } : {}) } : {}),
   assumptions: ASSUMED,
   ...runInfo(),
   seeded,

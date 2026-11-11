@@ -434,7 +434,8 @@ object, so it may carry `plan-to-merged-pr`'s keys too), `on_question`,
                                    // plain git either way
   panel: 3,                        // independent architecture sketches judged before /roadmap; 0 = no panel
   milestones: [2, 4],              // propose exactly these milestones, written or not (default: every pending code
-                                   // milestone; when the docs existed already, the ones answered or not written yet)
+                                   // milestone; when the docs existed already, the ones not written yet). Answers
+                                   // select none: a needs_input relay names the milestones that asked
   max_milestones: 1,               // propose at most the first N of those, in roadmap order (1 is recommended: later
                                    // proposals go stale as earlier milestones land; a re-run with from: 'proposals' writes the next)
   force: false,                    // regenerate from scratch: /roadmap --force (never once a milestone is ticked); with
@@ -700,7 +701,7 @@ complete on `main` and the edits a person makes. `status` is:
 
 `brief-to-proposals`:
 
-- `needs_input` — blocking questions only the person can answer: from the Intake (no design written yet), `/roadmap` or the architecture's reviser (no proposal written), a milestone's author or reviser (that milestone waits, the others finish, and the Consistency phase is skipped), or a consistency reviser; `questions` lists them and `relay` says what to do; in brief mode `resume_from` names the stage to re-run from (`intake`, `architecture`, `proposals` or `consistency`: the earliest among the questions)
+- `needs_input` — blocking questions only the person can answer: from the Intake (no design written yet), `/roadmap` or the architecture's reviser (no proposal written), a milestone's author or reviser (that milestone waits, the others finish, and the Consistency phase is skipped), or a consistency reviser; `questions` lists them and `relay` says what to do; in brief mode `resume_from` names the stage to re-run from (`intake`, `architecture`, `proposals` or `consistency`: the earliest among the questions), and for a milestone's question the relay also names the `milestones` to pass (every milestone that asked)
 - `ready` — every doc lints clean, every proposal's lane preview has no errors, every proposal's review came back clean, and the Consistency phase (brief mode) reported, revised every affected doc and got each revised doc back clean from its re-review; after `from: 'consistency'` or `'lint'`, the stages this run ran came out clean
 - `proposals_need_attention` — a proposal was not written (listed `failed`, with its `stop_reason` when `/propose` stopped or routed the work elsewhere), its review did not finish, or it still has a `bug` or `concern` after `max_review_rounds` (`findings_remaining`); or a consistency pair failed to report (the other pairs' findings are still revised), a consistency revision failed, a revised doc did not come back clean from its re-review, or a finding named a doc this run did not write (`consistency.unrouted`)
 - `lint_errors` — a doc still has lint errors (a size budget's error limit included), or a proposal's lane preview (`--lanes --allow-draft`, e.g. `lane_cycle`) has errors; `lint_failed` — the lint stage did not report
@@ -835,7 +836,11 @@ stage, never an earlier one, so the stages before it replay from the record:
   brief-mode `needs_input` result names `resume_from`: re-run with every answer
   given so far and `from` set to it, from this session or a new one; the docs
   already written are kept, and the stages before it are skipped rather than
-  replayed (`resumeFromRunId` also works, in the same session).
+  replayed (`resumeFromRunId` also works, in the same session). After a
+  milestone's question, pass `milestones` set to the milestones that asked, as the
+  relay says: the answers are passed again on every later run, so they select no
+  milestone, and without `milestones` an answer to a reviser of a written proposal
+  would go unused.
 - `proposal-build-chain` and `bug-fix-backlog`: each answer keeps the `lane` its
   question carried and goes to that lane only. Re-run with the same args (the same
   `date`): pushed lanes come back `already_built`, closed or shipped issues are
@@ -884,7 +889,8 @@ from, and needs none: each workflow re-run with the same args starts where the
 repository, origin and the [state branch](#the-state-branch) say the work is.
 
 - `brief-to-proposals`: the same args plus every answer and `from` (the result's
-  `resume_from`; inferred, it can start earlier: below). With `branch`, a fresh
+  `resume_from`; inferred, it can start earlier: below), and after a milestone's
+  question the `milestones` its relay names. With `branch`, a fresh
   clone checks the branch out and continues from the docs on it. The brief and the
   context file are never committed: copy them into the checkout first, or the run
   stops with `failed_at_start` (`brief_not_found`).
@@ -929,9 +935,9 @@ relay says.
 
 | `from` | What it runs |
 |---|---|
-| `intake` | the Intake, then every later stage; with existing docs (and no `force`) the architecture review resumes on them instead of `/roadmap`, and only the milestones answered or not yet written are proposed |
+| `intake` | the Intake, then every later stage; with existing docs (and no `force`) the architecture review resumes on them instead of `/roadmap`, and only the milestones not yet written (or exactly `milestones`) are proposed |
 | `architecture` | no Intake; with the docs, their review loop; without them (or with `force`), `/roadmap` on the panel synthesis saved on the state branch (`design/panel-synthesis.md`, when its `Source:` names this brief), else on a new panel; then the later stages |
-| `proposals` | the milestones whose question was answered or whose proposal does not exist yet (`proposal_exists`), or exactly `milestones`, at most `max_milestones`, keeping every other proposal; then Consistency over all docs, then Lint |
+| `proposals` | the milestones whose proposal does not exist yet (`proposal_exists`; an author that asked wrote none), or exactly `milestones`, at most `max_milestones`, keeping every other proposal; then Consistency over all docs, then Lint. Answers select no milestone: `/propose` on a written proposal rewrites it as a draft, so a reviser's answer reaches it only through `milestones` |
 | `consistency` | Consistency over all docs, keeping every proposal, then Lint |
 | `lint` | the Lint only |
 

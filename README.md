@@ -395,8 +395,9 @@ only when given `branch`, and then only on that design branch.
    When the two docs exist already, their review resumes instead.
 3. **Proposals**: `/propose --milestone=N` for each pending code milestone, each
    reviewed and revised the same way. A milestone that needs your answer waits;
-   the others carry on. When the docs existed already, only the milestones you
-   answered a question for, or whose proposal is not written yet, are proposed.
+   the others carry on. When the docs existed already, only the milestones whose
+   proposal is not written yet are proposed, or exactly the ones `milestones`
+   lists (after a milestone's question, the relay names the ones that asked).
 4. **Consistency**: the docs are compared two at a time, so no agent holds the
    whole design: the architecture with each proposal, the proposals of two
    milestones where one builds on the other, and the brief with the roadmap for
