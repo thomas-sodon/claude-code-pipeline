@@ -360,6 +360,33 @@ await test('brief-to-proposals: needs_input results name the stage to resume fro
   assert.match(concern.result.relay, /resumeFromRunId/)
 })
 
+await test('brief-to-proposals: a question asked on a re-run continues the ids after the ones answered in its scope', async () => {
+  // The answers pile up from run to run, so a new question reusing an answered id would overwrite that answer, or pass for it.
+  const concern = (doc, description) => ({ findings: [{ doc, severity: 'concern', description }], completed: true })
+  const arch = await run(WF, { ...BRIEF, answers: [{ id: 'architecture.q1', answer: 'AA' }] }, design({
+    'review:architecture-1': concern(PATH.roadmap, 'the brief is silent on X'), 'revise:architecture-1': { questions: [Q] } }))
+  assert.equal(arch.result.from, 'architecture')
+  assert.deepEqual(arch.result.questions.map(q => [q.id, q.stage]), [['architecture.q2', 'architecture']])
+  const roadmap = await run(WF, { ...BRIEF, answers: { 'intake.q1': 'AI', 'architecture.q1': 'AA' } }, design({ roadmap: { questions: [Q] } }, NO_DOCS))
+  assert.deepEqual(roadmap.result.questions.map(q => q.id), ['architecture.q2'])
+  // A milestone counts only its own ids: m3's, m50's and the architecture's leave m5's numbering alone.
+  const answers = [{ id: 'm5.q1', answer: 'A5' }, { id: 'm3.q4', answer: 'A3' }, { id: 'm50.q7', answer: 'A50' }, { id: 'architecture.q3', answer: 'AA' }]
+  const author = await run(WF, { ...BRIEF, from: 'proposals', answers }, design({ 'propose:m5': { questions: [Q, Q] } }))
+  assert.deepEqual(author.result.questions.map(q => [q.id, q.stage]), [['m5.q2', 'm5'], ['m5.q3', 'm5']])
+  const reviser = await run(WF, { ...BRIEF, from: 'proposals', milestones: [3], answers }, design({
+    'review:m3-1': concern(PATH.m3, 'the brief is silent on retries'), 'revise:m3-1': { questions: [Q] } }))
+  assert.deepEqual(reviser.result.questions.map(q => q.id), ['m3.q5'])
+  // Consistency: a reviser's question and a re-review's both come after the answered consistency.q1, each with its own id.
+  const consistency = await run(WF, { ...BRIEF, from: 'consistency', answers: { 'consistency.q1': 'AC' } }, design({
+    'consistency:arch-m2': { findings: [{ doc: PATH.m2, severity: 'bug', description: 'x' }] },
+    'consistency:arch-m3': { findings: [{ doc: PATH.m3, severity: 'bug', description: 'y' }] },
+    'revise:consistency-1': { questions: [{ ...Q, question: 'Q-REVISE' }] },
+    'review:recheck-1-1': concern(PATH.m3, 'still inconsistent'),
+    'revise:recheck-1-1': { questions: [{ ...Q, question: 'Q-RECHECK' }] } }))
+  assert.equal(consistency.result.status, 'needs_input')
+  assert.deepEqual(consistency.result.questions.map(q => [q.id, q.question]), [['consistency.q2', 'Q-REVISE'], ['consistency.q3', 'Q-RECHECK']])
+})
+
 await test('brief-to-proposals: every needs_input relay says to pass from, set to the result\'s resume_from, with the answers so far', async () => {
   const consistencyAsks = { 'consistency:arch-m2': { findings: [{ doc: PATH.m2, severity: 'bug', description: 'y' }] }, 'revise:consistency-1': { questions: [Q] } }
   const stops = [

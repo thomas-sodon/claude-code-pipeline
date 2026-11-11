@@ -170,7 +170,13 @@ const QA = {
 const ASSUMED = []
 const noteAssumptions = (scope, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) if (a) ASSUMED.push({ stage: scope, assumption: a }); return r }
 const asked = r => !!(r && Array.isArray(r.questions) && r.questions.length)
-const tagQuestions = (scope, qs) => qs.map((q, i) => ({ id: `${scope}.q${i + 1}`, stage: scope, ...q }))
+// Ids continue after the highest one already answered in the scope (m<N> included), so a question asked on a re-run never
+// reuses an answered id.
+const tagQuestions = (scope, qs) => {
+  let n = 0
+  for (const a of ANSWERS) { const m = String(a.id || '').match(/^([a-z0-9_]+)\.q(\d+)$/); if (m && m[1] === scope) n = Math.max(n, Number(m[2])) }
+  return qs.map((q, i) => { const { id: _id, stage: _stage, ...rest } = q; return { id: `${scope}.q${n + i + 1}`, stage: scope, ...rest } })
+}
 const relay = from => `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
   (from
     ? `Then re-run this workflow with the same args plus answers (each question's id with the person's answer, added to any answers given before) and from: '${from}' (this result's resume_from), ` +
@@ -843,9 +849,8 @@ if (BRIEF_MODE && at(FROM) > at('consistency')) {
     const rechecks = await parallel(revised.map((doc, i) => () => reviewLoop(
       [doc], `This doc was just revised for cross-doc consistency; judge it against ${SOURCE}, ${arch.architecture} and the docs it references. `, `recheck-${i + 1}`, 'Consistency', 'consistency')))
     consistency.rechecks = rechecks.map((r, i) => r || { docs: [revised[i]], clean: false, reviewed: false, questions: [] })
-    // Renumber so every consistency question keeps a distinct id across the revisions and the re-reviews.
-    consistency.questions = consistency.questions.concat(consistency.rechecks.flatMap(r => r.questions || []))
-      .map(({ id, stage, ...q }, i) => ({ id: `consistency.q${i + 1}`, stage: 'consistency', ...q }))
+    // Renumber so every consistency question keeps a distinct id across the revisions and the re-reviews, after the answered ones.
+    consistency.questions = tagQuestions('consistency', consistency.questions.concat(consistency.rechecks.flatMap(r => r.questions || [])))
     if (consistency.questions.length) consistencyOk = false
     if (consistency.rechecks.some(r => !r.clean)) { consistencyOk = false; log('A doc revised for consistency did not come back clean from its re-review') }
   }

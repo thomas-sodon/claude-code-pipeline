@@ -856,9 +856,11 @@ stage, never an earlier one, so the stages before it replay from the record:
   from the doc as it is now: the revisions already applied are kept, and
   `resumeFromRunId` has nothing to replay.
 
-In `bootstrap-repo` and `refresh-proposal`, a question asked on a later run
-continues the numbering after the highest answered id in its scope (`revise.q2` after an answered `revise.q1`), so ids never
-repeat across re-runs.
+In `brief-to-proposals`, `bootstrap-repo` and `refresh-proposal`, a question asked
+on a later run continues the numbering after the highest answered id in its scope
+(`revise.q2` after an answered `revise.q1`, `m2.q2` after `m2.q1`; in
+`brief-to-proposals`, the Consistency phase's revisers and re-reviews share one
+numbering), so ids never repeat across re-runs.
 
 `on_question: 'assume'` is for runs no one will answer: each blocking question is
 settled by its recommended option instead, and listed in the result's `assumptions`.
