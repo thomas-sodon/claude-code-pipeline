@@ -44,7 +44,10 @@ slug NAME    NAME as the state branch spells it in paths: the <branch-slug> of
              name; ci/test-workflow-shipping.mjs checks that against this script.
 
 Run it from inside any checkout of the product repository, or point --repo at one.
-Network commands never prompt for credentials (GIT_TERMINAL_PROMPT=0).
+Network commands never prompt: git runs with GIT_TERMINAL_PROMPT=0, and ssh, which
+opens /dev/tty itself for an unknown host key or a key's passphrase, runs as
+ssh -o BatchMode=yes, so it fails at once instead of waiting through the retries.
+A person's own GIT_SSH_COMMAND, core.sshCommand or GIT_SSH is used as it is.
 
 Exit: 0 = done; 2 = usage error or git failure (not a repository, no origin, the
 network still failing after the retries, a push still rejected after the retries);
@@ -53,6 +56,7 @@ callers: a stage whose save exits 2 logs it and goes on.
 """
 
 import argparse
+import functools
 import json
 import os
 import posixpath
@@ -70,6 +74,7 @@ RETRIES = 5                   # retries after the first attempt, for a rejected 
 NET_TIMEOUT = 60              # seconds for one network git call
 MAX_BYTES = 5 * 1024 * 1024   # a state file is a handoff, a plan or a ledger, not an artifact store
 PROTECTED = ('main', 'master')
+SSH_BATCH = 'ssh -o BatchMode=yes'   # an ssh that fails where it would prompt on /dev/tty
 SLUG_RE = re.compile(r'[^A-Za-z0-9._-]')
 FNV_OFFSET, FNV_PRIME = 0x811c9dc5, 0x01000193
 ZERO = '0' * 40
@@ -83,9 +88,27 @@ class Absent(Exception):
     """get: the branch or the path does not exist: exit 3."""
 
 
+@functools.lru_cache(maxsize=None)
+def own_ssh(repo):
+    """Whether git in repo connects with the person's own ssh command: GIT_SSH_COMMAND, core.sshCommand or GIT_SSH,
+    any of which a GIT_SSH_COMMAND set here would override. Looked up once per repository."""
+    if 'GIT_SSH_COMMAND' in os.environ or 'GIT_SSH' in os.environ:
+        return True
+    try:
+        r = subprocess.run(['git', '-C', repo, 'config', '--get', 'core.sshCommand'], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+    except OSError:
+        return False                     # git cannot run: the command itself fails next
+    return r.returncode == 0
+
+
 def git(repo, *args, data=None, env=None, check=True, timeout=None):
     e = dict(os.environ)
     e['GIT_TERMINAL_PROMPT'] = '0'
+    # ssh opens /dev/tty itself for an unknown host key or a key's passphrase, whatever GIT_TERMINAL_PROMPT says, and
+    # would wait there through every retry: BatchMode=yes makes it fail at once.
+    if not own_ssh(repo):
+        e['GIT_SSH_COMMAND'] = SSH_BATCH
     if env:
         e.update(env)
     try:

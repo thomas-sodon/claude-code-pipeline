@@ -4,9 +4,11 @@
 Run from the repo root: python3 ci/test_pipeline_state.py
 
 Each test builds a temporary bare repository as origin and two clones of it, and
-runs the script as a subprocess, the way workflows and commands call it.
+runs the script as a subprocess, the way workflows and commands call it (Prompts
+runs its git() in this process, to see the environment each git command gets).
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -14,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(ROOT, '.claude', 'scripts', 'pipeline-state.py')
@@ -50,6 +53,19 @@ def git(cwd, *a):
     if r.returncode != 0:
         raise AssertionError('git %s failed: %s' % (' '.join(a), r.stderr))
     return r.stdout.strip()
+
+
+def load_state():
+    """The script as a module in this process. No bytecode cache: .claude/scripts/__pycache__ would carry this
+    machine's paths, which CI's project-agnostic grep over .claude/ rejects."""
+    spec = importlib.util.spec_from_file_location('pipeline_state_in_process', STATE)
+    m = importlib.util.module_from_spec(spec)
+    keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        sys.dont_write_bytecode = keep
+    return m
 
 
 class Fixture(unittest.TestCase):
@@ -309,6 +325,35 @@ class Failures(Fixture):
         git(self.a, 'remote', 'set-url', 'origin', os.path.join(self.tmp, 'gone.git'))
         r = self.save(self.a, 'x', 'STATE.md', code=2)
         self.assertIn('after 6 attempts', r['error'])
+
+
+class Prompts(Fixture):
+    """No network command waits on a prompt through the retries: ssh opens /dev/tty itself for an unknown host key or
+    a key's passphrase, whatever GIT_TERMINAL_PROMPT says, so it runs with BatchMode=yes, unless the person has an
+    ssh command of their own. git() runs in this process, and each command it starts is seen on its way."""
+
+    def git_env(self, env=None):
+        """GIT_TERMINAL_PROMPT and GIT_SSH_COMMAND (None: unset) as git() gives them to git ls-remote, with env added
+        to the test's. Only these two: a failure never prints the rest of the environment, a CI runner's included."""
+        ps, seen, real = load_state(), [], subprocess.run
+
+        def spy(cmd, **kw):
+            seen.append((cmd, kw.get('env')))
+            return real(cmd, **kw)
+        with mock.patch.dict(os.environ, dict(self.env, **(env or {})), clear=True), \
+                mock.patch.object(subprocess, 'run', spy):
+            ps.git(self.a, 'ls-remote', 'origin', timeout=ps.NET_TIMEOUT)
+        (e,) = [e for cmd, e in seen if 'ls-remote' in cmd]
+        return e.get('GIT_TERMINAL_PROMPT'), e.get('GIT_SSH_COMMAND')
+
+    def test_ssh_runs_in_batch_mode_unless_the_person_has_their_own(self):
+        self.assertEqual(self.git_env(), ('0', 'ssh -o BatchMode=yes'))
+        self.assertEqual(self.git_env({'GIT_SSH_COMMAND': 'ssh -i ~/.ssh/own'}), ('0', 'ssh -i ~/.ssh/own'),
+                         'their GIT_SSH_COMMAND is kept')
+        # git ranks GIT_SSH_COMMAND over core.sshCommand and GIT_SSH: one set here would replace theirs.
+        self.assertEqual(self.git_env({'GIT_SSH': 'own-ssh'}), ('0', None), 'so their GIT_SSH is kept')
+        git(self.a, 'config', 'core.sshCommand', 'ssh -i ~/.ssh/repo')
+        self.assertEqual(self.git_env(), ('0', None), 'and so is their core.sshCommand')
 
 
 if __name__ == '__main__':

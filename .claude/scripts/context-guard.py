@@ -60,6 +60,8 @@ Environment:
   PIPELINE_STATE_BRANCH    the state branch SessionStart reads (default pipeline/state)
   PIPELINE_STATE_OFFLINE   1: SessionStart does not fetch
   CLAUDE_CODE_SESSION_ID   the session mark-handoff and status act on (set by Claude Code in Bash commands)
+  GIT_SSH_COMMAND, GIT_SSH read: with neither set and no core.sshCommand, git's ssh runs as ssh -o BatchMode=yes, so
+                           an unknown host key or a key's passphrase fails the fetch instead of holding the hook
 
 Files in the guard directory: <session>.json (status line: used_percentage, context_window_size, at),
 <session>.hook.json (crossing and rate-limit state), <session>.orchestrating (the orchestration mark: created by
@@ -75,6 +77,7 @@ that cannot take its session's lock within 2 s.
 """
 
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -101,6 +104,7 @@ LOCK_WAIT = 2.0                # seconds a hook waits for another hook of its se
 LOCK_POLL = 0.02
 TAIL_CHUNKS = (262144, 2097152, 8388608)
 STATE_BRANCH = 'pipeline/state'
+SSH_BATCH = 'ssh -o BatchMode=yes'   # an ssh that fails where it would prompt on /dev/tty
 # Models whose context window is 1M by default (claude-api model table): the 5-series and later, Fable, Mythos.
 LARGE_MODEL = re.compile(r'\[1m\]|claude-(?:(?:opus|sonnet|haiku)-(?:[5-9]|[1-9][0-9])|fable|mythos)', re.I)
 USAGE_KEYS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
@@ -240,10 +244,28 @@ def emit(text):
     sys.stdout.buffer.flush()
 
 
+@functools.lru_cache(maxsize=None)
+def own_ssh(cwd):
+    """Whether git in cwd connects with the person's own ssh command: GIT_SSH_COMMAND, core.sshCommand or GIT_SSH,
+    any of which a GIT_SSH_COMMAND set here would override. Looked up once per directory."""
+    if 'GIT_SSH_COMMAND' in os.environ or 'GIT_SSH' in os.environ:
+        return True
+    try:
+        r = subprocess.run(['git', '-C', cwd, 'config', '--get', 'core.sshCommand'], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
 def run_git(cwd, *args, timeout=5):
-    """The finished git command, or None when git cannot run or times out."""
+    """The finished git command, or None when git cannot run or times out. Nothing it starts waits on a prompt: git
+    gets GIT_TERMINAL_PROMPT=0, and ssh, which opens /dev/tty itself for an unknown host key or a key's passphrase,
+    runs with BatchMode=yes (unless own_ssh), so it fails instead of holding the hook until its timeout."""
     env = dict(os.environ)
     env['GIT_TERMINAL_PROMPT'] = '0'
+    if not own_ssh(cwd):
+        env['GIT_SSH_COMMAND'] = SSH_BATCH
     try:
         return subprocess.run(['git', '-C', cwd] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               env=env, timeout=timeout)

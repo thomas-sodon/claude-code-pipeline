@@ -38,6 +38,19 @@ def git(cwd, *a, env=None):
     return r.stdout.strip()
 
 
+def load_guard():
+    """The guard as a module in this process. No bytecode cache: .claude/scripts/__pycache__ would carry this
+    machine's paths, which CI's project-agnostic grep over .claude/ rejects."""
+    spec = importlib.util.spec_from_file_location('context_guard_in_process', GUARD)
+    g = importlib.util.module_from_spec(spec)
+    keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(g)
+    finally:
+        sys.dont_write_bytecode = keep
+    return g
+
+
 class Guard(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='guard-test-')
@@ -582,15 +595,7 @@ class SessionState(Orchestrating):
         loaded and changed the state and not written it yet when B starts: B waits for the lock A holds, then builds
         on A's write. The hooks run in this process, in two threads, so the order is forced, never timed."""
         self.at(92)
-        spec = importlib.util.spec_from_file_location('context_guard_in_process', GUARD)
-        g = importlib.util.module_from_spec(spec)
-        # No bytecode cache: .claude/scripts/__pycache__ would carry this machine's paths, which CI's
-        # project-agnostic grep over .claude/ rejects.
-        keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-        try:
-            spec.loader.exec_module(g)
-        finally:
-            sys.dont_write_bytecode = keep
+        g = load_guard()
         g.LOCK_WAIT = 60                    # B waits for as long as the test takes: nothing here is timed
         a_changed, release_a, b_stopped = threading.Event(), threading.Event(), threading.Event()
         precompact = g.HANDLERS['PreCompact']
@@ -754,6 +759,35 @@ class SessionStart(Guard):
                     json.dumps({'hook_event_name': 'Unknown', 'session_id': 's1'}).encode()):
             r = self.run_guard('hook', stdin=raw)
             self.assertEqual((r.returncode, r.stdout), (0, b''), raw)
+
+
+class Prompts(Guard):
+    """No git command of the guard waits on a prompt: ssh opens /dev/tty itself for an unknown host key or a key's
+    passphrase, whatever GIT_TERMINAL_PROMPT says, so it runs with BatchMode=yes, unless the person has an ssh
+    command of their own. run_git runs in this process, and each command it starts is seen on its way."""
+
+    def git_env(self, env=None):
+        """GIT_TERMINAL_PROMPT and GIT_SSH_COMMAND (None: unset) as run_git gives them to git, with env added to the
+        test's. Only these two: a failure never prints the rest of the environment, a CI runner's included."""
+        g, seen, real = load_guard(), [], subprocess.run
+
+        def spy(cmd, **kw):
+            seen.append((cmd, kw.get('env')))
+            return real(cmd, **kw)
+        with mock.patch.dict(os.environ, dict(self.env, **(env or {})), clear=True), \
+                mock.patch.object(subprocess, 'run', spy):
+            self.assertEqual(g.run_git(self.repo, 'rev-parse', '--git-dir').returncode, 0)
+        (e,) = [e for cmd, e in seen if 'rev-parse' in cmd]
+        return e.get('GIT_TERMINAL_PROMPT'), e.get('GIT_SSH_COMMAND')
+
+    def test_ssh_runs_in_batch_mode_unless_the_person_has_their_own(self):
+        self.assertEqual(self.git_env(), ('0', 'ssh -o BatchMode=yes'))
+        self.assertEqual(self.git_env({'GIT_SSH_COMMAND': 'ssh -i ~/.ssh/own'}), ('0', 'ssh -i ~/.ssh/own'),
+                         'their GIT_SSH_COMMAND is kept')
+        # git ranks GIT_SSH_COMMAND over core.sshCommand and GIT_SSH: one set here would replace theirs.
+        self.assertEqual(self.git_env({'GIT_SSH': 'own-ssh'}), ('0', None), 'so their GIT_SSH is kept')
+        git(self.repo, 'config', 'core.sshCommand', 'ssh -i ~/.ssh/repo', env=self.env)
+        self.assertEqual(self.git_env(), ('0', None), 'and so is their core.sshCommand')
 
 
 class Settings(unittest.TestCase):
