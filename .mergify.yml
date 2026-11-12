@@ -1,0 +1,7 @@
+queue_rules:
+  - name: default
+    queue_conditions:
+      - base = main
+    merge_method: squash
+merge_queue:
+  max_parallel_checks: 1
