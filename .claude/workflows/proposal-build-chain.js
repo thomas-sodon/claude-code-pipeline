@@ -9,7 +9,7 @@ export const meta = {
 }
 
 // Two modes.
-// Explicit lanes: { lanes: [Lane], planner?, gate?, main_branch?, commit_trailers?, max_review_rounds?, max_polish?, efforts? }
+// Explicit lanes: { lanes: [Lane], planner?, gate?, main_branch?, commit_trailers?, max_review_rounds?, max_polish?, efforts?, replan? }
 //   (the shared keys pass through to every lane). Lanes are built in the order given and the run stops at the first
 //   lane that does not push.
 // Lane: { key, dir, branch, bases?: string[], proposal, concern, planner_args?, steps?: number[] }
@@ -17,7 +17,7 @@ export const meta = {
 //   concern  — the steps in scope for this lane, planned as one increment
 //   bases    — branches this lane stacks on (the earlier lanes' branches, still unmerged)
 //   steps    — the proposal's step numbers this lane implements; ticked in the proposal in the lane's own commit
-// Derive mode: { proposal, dir, root, date?, branch_prefix?, parallel_chains?, allow_draft?, ...the shared keys }
+// Derive mode: { proposal, dir, root, date?, branch_prefix?, parallel_chains?, allow_draft?, replan?, ...the shared keys }
 //   proposal — the proposal's path relative to the repo root (its step list is the source of the lanes)
 //   dir      — an existing checkout of the repo, used only to read the proposal and the remote's branches
 //   root     — directory for the lane worktrees (<root>/<doc-slug>-<lane>)
@@ -33,18 +33,27 @@ export const meta = {
 //   another doc, on an unfinished roadmap milestone, on the proposal's acceptance (a draft: proposal_not_accepted),
 //   on a Source: roadmap milestone that does not resolve (milestone_unresolved) or on a blocked lane before them are
 //   reported as blocked, never built (the blocking reasons in docs/PROPOSALS.md).
-//   Each lane's plan travels by reference: a lane run saves it to the pipeline state branch at its merge check, and the ship
-//   plan's args carry plan_ref ('plans/<branch-slug>.md'; for an already_built lane, where its earlier run saved it), with
-//   plan_text only for a lane whose save failed. They also carry repo (origin's owner/name), so a ship-only run can recreate a
-//   missing lane checkout from a fresh clone.
+//   Each lane's plan travels by reference: a lane run saves it to the pipeline state branch when its planning ends and again
+//   at its merge check (then with its "## Assumptions to review" section), and the ship plan's args carry plan_ref
+//   ('plans/<branch-slug>.md'; for an already_built lane, where its earlier run saved it), with plan_text only for a lane
+//   whose save failed. They also carry repo (origin's owner/name), so a ship-only run can recreate a missing lane checkout
+//   from a fresh clone.
 // Both modes: on_question ('stop' | 'assume') and github_access ('gh' | 'connector' | ''; '' leaves it to the GITHUB_ACCESS
 //   line of the Pipeline config) pass through to every lane; github_access also goes into the ship plan's args. A lane whose
 //   run stops with needs_input carries its questions (each tagged with the lane's key) up into this result; re-run with the
-//   same args plus answers: [{ lane, id, answer }], and each lane gets only its own answers.
+//   same args plus answers: [{ lane, id, answer, question?, date? }], and each lane gets only its own answers. The lane that
+//   asked then continues from the plan its earlier run saved (its result's plan_ref) instead of planning a second time, so
+//   the answer reaches the stage that asked and no planner re-asks or contradicts it.
+//   replan — true, or the keys of the lanes ([key, ...]) whose planner plans again instead of continuing from a saved plan
+//   (passed to those lanes as replan: true). Pass it when the person's answer is to plan a lane again, or when a lane failed on
+//   its saved plan itself (its result's hint says so, naming the lane's key). Default: no lane.
 // Each lane's result is slim, never the plan text: { status, branch, plan_ref, review_clean, polish_clean, assumptions,
-//   questions?, left_uncommitted? }, plus, on a lane that did not push, what stopped it (stage, stop_reason, blocked_reason,
-//   review_findings). The one exception is explicit mode, which has no ship plan: a lane that pushed with plan_ref '' (its
-//   plan could not be saved) also carries plan_text, the text derive mode's ship plan would carry for it, for its ship-only run.
+//   questions?, left_uncommitted?, declined?, polish_unfixed? }, plus, on a lane that did not push, what stopped it (stage,
+//   stop_reason, blocked_reason, review_findings, hint). The one exception is explicit mode, which has no ship plan: a lane that
+//   pushed with plan_ref '' (its plan could not be saved) also carries plan_text, the text derive mode's ship plan would carry
+//   for it, for its ship-only run.
+// Derive mode's result also lists every built lane's assumptions at the top level: assumptions: [{ lane, stage, assumption }]
+//   (each lane's PR body lists its own, under "## Assumptions to review", once the lane is shipped).
 const A = args || {}
 const DERIVE = !A.lanes && !!A.proposal
 if (!DERIVE && (!A.lanes || !A.lanes.length)) throw new Error('proposal-build-chain: pass args.lanes, or args.proposal (with dir and root) to derive the lanes from the proposal (see the pipeline README)')
@@ -60,9 +69,19 @@ if (GH_ACCESS) SHARED.github_access = GH_ACCESS
 // Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
-const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
-  `Then re-run proposal-build-chain with the same args (the same date) plus answers: each question's lane and id with the person's answer. ` +
-  `Lanes already pushed come back already_built; the lane that asked builds again in its kept worktree with its answers.`
+// The lanes whose planner plans again instead of continuing from the plan an earlier run saved.
+const replanLane = key => A.replan === true || (Array.isArray(A.replan) && A.replan.includes(key))
+const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
+  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
+  `Also show the person ${DERIVE ? `this result's assumptions (each names its lane)` : `the assumptions in each lane's result (result.assumptions)`}: ` +
+  `a line they correct in a lane that asked is passed as an answer too (that lane, id <its stage>.d<N>, with the assumption as its question). ` +
+  (DERIVE ? `A lane that already pushed is not built again by the re-run, so a correction to one of its lines is no answer: the person makes it on that lane's PR, as a review comment, once the PR is open. ` : '') +
+  `Then re-run proposal-build-chain with the same args (the same date) plus answers: each question's lane, id and question text with the person's answer and the date they gave it, added to any answers given before. ` +
+  (DERIVE
+    ? `Lanes already pushed come back already_built. A lane that asked builds again in its kept worktree with its answers: `
+    : `Every lane runs again in the order given, each in its kept worktree, and a lane that asked gets its answers: `) +
+  `it continues from the plan its earlier run saved on the pipeline state branch (its result's plan_ref) instead of planning a second time, and plans again only when no plan for the same work is saved, when the saved plan contradicts an answer to a planning question, or when its key is listed in replan. ` +
+  `When the person's answer is to plan a lane again, add replan: ['<that lane's key>'] to the re-run's args.`
 // Settings the later ship-only runs need, carried into the ship plan's args.
 const SHIP_SHARED = {}
 for (const k of ['main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers']) if (A[k] !== undefined) SHIP_SHARED[k] = A[k]
@@ -98,11 +117,16 @@ const slimLane = r => {
   if (Array.isArray(r.questions) && r.questions.length) out.questions = r.questions
   // Files the lane's commits kept out on purpose (the brief, the builder context): a person decides what becomes of them.
   if (Array.isArray(r.left_uncommitted) && r.left_uncommitted.length) out.left_uncommitted = r.left_uncommitted
+  // Review findings the fixer judged wrong, and the bugs and concerns polish left unfixed: the person sees them, pushed or not.
+  if (Array.isArray(r.declined) && r.declined.length) out.declined = r.declined
+  if (Array.isArray(r.polish_unfixed) && r.polish_unfixed.length) out.polish_unfixed = r.polish_unfixed
   if (r.status !== 'pushed') {
     if (r.stage) out.stage = r.stage
     if (r.stop_reason) out.stop_reason = r.stop_reason
     if (r.merge_check && r.merge_check.blocked_reason) out.blocked_reason = r.merge_check.blocked_reason
     if (Array.isArray(r.review_findings) && r.review_findings.length) out.review_findings = r.review_findings
+    // How to plan the lane again when its saved plan is what stopped it (replan).
+    if (r.hint) out.hint = r.hint
   }
   return out
 }
@@ -122,6 +146,7 @@ async function buildLane(l) {
       ...(answers.length ? { answers } : {}),
       ...(l.planner_args ? { planner_args: l.planner_args } : {}),
       ...(l.steps && l.steps.length ? { proposal_steps: l.steps } : {}),
+      ...(replanLane(l.key) ? { replan: true } : {}),
       concern: l.concern,
       proposal: l.proposal,
       dir: l.dir,
@@ -136,13 +161,17 @@ async function buildLane(l) {
   log(`Lane ${l.key}: ${status}${r && r.status === 'pushed' ? (r.plan_ref ? ` (plan saved as ${r.plan_ref})` : ` (plan not saved: ${DERIVE ? 'the ship plan' : 'the lane\'s result'} carries its text)`) : ''}`)
   PLAN_TEXT[l.key] = r && !r.plan_ref && typeof r.plan === 'string' ? r.plan : ''
   const questions = status === 'needs_input' ? ((r && r.questions) || []).map(q => ({ lane: l.key, ...q })) : []
-  return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result: slimLane(r), ...(questions.length ? { questions, relay: RELAY } : {}) }
+  const result = slimLane(r)
+  // The lane run's hint names its own replan arg; through this workflow the lane is named by its key.
+  if (result && result.hint) result.hint += ` Through proposal-build-chain, that is replan: ['${l.key}'] added to the same args.`
+  return { lane: l.key, branch: l.branch, steps: l.steps || null, status, result, ...(questions.length ? { questions, relay: RELAY } : {}) }
 }
 
 if (!DERIVE) {
   // ---- Explicit lanes: in the order given; a later lane stacks on this one, so stop at the first that does not push.
   // No ship plan carries the fallback here, so a lane that pushed without saving its plan keeps the text in its own result,
-  // for the ship-only run that opens its PR. One that did not push is planned again by a re-run, so it stays slim.
+  // for the ship-only run that opens its PR. One that did not push is built again by a re-run (from its saved plan, else from a
+  // new one), so it stays slim.
   phase('Lanes')
   const results = []
   for (const l of A.lanes) {
@@ -254,10 +283,13 @@ const ship_plan = chains.filter(Boolean).map(c => {
 })
 const built = chains.filter(Boolean).flatMap(c => c.lanes)
 const questions = built.flatMap(r => r.questions || [])
+// What the lanes of this run assumed, in one list: the person sees every lane's before accepting the build.
+const assumptions = built.flatMap(r => ((r.result && r.result.assumptions) || []).map(a => ({ lane: r.lane, ...a })))
 const allOk = built.length && built.every(r => r.status === 'pushed' || r.status === 'already_built') && chains.every(c => c && !c.not_built.length)
 return {
   status: !L.chains.length ? (L.blocked && L.blocked.length ? 'all_blocked' : 'nothing_to_build') : allOk ? 'pushed' : questions.length ? 'needs_input' : 'partial',
   ...(questions.length ? { questions, relay: RELAY } : {}),
+  assumptions,
   proposal: A.proposal,
   source: derived.source,
   chains: chains.filter(Boolean),

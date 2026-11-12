@@ -1,5 +1,6 @@
 // Behavioural tests for shipping without carried state (plan-to-merged-pr, proposal-build-chain, ship-chain): a lane's plan
-// is saved to the pipeline state branch at its merge check and travels as plan_ref; ship-only and monitor-only restore it and
+// is saved to the pipeline state branch when its planning ends (a later run of the branch continues from it) and again at its
+// merge check, with its "## Assumptions to review" section, and travels as plan_ref; ship-only and monitor-only restore it and
 // recreate a missing checkout; a stacked lane fetches its bases by explicit refspec and checks them with git ls-remote; lane
 // results stay slim; and the GitHub access (github_access) reaches every prompt that touches GitHub and every nested run.
 // The workflows' copy of the state branch's slug is checked against pipeline-state.py slug itself. Same small harness as
@@ -95,6 +96,83 @@ await test('plan-to-merged-pr: the state path slugs the branch, and a run that s
   assert.equal(asked.result.plan_ref, '', 'a merge check that asks saves nothing')
 })
 
+// ---- plan-to-merged-pr: the plan is saved when planning ends, and a later run of the same branch continues from it
+const LANE = { concern: 'c1', ship: false, branch: 'feat/p-s1', dir: '/w/s1', proposal: 'p.md', proposal_steps: [1, 2] }
+const S1_REF = 'plans/feat-p-s1-80775a7d.md'
+
+await test('plan-to-merged-pr: a lane\'s planner first reads the plan an earlier run saved, and saves the one it writes', async () => {
+  const { result, prompt } = await run('plan-to-merged-pr', LANE, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN } }))
+  assert.equal(result.status, 'pushed')
+  const p = prompt('plan')
+  const get = p.indexOf(`python3 .claude/scripts/pipeline-state.py get ${S1_REF} `)
+  const skill = p.indexOf('Invoke the Skill tool with skill "plan"')
+  const save = p.indexOf(`python3 .claude/scripts/pipeline-state.py save <plan file> --as ${S1_REF} -m "Plan for feat/p-s1"`)
+  assert.ok(get > 0 && get < skill && skill < save, 'the get comes before the skill call, the save to the same path after it')
+  assert.match(p, /Use the saved plan only when all three hold: the command exits 0; the saved plan is for the same work as this run \(the design doc p\.md, steps 1, 2\), as its ## Context says; and it contradicts no answer from the person given above\./)
+  assert.match(p, /When all three hold, invoke no planning skill and return no questions: return that text unchanged as plan, with branch feat\/p-s1, plan_restored=true and plan_saved=true\. In every other case plan the work now, as follows\./)
+  assert.match(p, /As the last step, only when the skill wrote a plan in this run \(so not when you return questions, when the skill stopped without a plan, or when you restored a saved plan\), save that plan to the pipeline state branch, best effort/)
+  assert.match(p, /then write no plan file, create no branch, save nothing, and return the questions/)
+  // An answer to a later stage never reaches the planner, so a same-session resume still replays it from the record.
+  const later = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'impl.q1', question: Q.question, answer: 'ours' }, { id: 'polish.q1', answer: 'x' }] }, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN } }))
+  assert.equal(later.prompt('plan'), p, 'byte-identical with and without a later-stage answer')
+  // A planner answer does reach it: the saved plan is then used only when it does not contradict the answer.
+  const planAns = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'plan.d1', answer: 'ANSWER-PLAN' }] }, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN } }))
+  assert.ok(planAns.prompt('plan').indexOf('ANSWER-PLAN') < planAns.prompt('plan').indexOf('pipeline-state.py get'), 'the answers come above the restore rule that names them')
+  // Without a proposal the same work is the concern; a given plan (plan_text) has no planner, so nothing is read back.
+  const plain = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/p-s1' }, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN } }))
+  assert.match(plain.prompt('plan'), /the saved plan is for the same work as this run \(the concern below\)/)
+  const given = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/p-s1', plan_text: PLAN }, p2m())
+  for (const c of given.calls) assert.doesNotMatch(c.prompt, /pipeline-state\.py get/, c.label)
+})
+
+await test('plan-to-merged-pr: a lane that stops on a later question already carries plan_ref, and its re-run uses the restored plan', async () => {
+  // Run 1: the planner saved the plan, then /impl asked.
+  const first = await run('plan-to-merged-pr', LANE, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN, plan_saved: true }, impl: { questions: [Q] } }))
+  assert.deepEqual([first.result.status, first.result.stage, first.result.plan_ref], ['needs_input', 'impl', S1_REF])
+  assert.match(first.result.relay, /re-run the same way without resumeFromRunId; that run continues from the branch's saved plan \(plans\/feat-p-s1-80775a7d\.md on the pipeline state branch\) instead of planning again\./)
+  assert.doesNotMatch(first.result.relay, /adding branch:/, 'the args already name the branch')
+  assert.match(first.result.relay, /The branch's uncommitted work is kept only while this checkout exists; a new container builds it again from that plan with the answers\./)
+  // Run 2, from a session with no record: the planner returns the saved plan, and every later stage builds on it with the answer.
+  const RESTORED = `${PLAN}\n\n## Assumptions to review\n\nintro line\n\n- assumed (plan): kept the v1 parser\n`
+  const answers = [{ id: 'impl.q1', question: Q.question, answer: 'ours', date: '2026-11-12' }]
+  const second = await run('plan-to-merged-pr', { ...LANE, answers }, p2m({ plan: { branch: 'feat/p-s1', plan: RESTORED, plan_saved: true, plan_restored: true } }))
+  assert.equal(second.result.status, 'pushed')
+  assert.equal(second.result.plan_ref, S1_REF)
+  assert.ok(second.prompt('impl').includes(`ignore any other plan file in the plans directory.\n\n${RESTORED}`), '/impl gets the restored plan, its earlier assumptions included')
+  // The merge check saves it again: the earlier run's line kept, this run's answer added, one section, last in the text.
+  const mc = second.prompt('merge-check')
+  assert.match(mc, new RegExp(`pipeline-state\\.py save <that file> --as ${S1_REF.replace(/\./g, '\\.')} `))
+  assert.ok(mc.endsWith('\n\n## Assumptions to review\n\nChoices the stages of this branch made that the person has not confirmed (assumed), and what the person answered (answered). ' +
+    'Show them to the person before the PR is merged; a line they correct is passed back as an answer.\n\n- assumed (plan): kept the v1 parser\n- answered (impl.q1, 2026-11-12): Keep both behaviours? -> ours\n\n'), 'the save text ends with the section')
+  assert.equal(mc.split('## Assumptions to review\n').length - 1, 1, 'one section, never a second heading')
+  assert.ok(mc.includes(`The plan:\n${PLAN}\n\n## Assumptions to review`), 'the plan body is unchanged above it')
+  assert.match(mc, /exactly as given, with one addition: for each assumption you report from this step, a line "- assumed \(merge_check\): <the assumption>" at the end of the plan's last section, "## Assumptions to review"/)
+  // The person's answer was to plan again, or the saved plan is what failed: replan reads nothing back and saves the new plan over it.
+  const replan = await run('plan-to-merged-pr', { ...LANE, replan: true }, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN, plan_saved: true } }))
+  assert.doesNotMatch(replan.prompt('plan'), /pipeline-state\.py get/)
+  assert.match(replan.prompt('plan'), /Then plan the work again from today's tree: ignore any plan an earlier run saved for this branch \(the save at the end replaces it\)\. Invoke the Skill tool with skill "plan"/)
+  assert.ok(replan.prompt('plan').includes(`pipeline-state.py save <plan file> --as ${S1_REF} `))
+  assert.match(first.result.relay, /When the person's answer is to plan the work again, also pass replan: true \(in either session\)/)
+  // A run that /impl stopped keeps its plan saved, and says how to plan afresh when the plan is what stopped it.
+  const stopped = await run('plan-to-merged-pr', LANE, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN, plan_saved: true }, impl: { summary: '', files_changed: [], gates_green: false, stopped: true, stop_reason: 'the plan cites a removed module' } }))
+  assert.deepEqual([stopped.result.status, stopped.result.stop_reason, stopped.result.plan_ref], ['failed_at_impl', 'the plan cites a removed module', S1_REF])
+  assert.match(stopped.result.hint, /continues from its saved plan \(plans\/feat-p-s1-80775a7d\.md\); when the plan itself is what stopped \/impl, re-run with replan: true to plan the work again\./)
+  // A merge-check save that fails leaves the planner's copy: plan_ref still names it.
+  const kept = await run('plan-to-merged-pr', LANE, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN, plan_saved: true }, 'merge-check': { ...MC_OK, plan_saved: false } }))
+  assert.deepEqual([kept.result.status, kept.result.plan_ref], ['pushed', S1_REF])
+})
+
+await test('plan-to-merged-pr: a run that names no branch saves its plan under the branch it created', async () => {
+  const { result, prompt } = await run('plan-to-merged-pr', { concern: 'c', ship: false }, p2m({ plan: { branch: 'feat/x', plan: PLAN, plan_saved: true }, 'merge-check': { questions: [Q] } }))
+  const p = prompt('plan')
+  assert.doesNotMatch(p, /pipeline-state\.py get/, 'no branch yet, so no saved plan to read')
+  assert.match(p, /pipeline-state\.py save <plan file> --as plans\/<slug>\.md -m "Plan for <branch>" \(it pushes the state branch only, never the feature branch\)/)
+  assert.match(p, /<branch> is the branch you created, and <slug> is what python3 \.claude\/scripts\/pipeline-state\.py slug <branch> prints\./)
+  assert.ok(p.indexOf('create and check out a feature branch') < p.indexOf('pipeline-state.py save <plan file>'), 'saved once the branch exists')
+  assert.deepEqual([result.status, result.stage, result.plan_ref], ['needs_input', 'merge_check', 'plans/feat-x-d03c3cb6.md'])
+  assert.match(result.relay, /adding branch: 'feat\/x' \(the branch this run created\)/)
+})
+
 await test('plan-to-merged-pr: a full run hands off with resume_monitor carrying plan_ref, the plan text only when unsaved', async () => {
   const { result } = await run('plan-to-merged-pr', { concern: 'c' }, p2m())
   assert.equal(result.status, 'OPEN')
@@ -125,6 +203,20 @@ await test('plan-to-merged-pr: ship-only with plan_ref restores the plan for /cr
   const ready = await run('plan-to-merged-pr', { ...args, title: undefined, existing_pr: 7 }, p2m())
   assert.match(ready.prompt('ready-pr'), RESTORE_S1)
   assert.match(ready.prompt('ready-pr'), /Deploy notes from that plan's ## Rollout section/)
+  // The PR body copies the restored plan's assumptions section; this run's own lines (its merge check's, its answers) are added.
+  const COPY = /Copy that plan's "## Assumptions to review" section, when it has one, into the PR body under the same heading, after the Deploy notes/
+  for (const [r, l] of [[{ prompt }, 'create-pr'], [ready, 'ready-pr']]) {
+    assert.match(r.prompt(l), COPY, l)
+    assert.match(r.prompt(l), /after the Deploy notes; when it has none, the body gets no such section\./, l)
+  }
+  const own = await run('plan-to-merged-pr', { ...args, answers: [{ id: 'merge_check.q1', question: Q.question, answer: 'ours' }] }, p2m({ 'merge-check': { ...MC_OK, assumptions: ['kept both sides'] } }))
+  assert.match(own.prompt('create-pr'), COPY)
+  assert.ok(own.prompt('create-pr').includes(', and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone):\n' +
+    '- assumed (merge_check): kept both sides\n- answered (merge_check.q1): Keep both behaviours? -> ours\n'))
+  assert.equal(own.result.relay, undefined, 'no question, no relay')
+  // A ship-only question says what a new session keeps: nothing is planned or built, only unpushed commits can be lost.
+  const stop = await run('plan-to-merged-pr', args, p2m({ 'merge-check': { questions: [Q] } }))
+  assert.match(stop.result.relay, /A new session has no run record: re-run the same way without resumeFromRunId\. Commits not yet pushed are kept only while this checkout exists\.$/)
 })
 
 await test('plan-to-merged-pr: ship-only saves a given plan_text, and with both plan_ref wins with the text as its fallback', async () => {
@@ -289,6 +381,8 @@ await test('proposal-build-chain: lane results drop the plan text, and the ship 
     assert.deepEqual(c.ship_chain_args, { chain: { chain: c.chain, order: c.order } })
   }
   assert.ok(!JSON.stringify(result).includes('PLAN-TEXT for feat/p-s1'), 'a saved plan\'s text appears nowhere in the result')
+  // What the built lanes assumed, in one list at the top level, each line with its lane (an already-built lane has none).
+  assert.deepEqual(result.assumptions, [{ lane: 's1', stage: 'impl', assumption: 'kept the old flag' }, { lane: 's2', stage: 'impl', assumption: 'kept the old flag' }])
 })
 
 await test('proposal-build-chain: a lane that did not push keeps what stopped it; explicit lanes are slim too; \'\' access is not passed on', async () => {
@@ -306,6 +400,20 @@ await test('proposal-build-chain: a lane that did not push keeps what stopped it
   await run('proposal-build-chain', { lanes: [lanes[0]], github_access: '' }, () => ({}), { workflow: async (n, a) => { seen.push(a); return { status: 'pushed' } } })
   assert.equal('github_access' in seen[0], false)
   await assert.rejects(run('proposal-build-chain', { lanes, github_access: 'mcp' }, () => ({}), { workflow }), /github_access must be 'gh', 'connector' or ''/)
+})
+
+await test('proposal-build-chain: a lane result keeps what the fixer declined and polish left unfixed, and a stopped lane its replan hint', async () => {
+  const declined = [{ round: 1, finding: 'f', reason: 'r' }]
+  const polish_unfixed = [{ file: 'a.js', severity: 'concern', description: 'd' }]
+  const hint = 'A re-run of this branch continues from its saved plan (plans/feat-b.md); when the plan itself is what stopped /impl, re-run with replan: true to plan the work again.'
+  const workflow = async (name, a) => a.branch === 'feat/b'
+    ? { status: 'failed_at_impl', branch: 'feat/b', plan: 'PLAN-TEXT b', plan_ref: 'plans/feat-b.md', review_clean: false, polish_clean: false, assumptions: [], stop_reason: 'plan review blocker', hint }
+    : { status: 'pushed', branch: 'feat/a', plan: 'PLAN-TEXT a', plan_ref: 'plans/feat-a.md', review_clean: true, polish_clean: false, assumptions: [], declined, polish_unfixed, hint: 'never on a pushed lane' }
+  const lanes = [{ key: 'a', dir: '/w/a', branch: 'feat/a', proposal: 'p.md', concern: 'ca' }, { key: 'b', dir: '/w/b', branch: 'feat/b', proposal: 'p.md', concern: 'cb', bases: ['feat/a'] }]
+  const { result } = await run('proposal-build-chain', { lanes }, () => ({}), { workflow })
+  assert.deepEqual(result[0].result, { status: 'pushed', branch: 'feat/a', plan_ref: 'plans/feat-a.md', review_clean: true, polish_clean: false, assumptions: [], declined, polish_unfixed })
+  assert.deepEqual(result[1].result, { status: 'failed_at_impl', branch: 'feat/b', plan_ref: 'plans/feat-b.md', review_clean: false, polish_clean: false, assumptions: [], stop_reason: 'plan review blocker',
+    hint: `${hint} Through proposal-build-chain, that is replan: ['b'] added to the same args.` })
 })
 
 await test('proposal-build-chain: an explicit lane pushed without a saved plan keeps its text, as the derive-mode ship plan does', async () => {

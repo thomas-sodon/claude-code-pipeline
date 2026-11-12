@@ -104,6 +104,19 @@ await test('bug-fix-backlog: github_access gh keeps the prompts gh-only and is p
   assert.equal(seen[0].github_access, 'gh')
 })
 
+await test('bug-fix-backlog: close false closes nothing and returns each prepared close for the person to post', async () => {
+  const { result, calls } = await lanes({ close: false })
+  assert.ok(!calls.some(c => c.label === 'close:k'), 'no close stage runs')
+  assert.ok(calls.some(c => c.label === 'refute-close:k'), 'the close verdict is still verified')
+  assert.deepEqual(result[0].closed, [])
+  assert.deepEqual(result[0].confirmed_fixed_unclosed, [12], 'the numbers list keeps its shape')
+  assert.deepEqual(result[0].prepared_closes, [{ number: 12, close_reason: 'r', close_comment: 'c' }])
+  // With the default, issues are closed and no prepared close is listed.
+  const closing = await lanes()
+  assert.deepEqual(closing.result[0].confirmed_fixed_unclosed, [])
+  assert.equal(closing.result[0].prepared_closes, undefined)
+})
+
 await test('bug-fix-backlog: an unknown github_access is refused before anything runs', async () => {
   let calls = 0
   await assert.rejects(run('bug-fix-backlog', { lanes: [LANE], github_access: 'api' }, () => { calls++; return {} }), /github_access must be 'gh', 'connector' or ''/)
