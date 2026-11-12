@@ -171,6 +171,64 @@ await test('brief-to-proposals: an intake question stops the run before any desi
   assert.equal(result.resume_from, 'intake')
 })
 
+await test('brief-to-proposals: the Intake sweeps the person-owned choices class by class, and a confirmation keeps its mark', async () => {
+  const C = { question: 'The brief names the licence AGPL-3.0-only: confirm it?', why: 'the brief was drafted for you, and the variant decides who may relicense', options: ['AGPL-3.0-only', 'AGPL-3.0-or-later'], recommended: 'AGPL-3.0-only', confirm: true }
+  const { result, calls, prompt } = await run('brief-to-proposals', BRIEF, btp({ intake: { questions: [Q, C], assumptions: ['EU only'] } }))
+  const p = prompt('intake')
+  assert.match(p, /find every blocking question and every confirmation/)
+  assert.match(p, /Go through the person-owned choices class by class\. For each class the source touches, either quote in notes where the person settled it/)
+  assert.match(p, /a confirmation \(confirm: true, the source's value as the recommended option\) when the source was drafted for the person or the framing lists it as open, recommended or not yet decided/)
+  assert.match(p, /One item per choice; values of one kind \(several retention periods, several thresholds\) form one confirmation/)
+  assert.match(p, /never an implementation choice/)
+  assert.doesNotMatch(p, /prefer a few/)
+  // The definitions it sweeps with: the conflict clause, the canonical list in its order, what is the author's, the gate boundary.
+  assert.match(p, /a conflict between what the person said \(the framing, an answer, a decision a doc records as theirs\) and the source or your research/)
+  assert.match(p, /The person-owned choices: who the product is for and what its first release leaves out; platforms and distribution, hosted or self-run; price, plans, the revenue model/)
+  assert.match(p, /the licence and its variant, and the legal and compliance posture; what personal data is collected.*names \(product, package, domain, organization or bundle id\); the repository's owner and visibility; stop and go criteria, thresholds and dates; and a stack, provider or environment the person must run or pay for themselves\./)
+  assert.match(p, /Yours, never asked: a choice inside a component/)
+  assert.match(p, /a store, registry or register with a public search is desk research, recorded with its result and date/)
+  assert.match(p, /Return no questions when nothing blocks/)
+  // The confirmation stops the run with the blocking question, in the one batch, and keeps confirm and its id.
+  assert.equal(result.status, 'needs_input')
+  assert.deepEqual(calls.map(c => c.label), ['seed', 'existing-docs', 'intake'])
+  assert.deepEqual(result.questions.map(q => [q.id, q.stage, q.confirm]), [['intake.q1', 'intake', undefined], ['intake.q2', 'intake', true]])
+  assert.equal(result.questions[1].recommended, 'AGPL-3.0-only')
+  assert.deepEqual(result.assumptions, [{ stage: 'intake', assumption: 'EU only' }])
+  // The relay: the confirmations as one list, the assumptions shown too, and each answer passed back with its question and date.
+  assert.match(result.relay, /Show the confirmations \(the questions with confirm: true\) as one list the person can accept whole or correct line by line/)
+  assert.match(result.relay, /Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too \(id intake\.d<N>, with its question\)/)
+  assert.match(result.relay, /each question's id and question text with the person's answer and the date they gave it/)
+  assert.match(result.relay, /never answer them on their behalf/)
+})
+
+await test('brief-to-proposals: every author is told to return blocking questions and confirmations in one pass, or in assume mode to tag what it takes', async () => {
+  const stop = await run('brief-to-proposals', BRIEF, btp())
+  for (const l of ['roadmap', 'propose:m2']) {
+    assert.match(stop.prompt(l), /write and change nothing, and return every blocking question and every confirmation \(all of them, in one pass\) in questions/, l)
+    assert.match(stop.prompt(l), /a confirmation has confirm: true and the unconfirmed value as its recommended option/, l)
+    assert.match(stop.prompt(l), /Report in assumptions every other choice the source did not settle/, l)
+  }
+  const assume = await run('brief-to-proposals', { ...BRIEF, on_question: 'assume' }, btp())
+  assert.match(assume.prompt('roadmap'), /for each blocking question and each confirmation, take the option you recommend/)
+  assert.match(assume.prompt('roadmap'), /tag a decision so taken \(assumed\) in the doc, and report it in assumptions/)
+  assert.doesNotMatch(assume.prompt('roadmap'), /write and change nothing/)
+})
+
+await test('brief-to-proposals: the Intake\'s assumptions reach the sketches, the judge, /roadmap, every proposal author and every reviser of the same run', async () => {
+  const over = { intake: { assumptions: ['ASSUMED-REGION: EU only'] },
+    'review:architecture-1': { findings: [{ doc: 'docs/design/roadmap.md', severity: 'concern', description: 'no rollback plan' }], completed: true },
+    'consistency:arch-m2': { findings: [{ doc: 'docs/design/2.md', severity: 'bug', description: 'y' }] } }
+  const { result, prompt } = await run('brief-to-proposals', { ...BRIEF, panel: 1 }, btp(over))
+  assert.equal(result.status, 'ready')
+  for (const l of ['sketch:validate-first', 'judge', 'roadmap', 'revise:architecture-1', 'propose:m2', 'propose:m3', 'revise:consistency-1']) {
+    assert.ok(prompt(l).includes('Assumptions the Intake took that the person has not confirmed: keep each, or return a question to change it; never pick another value silently: ["ASSUMED-REGION: EU only"]'), l)
+  }
+  assert.match(prompt('sketch:validate-first'), /A sketch returns no questions: .* name it in assumptions_to_validate, for the judge to ask/)
+  // With no Intake assumption nothing is added.
+  const none = await run('brief-to-proposals', { ...BRIEF, panel: 1 }, btp())
+  for (const l of ['judge', 'roadmap', 'propose:m2']) assert.doesNotMatch(none.prompt(l), /Assumptions the Intake took/, l)
+})
+
 await test('brief-to-proposals: on_question assume turns intake recommendations into shared answers', async () => {
   const { result, prompt } = await run('brief-to-proposals', { ...BRIEF, on_question: 'assume' }, btp({ intake: { questions: [Q] } }))
   assert.equal(result.status, 'ready')

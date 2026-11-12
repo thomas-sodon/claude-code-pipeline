@@ -3,12 +3,12 @@ export const meta = {
   description: 'Turn a product brief (or one change too big for a PR) into reviewed design docs: seed the repo with the pipeline and a base CLAUDE.md, architecture panel, /roadmap, /propose per code milestone, /review-proposal and revise until clean, cross-doc consistency two docs at a time, then lint and lanes. A re-run starts at the stage that needs it (args.from, else inferred from the answers and the docs on disk) and keeps the docs already written. Writes only the seeded pipeline files, CLAUDE.md and design docs, never code; it commits only with args.branch, as checkpoints on that design branch (never main)',
   whenToUse: 'Before building a new product or a change too big for one PR. It writes the architecture, roadmap and proposals that /bootstrap and proposal-build-chain consume. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with every answer so far, from set to its resume_from and, after a milestone\'s question, the milestones it names, as its relay says. Pass branch to checkpoint the docs on a design branch, so they outlive the session and a re-run from any clone picks them up.',
   phases: [
-    { title: 'Seed', detail: 'with branch, check out the design branch first; /seed installs the pipeline\'s skills, workflows and scripts and a base CLAUDE.md into the repo; then find the design docs that already exist' },
-    { title: 'Intake', detail: 'read the source for blocking questions only the person can answer, before any design is written' },
-    { title: 'Architecture', detail: 'independent sketches and a judge (the synthesis is saved to the state branch), then /roadmap writes architecture.md and roadmap.md (existing ones are resumed instead), reviewed until clean' },
+    { title: 'Seed', detail: 'with branch, check out the design branch first; /seed installs the pipeline\'s skills, workflows and scripts and a base CLAUDE.md into the repo; then find the design docs that already exist, restore the answers saved on the state branch and save the ones this run was given' },
+    { title: 'Intake', detail: 'read the source, one class of person-owned choice at a time, for the blocking questions and confirmations only the person can answer, before any design is written' },
+    { title: 'Architecture', detail: 'independent sketches and a judge, which may ask too (the synthesis is saved to the state branch), then /roadmap writes architecture.md and roadmap.md (existing ones are resumed instead), reviewed until clean' },
     { title: 'Proposals', detail: '/propose per roadmap code milestone (when the docs already existed, only the unwritten ones, or exactly args.milestones), then /review-proposal and /propose --revise until clean' },
     { title: 'Consistency', detail: 'the docs compared two at a time (the architecture and each proposal, the proposals of dependent milestones, the brief and the roadmap); findings revised in the doc they name, then re-reviewed' },
-    { title: 'Lint', detail: 'proposal-lint.py on every doc, lanes per proposal, roadmap progress' },
+    { title: 'Lint', detail: 'proposal-lint.py on every doc, the decisions no person confirmed and the values an author proposed, lanes per proposal, roadmap progress' },
   ],
 }
 
@@ -21,7 +21,9 @@ export const meta = {
 //   out?: string              proposals directory relative to dir (default: PROPOSALS_DIR from the Pipeline config, else docs/design)
 //   context?: string          extra framing for every author (builder, budget, constraints the source does not state)
 //   context_file?: string     a file (relative to dir) whose text every author reads and treats as binding framing, like context; it is
-//                             never committed and never saved to the state branch
+//                             never committed, and this workflow never saves it. In brief mode it must exist: a missing one is
+//                             restored from the state branch (context/builder-context.md, kept there only when the person consented),
+//                             else the run ends failed_at_start (context_not_found) before any design agent runs
 //   from?: string             brief mode: the stage to start at, 'intake' | 'architecture' | 'proposals' | 'consistency' | 'lint'.
 //                             Default, inferred: when architecture.md and roadmap.md exist, the earliest stage among the answers'
 //                             ids, the Intake's left out (the docs were written after them), else 'proposals'; without the docs,
@@ -53,14 +55,24 @@ export const meta = {
 //                             It starts at the Intake, or with from: 'architecture' at /roadmap on the saved panel synthesis
 //   max_review_rounds?: number  revise rounds per doc (default 3)
 //   efforts?: { intake, sketch, judge, roadmap, propose, review, revise, consistency, lint }  (lint also sets the mechanical agents:
-//                             branch, seed, existing-docs, save-panel, milestones and checkpoints)
-//   on_question?: 'stop'|'assume'  default 'stop': blocking questions (ones only the person can answer) stop the run with status
-//                             needs_input before anything is built on a guess; 'assume' takes each recommended option instead
-//                             (the Intake's become shared answers for every later stage) and lists them in assumptions
-//   answers?: [{ id, answer }] the questions a needs_input result returned, each with the person's answer (or { <id>: answer });
-//                             each reaches the stage that asked and every later one (a milestone's only that milestone's
-//                             stages); a re-run with from (resume_from) starts at the stage that asked and keeps the docs written.
-//                             Every run passes the earlier answers again, so they pick no milestone to propose: milestones does
+//                             branch, seed, existing-docs, save-answers, save-panel, milestones and checkpoints)
+//   on_question?: 'stop'|'assume'  default 'stop': blocking questions (ones only the person can answer) and confirmations (a
+//                             person-owned choice whose value nobody confirmed with the person; confirm: true) stop the run with
+//                             status needs_input before anything is built on a guess; 'assume' takes each recommended option instead
+//                             (the Intake's and the judge's become shared answers for every later stage), lists them in assumptions
+//                             and has the authors tag the decisions so taken (assumed)
+//   answers?: [{ id, answer, question?, date?, stage? }]  the questions a needs_input result returned, each with its question text,
+//                             the person's answer and the date they gave it (or { <id>: answer }); each reaches the stage that
+//                             asked and every later one (a milestone's only that milestone's stages); a re-run with from
+//                             (resume_from) starts at the stage that asked and keeps the docs written. The scope is the id's first
+//                             part: intake, architecture, m<N>, proposal (concern mode) or consistency; an id with any other first
+//                             part counts as an Intake answer, which reaches every stage and never moves the inferred start. A
+//                             decision the person makes outside a workflow question is passed the same way, with its question
+//                             text: intake.d<N>, or for a correction to written docs architecture.d<N> or m<N>.d<K>. The answers
+//                             are saved to the state branch (design/answers.json) and, in brief mode, the saved ones this run was
+//                             not passed are restored (answers_restored), so they outlive the session; restored ones never move the
+//                             inferred start. Every run passes the earlier answers again, so they pick no milestone to propose:
+//                             milestones does
 const A = args || {}
 if (!A.dir) throw new Error('brief-to-proposals: args.dir (absolute project directory) is required')
 if (!A.brief === !A.concern) throw new Error('brief-to-proposals: pass exactly one of args.brief (a product brief path) or args.concern (one large change)')
@@ -108,12 +120,15 @@ const GUARD = `If a permission check or classifier denies any action, do NOT ret
 const WHERE = `Work ONLY in ${DIR} (cd there / use absolute paths). `
 const DOCS_ONLY = `This is design work: write only design docs in the proposals directory. Never write code, never commit, stage, push, ` +
   `create a branch or open a PR, and change no git state. `
+// The person outranks the source: what they said is binding, and a contradiction is theirs to resolve, never the author's.
+const BINDING = `binding. Where the source, the tree or research contradicts it, pick no side: return a blocking question naming both.`
 const CTX_FILE_NOTE = CTX_FILE
-  ? `Before anything else, read ${CTX_FILE} (relative to ${DIR}) in full: its text is framing from the person, binding unless a source fact contradicts it. Docs may state the constraints it sets; never copy personal data or credentials from it. `
+  ? `Before anything else, read ${CTX_FILE} (relative to ${DIR}) in full: its text is framing from the person, ${BINDING} Docs may state the constraints it sets; never copy personal data or credentials from it. `
   : ''
-const CTX = (A.context ? `Framing from the person (binding unless a source fact contradicts it): ${A.context}\n` : '') + (CTX_FILE ? CTX_FILE_NOTE + '\n' : '')
-const REVIEW_CTX = (A.context ? `The authors were told to follow this framing from the person as binding (unless a source fact contradicts it); a choice that follows it is not a defect: ${A.context}\n` : '') +
-  (CTX_FILE ? `The authors were also told to treat the text of ${CTX_FILE} (relative to ${DIR}; read it) as binding framing from the person, unless a source fact contradicts it: a choice that follows it is not a defect.\n` : '')
+const CTX = (A.context ? `Framing from the person, ${BINDING} The framing: ${A.context}\n` : '') + (CTX_FILE ? CTX_FILE_NOTE + '\n' : '')
+const REVIEW_CTX = (A.context ? `The authors were told to follow this framing from the person as binding; a choice that follows it or an answer from the person is not a defect: ${A.context}\n` : '') +
+  (CTX_FILE ? `The authors were also told to treat the text of ${CTX_FILE} (relative to ${DIR}; read it) as binding framing from the person: a choice that follows it or an answer from the person is not a defect.\n` : '') +
+  `A doc that departs from the person's framing, an answer from the person, or a decision tagged (person, ...), with no newer answer from the person, is a bug whose fix is the question to ask (with its options), never a gate or a confirmation at acceptance. `
 const WORK = GUARD + WHERE + DOCS_ONLY
 const SOURCE = BRIEF_MODE ? `the product brief ${A.brief}` : `the concern ${JSON.stringify(A.concern)}`
 const LINT = `python3 .claude/scripts/proposal-lint.py`
@@ -127,16 +142,27 @@ const GITHUB = `Do GitHub reads and writes through the access in use (see .claud
 // questions and the run stops with needs_input; the caller asks the person and re-runs with args.answers (and args.from).
 // Scopes in run order: intake, architecture, a proposal (m<N>, or 'proposal' in concern mode), consistency. An answer reaches
 // the scope that asked and every later one, never an earlier one; a milestone's answer reaches only that milestone (and
-// consistency).
+// consistency). An id in no known scope (a decision the person made outside a workflow question, passed under a name of its
+// own) counts as an Intake answer: it reaches every stage and stays out of the start inference.
 const ON_Q = A.on_question === 'assume' ? 'assume' : 'stop'
 const scopeOf = id => String(id || '').split('.')[0]
+const isScope = sc => ['intake', 'architecture', 'consistency', 'proposal'].includes(sc) || /^m\d+$/.test(sc)
 const scopeOrder = sc => sc === 'intake' ? 0 : sc === 'architecture' ? 1 : sc === 'consistency' ? 3 : 2
 // The stage (an args.from value) a question scope belongs to: m<N> and 'proposal' are the Proposals stage.
 const stageOfScope = sc => sc === 'intake' || sc === 'architecture' || sc === 'consistency' ? sc : 'proposals'
 const earliestStage = scopes => STAGES.find(s => scopes.some(sc => stageOfScope(sc) === s))
+const answered = a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== ''
+const withStage = a => {
+  const stage = [a.stage, scopeOf(a.id)].find(isScope)
+  if (!stage) log(`Answer ${a.id}: its id names no stage, so it counts as an Intake answer and reaches every stage`)
+  return { ...a, stage: stage || 'intake' }
+}
+// Each answer: { id, answer, question?, date?, stage? }. The question text and the date travel with it, into the prompts and
+// the copy saved on the state branch.
 const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers || {}).map(([id, answer]) => ({ id, answer })))
-  .filter(a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
-  .map(a => ({ ...a, stage: a.stage || scopeOf(a.id) }))
+  .filter(answered).map(withStage)
+// The answers this run was passed; the ones restored from the state branch are added after the survey.
+const GIVEN = ANSWERS.length
 const answersFor = scope => {
   const mine = ANSWERS.filter(a => {
     const o = scopeOrder(a.stage)
@@ -144,36 +170,67 @@ const answersFor = scope => {
     return !(o === 2 && scopeOrder(scope) === 2 && a.stage !== scope)
   })
   return mine.length
-    ? `Answers from the person to blocking questions (binding, like the person's framing; never re-ask them, and a choice that follows one is not a defect): ${JSON.stringify(mine.map(a => ({ question: a.question || a.id, answer: a.answer })))}\n`
+    ? `Answers from the person to blocking questions (binding, like the person's framing; never re-ask them, and a choice that follows one is not a defect; ` +
+      `a decision one settles carries the tag (person, <its date, or today's when it has none>, <its id>) in the doc, or (assumed) when the answer says it was assumed): ` +
+      `${JSON.stringify(mine.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n`
     : ''
 }
-const BLOCKING_DEF = `A blocking question is one only the person can answer now, from what they know or intend: a requirement or constraint the source leaves out or states two incompatible ways, who builds and runs it and with what budget, target users, platforms or distribution, hosted or self-run, licence or revenue model, a trade-off that is theirs to make; and the plausible answers send the design materially different ways. ` +
-  `It is not something the source, the framing, the answers, the tree or desk research (official docs, pricing, terms, prior art) can settle: settle those. Not data a person must go and gather (interviews, samples, live numbers): that is a research gate. Not a choice that waits on evidence the plan produces (a go/no-go after an experiment, a sign-off on finished work): that is a decision gate. `
+// The person-owned choices, in the one order every stage and doc lists them.
+const OWNED = `who the product is for and what its first release leaves out; platforms and distribution, hosted or self-run; price, plans, the revenue model, and anything that costs money or opens an account in the person's name (a host, a paid API, a billing provider, a store); ` +
+  `the licence and its variant, and the legal and compliance posture; what personal data is collected, how long it is kept and who receives it; names (product, package, domain, organization or bundle id); the repository's owner and visibility; ` +
+  `stop and go criteria, thresholds and dates; and a stack, provider or environment the person must run or pay for themselves`
+const DRAFTED = `a new-software-idea brief is: its header has **Verdict:** and **Assumed builder:** fields, and that skill never interviews the person`
+const BLOCKING_DEF = `A blocking question is one only the person can answer: what they intend, a requirement or constraint the source leaves out or states two incompatible ways, a trade-off that is theirs to make, ` +
+  `a conflict between what the person said (the framing, an answer, a decision a doc records as theirs) and the source or your research, or a blocker whose way forward is their call; and whose plausible answers lead to a different design, promise, cost or legal exposure. ` +
+  `A confirmation is a question about a person-owned choice that already has a value nobody confirmed with the person: the source's value when the source was drafted for the person (${DRAFTED}), ` +
+  `an item the framing or a panel synthesis lists as open, recommended or not yet decided, or the default you would otherwise take. ` +
+  `The person-owned choices: ${OWNED}. ` +
+  `Yours, never asked: a choice inside a component that an invariant, a recorded decision or an official doc settles (a library, a layout, an internal name, a test tool, a version), and anything the tree, CLAUDE.md, the docs or desk research (official docs, pricing, terms, prior art) can settle: settle those. ` +
+  `A choice the person can make now is a question: never a gate, never a D-record whose Choice awaits confirmation, never something left for acceptance. A decision gate holds only what waits on evidence the plan produces, on finished work or on an outside party; ` +
+  `a research gate only what needs data, an account, a paid search or a legal opinion (a store, registry or register with a public search is desk research, recorded with its result and date). ` +
+  `Never change what the person settled: an answer, the framing, or a D-record tagged (person, ...) is changed only by a newer answer from the person; a reason to change it is a blocking question. ` +
+  `A question, its options and the recommendation name milestones, steps and decisions by title; a number alone is never enough (numbers move between revisions). `
 const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No one can answer a question mid-run, so never wait for one and never use a question tool. ` + BLOCKING_DEF +
   (ON_Q === 'assume'
-    ? `The person chose to proceed on assumptions: for each blocking question, take the option you recommend, write the docs on it, and report it in assumptions as "<question> -> <option taken>". `
-    : `Never guess the answer to a blocking question: write and change nothing, and return every such question (all of them, in one pass) in questions, each with why it blocks, 2-4 concrete options and the one you recommend. `) +
+    ? `The person chose to proceed on assumptions: for each blocking question and each confirmation, take the option you recommend (for a confirmation the unconfirmed value; for a conflict with what the person said, what the person said), write the docs on it, ` +
+      `tag a decision so taken (assumed) in the doc, and report it in assumptions as "<question> -> <option taken>". `
+    : `Never guess the answer to a blocking question and never build on an unconfirmed value: write and change nothing, and return every blocking question and every confirmation (all of them, in one pass) in questions, ` +
+      `each with why it blocks, 2-4 concrete options and the one you recommend; a confirmation has confirm: true and the unconfirmed value as its recommended option. `) +
   `Report in assumptions every other choice the source did not settle (empty when none). `
-const ASK = scope => ASK_RULE + answersFor(scope)
 const QUESTION = {
   type: 'object',
   properties: {
     question: { type: 'string' },
     why: { type: 'string', description: 'what changes with the answer: where each option sends the design' },
     options: { type: 'array', items: { type: 'string' }, description: '2-4 concrete options' },
-    recommended: { type: 'string', description: 'the option you recommend, and why in one clause' },
+    recommended: { type: 'string', description: 'the option you recommend, and why in one clause; for a confirmation, the unconfirmed value' },
+    confirm: { type: 'boolean', description: 'true for a confirmation: a person-owned choice that already has a value nobody confirmed with the person' },
   },
   required: ['question', 'why', 'options', 'recommended'],
 }
 const QA = {
-  questions: { type: 'array', items: QUESTION, description: 'blocking questions only the person can answer; non-empty means you wrote nothing' },
+  questions: { type: 'array', items: QUESTION, description: 'blocking questions and confirmations only the person can answer; non-empty means you wrote nothing' },
   assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice you made that the source did not settle' },
 }
 const ASSUMED = []
 const noteAssumptions = (scope, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) if (a) ASSUMED.push({ stage: scope, assumption: a }); return r }
+// The Intake's assumptions reach the later stages of the same run, so no author replaces one with a pick of its own.
+const intakeAssumed = () => {
+  const taken = ASSUMED.filter(a => a.stage === 'intake').map(a => a.assumption)
+  return taken.length ? `Assumptions the Intake took that the person has not confirmed: keep each, or return a question to change it; never pick another value silently: ${JSON.stringify(taken)}\n` : ''
+}
+const ASK = scope => ASK_RULE + answersFor(scope) + intakeAssumed()
 const asked = r => !!(r && Array.isArray(r.questions) && r.questions.length)
-// Ids continue after the highest one already answered in the scope (m<N> included), so a question asked on a re-run never
-// reuses an answered id.
+// on_question 'assume': each recommended option becomes a shared answer for its scope and every later one, and an assumption.
+const assume = qs => {
+  for (const q of qs) {
+    ANSWERS.push({ id: q.id, stage: q.stage, question: q.question, answer: `${q.recommended} (assumed: the person chose to proceed on recommendations)`, assumed: true })
+    ASSUMED.push({ stage: q.stage, assumption: `${q.question} -> ${q.recommended}` })
+  }
+}
+// Ids continue after the highest q<N> already answered in the scope (m<N> included), so a question asked on a re-run never
+// reuses an answered id; a decision's id (intake.d<N>) takes no part in the numbering. Every other field of a question,
+// confirm included, is kept.
 const tagQuestions = (scope, qs) => {
   let n = 0
   for (const a of ANSWERS) { const m = String(a.id || '').match(/^([a-z0-9_]+)\.q(\d+)$/); if (m && m[1] === scope) n = Math.max(n, Number(m[2])) }
@@ -182,25 +239,32 @@ const tagQuestions = (scope, qs) => {
 // The milestones whose author or reviser asked: answers pick no milestone to propose, so the relay names these for args.milestones.
 const askedMilestones = qs => [...new Set(qs.map(q => /^m(\d+)$/.exec(q.stage)).filter(Boolean).map(x => Number(x[1])))].sort((a, b) => a - b)
 const relay = (from, ms = []) => `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
+  `Show the confirmations (the questions with confirm: true) as one list the person can accept whole or correct line by line. ` +
+  `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id intake.d<N>, with its question). ` +
   (from
-    ? `Then re-run this workflow with the same args plus answers (each question's id with the person's answer, added to any answers given before) and from: '${from}' (this result's resume_from)` +
+    ? `Then re-run this workflow with the same args plus answers (each question's id and question text with the person's answer and the date they gave it, added to any answers given before) and from: '${from}' (this result's resume_from)` +
       (ms.length ? `, with milestones: [${ms.join(', ')}] (the milestones that asked, in place of any milestones given before)` : '') + `, ` +
       `from this session or a new one: it keeps the docs already written and starts again at the stage that asked. ` +
       (ms.length ? `Pass exactly those milestones: answers alone re-propose no written proposal, so a reviser's answer would go unused, and any other milestone listed is proposed again, its doc rewritten as a draft. ` : '') +
       `Always pass that from with the answers: left out, the run infers its start from all the answers passed (the Intake's aside), so an answer an earlier run already used can restart an earlier stage, whose revisions may reset an accepted doc to draft. ` +
       `In this session, resumeFromRunId set to this run's id also replays the unchanged stages before it from the record.`
-    : `Then re-run this workflow with the same args plus answers (each question's id with the person's answer) and resumeFromRunId set to this run's id: ` +
+    : `Then re-run this workflow with the same args plus answers (each question's id and question text with the person's answer and the date they gave it) and resumeFromRunId set to this run's id: ` +
       `the stages before the ones that asked replay from the record, and docs already written are kept.`)
 const logQuestions = questions => {
   log(`${questions.length} question(s) only the person can answer — status needs_input`)
-  for (const q of questions) log(`  ${q.id}: ${q.question} (recommended: ${q.recommended})`)
+  for (const q of questions) log(`  ${q.id}${q.confirm ? ' (confirmation)' : ''}: ${q.question} (recommended: ${q.recommended})`)
 }
 
-// What every result past the start carries: the stage this run started at (brief mode) and, with branch, its checkpoints.
-let FROM = null, branchInfo = null
-const checkpoints = []
+// What every result past the start carries: the stage this run started at (brief mode), with branch its checkpoints, whether
+// the answers it was given reached the state branch (answers_saved, when it was given any) and the ids of the answers restored
+// from there (answers_restored, when there are some).
+let FROM = null, branchInfo = null, answersSaved = null
+const checkpoints = [], restored = []
 const branchOut = () => ({ name: BRANCH, action: (branchInfo && branchInfo.action) || '', recovered: (branchInfo && branchInfo.recovered) || [], checkpoints })
-const runInfo = () => ({ ...(BRIEF_MODE && FROM ? { from: FROM } : {}), ...(BRANCH ? { branch: branchOut() } : {}) })
+const runInfo = () => ({
+  ...(BRIEF_MODE && FROM ? { from: FROM } : {}), ...(BRANCH ? { branch: branchOut() } : {}),
+  ...(answersSaved === null ? {} : { answers_saved: answersSaved }), ...(restored.length ? { answers_restored: restored } : {}),
+})
 const needsInput = (questions, extra) => {
   logQuestions(questions)
   const from = BRIEF_MODE ? earliestStage(questions.map(q => q.stage)) : ''
@@ -264,9 +328,10 @@ const JUDGE_SCHEMA = {
       items: { type: 'object', properties: { sketch: { type: 'string' }, total: { type: 'number' }, notes: { type: 'string' } }, required: ['sketch', 'total', 'notes'] },
     },
     winner: { type: 'string' },
-    synthesis: { type: 'string', description: 'the architecture to build on: the winner, with the named ideas grafted from the others and why; every decision with its options and choice' },
+    synthesis: { type: 'string', description: 'the architecture to build on: the winner, with the named ideas grafted from the others and why; every decision with its options and choice, or marked OPEN when it is in questions' },
+    questions: { type: 'array', items: QUESTION, description: 'blocking questions and confirmations only the person can answer: what the source, the framing and the answers do not settle and is not yours to settle (empty when none)' },
   },
-  required: ['scores', 'winner', 'synthesis'],
+  required: ['scores', 'winner', 'synthesis', 'questions'],
 }
 const MILESTONE = {
   type: 'object',
@@ -329,8 +394,18 @@ const LINT_SCHEMA = {
       items: { type: 'object', properties: { doc: { type: 'string' }, errors: { type: 'integer', description: 'errors in the --lanes output (e.g. lane_cycle)' }, chains: { type: 'integer' }, lanes: { type: 'integer' }, blocked: { type: 'integer' }, human_gates_pending: { type: 'integer' } }, required: ['doc', 'errors', 'chains', 'lanes', 'blocked', 'human_gates_pending'] },
     },
     next_milestones: { type: 'array', items: { type: 'string' }, description: 'from --roadmap: the next actionable milestones' },
+    unconfirmed: {
+      type: 'array',
+      description: 'from --decisions: every decision record no person confirmed (tagged assumed, or untagged)',
+      items: { type: 'object', properties: { doc: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' }, by: { type: 'string', description: 'assumed, or empty when untagged' } }, required: ['doc', 'id', 'title', 'by'] },
+    },
+    proposed: {
+      type: 'array',
+      description: 'from --decisions: every line that holds a value an author proposed, marked (proposed)',
+      items: { type: 'object', properties: { doc: { type: 'string' }, line: { type: 'integer' }, text: { type: 'string' } }, required: ['doc', 'line', 'text'] },
+    },
   },
-  required: ['docs', 'lanes', 'next_milestones'],
+  required: ['docs', 'lanes', 'next_milestones', 'unconfirmed', 'proposed'],
 }
 const CHECKPOINT_SCHEMA = {
   type: 'object',
@@ -344,7 +419,11 @@ const CHECKPOINT_SCHEMA = {
   required: ['committed', 'commit', 'pushed', 'files'],
 }
 const blocking = list => list.filter(f => f.severity === 'bug' || f.severity === 'concern')
-
+// What a per-doc reviewer makes of a decision's provenance tag, and what every reviser does with a finding that is the person's.
+const TAG_REVIEW = ON_Q === 'assume'
+  ? `The person chose to proceed on assumptions, so a decision tagged (assumed) is not a defect. `
+  : `A person-owned decision tagged (assumed), or (source) when the source was drafted for the person (${DRAFTED}), is a concern whose fix is the question to ask. The person-owned choices: ${OWNED}. `
+const PERSON_FINDING = `A finding only the person can settle (the source is silent or ambiguous on it, the fix would choose for them, or it would change a choice the person made) is a blocking question, per QUESTIONS: never decline it or pick a side. `
 
 // Review docs with /review-proposal and revise with /propose --revise until no bug or concern remains.
 // Same shape as plan-to-merged-pr's review loop: suggestions and nits get one revise round, defects block.
@@ -357,7 +436,7 @@ async function reviewLoop(docs, frame, label, ph, scope) {
   let fixes = 0, findings = [], clean = false, reviewed = true, questions = []
   for (let round = 1; ; round++) {
     const review = await agent(
-      WORK + REVIEW_CTX + answersFor(scope) + `Invoke the Skill tool with skill "review-proposal" once for each of these docs: ${docs.join(', ')}. ${frame}` +
+      WORK + REVIEW_CTX + TAG_REVIEW + answersFor(scope) + `Invoke the Skill tool with skill "review-proposal" once for each of these docs: ${docs.join(', ')}. ${frame}` +
       `Report every finding (bug/concern/suggestion/nit) with the doc it is about, verified against the docs, ${SOURCE} and the tree. Do not edit files. ` +
       `Set completed=false if the skill stopped without reviewing every doc (an empty findings list must mean a real, clean review).` +
       (history.length ? `\nEarlier rounds and what the reviser did (confirm each is resolved; do not re-report revised items or ones validly declined):\n${JSON.stringify(history, null, 1)}` : ''),
@@ -372,7 +451,7 @@ async function reviewLoop(docs, frame, label, ph, scope) {
     if (fixes >= MAX_REVIEW) break
     const fix = await agent(
       WORK + CTX + ASK(scope) + `For each doc with findings below, invoke the Skill tool with skill "propose" with args "--revise <doc>", applying these findings; ` +
-      `decline any you can verify is wrong and give the reason. A finding only the person can settle (the source is silent or ambiguous on it, and the fix would choose for them) is a blocking question, per QUESTIONS: never decline it or pick a side. ` +
+      `decline any you can verify is wrong and give the reason. ` + PERSON_FINDING +
       `Edit only ${docs.join(', ')}; never any other doc. Re-run ${LINT} on each revised doc until it reports no errors.\n` +
       JSON.stringify(findings, null, 2),
       opts(`revise:${label}-${round}`, ph, 'revise', REVISE_SCHEMA),
@@ -413,6 +492,8 @@ async function checkpoint(ph, docs, subject) {
 }
 
 let arch = null, judged = null, archReview = null, panelSaved = null, reusedPanel = false
+// The judge's questions when they could be neither asked nor assumed (the synthesis was not saved): /roadmap carries them.
+let judgeOpen = []
 const proposals = []
 let kept = []
 
@@ -496,18 +577,31 @@ if (BRIEF_MODE) {
       roadmap_exists: { type: 'boolean' },
       milestones: { type: 'array', items: MILESTONE, description: 'from the lint\'s --roadmap, when roadmap.md exists' },
       panel_synthesis: { type: 'boolean', description: 'only when asked: the state branch holds design/panel-synthesis.md for this brief' },
+      saved_answers: {
+        type: 'array',
+        description: 'the answers in the state branch\'s design/answers.json, when its source names this brief; else empty',
+        items: { type: 'object', properties: { id: { type: 'string' }, stage: { type: 'string' }, question: { type: 'string' }, answer: { type: 'string' }, date: { type: 'string' } }, required: ['id', 'answer'] },
+      },
+      context_exists: { type: 'boolean', description: 'the context file exists (after the restore, when one was tried); true when the run names none' },
+      context_restored: { type: 'boolean', description: 'the context file was missing and was restored from the state branch' },
       notes: { type: 'string' },
     },
-    required: ['brief_exists', 'out_dir', 'architecture', 'roadmap', 'architecture_exists', 'roadmap_exists', 'milestones', 'panel_synthesis'],
+    required: ['brief_exists', 'out_dir', 'architecture', 'roadmap', 'architecture_exists', 'roadmap_exists', 'milestones', 'panel_synthesis', 'saved_answers', 'context_exists', 'context_restored'],
   }
   survey = await agent(
-    GUARD + WHERE + `Find the design docs that already exist, before this run writes any. Read-only: change no file and no git state. ` +
+    GUARD + WHERE + `Find the design docs that already exist, before this run writes any. Read-only${CTX_FILE ? ' but for the one restore step 6 allows' : ''}: change no ${CTX_FILE ? 'other ' : ''}file and no git state. ` +
     `1. brief_exists: whether ${A.brief} exists (relative to ${DIR}, or absolute). ` +
     `2. The proposals directory is ${OUT_TEXT}, relative to ${DIR}: return it as out_dir, with the paths of its architecture.md and roadmap.md and whether each exists. ` +
     `3. When roadmap.md exists, run ${LINT} <roadmap> --roadmap and ${MILESTONES_FROM_LINT}. ` +
     (FROM_ARG === 'architecture'
       ? `4. Run ${STATE} get design/panel-synthesis.md (this read of the repository's state branch is allowed; a missing script counts as none saved): panel_synthesis is true when it exits 0 and the file's Source: line names ${BRIEF_REL}, else false (exit 3: none saved; exit 2: say why in notes). `
       : `4. Leave panel_synthesis false. `) +
+    `5. Run ${STATE} get design/answers.json (this read of the repository's state branch is allowed; a missing script counts as none saved): when it exits 0 and the file's source names ${BRIEF_REL}, ` +
+    `return its answers as saved_answers (the id, stage, question, answer and date of each, verbatim); else return saved_answers empty (exit 3: none saved; exit 2: say why in notes). ` +
+    (CTX_FILE
+      ? `6. context_exists: whether ${CTX_FILE} exists (relative to ${DIR}, or absolute). Never read it, and never copy any of its text. When it does not exist, run, in ${DIR}: ${STATE} get context/builder-context.md --to ${CTX_FILE} ` +
+        `(the one write this stage may make; exit 0 means the person chose to keep their framing on the state branch): on exit 0 return context_exists true and context_restored true; otherwise both false (exit 3: none saved; exit 2: say why in notes). `
+      : `6. Return context_exists true and context_restored false. `) +
     `This run was asked to start at ${FROM_ARG || 'the stage the docs and answers imply'}${A.force ? ', regenerating the docs (force)' : ''}${ANSWERS.length ? `, with answers to ${ANSWERS.map(a => a.id).join(', ')}` : ''}.`,
     opts('existing-docs', 'Seed', 'lint', SURVEY_SCHEMA),
   )
@@ -517,13 +611,26 @@ if (BRIEF_MODE) {
   }
   if (!survey) return startFailed('the existing-docs stage failed to report')
   if (!survey.brief_exists) return startFailed(`brief_not_found: ${A.brief} does not exist in ${DIR} (the checkpoints never commit it: copy it into this checkout, then re-run)`)
+  if (CTX_FILE && !survey.context_exists) {
+    return startFailed(`context_not_found: ${CTX_FILE} does not exist in ${DIR}, and the state branch holds no context/builder-context.md to restore it from. Copy it back into this checkout or rewrite it with the person, then re-run: a design run without the person's framing would choose for them`)
+  }
+  if (CTX_FILE && survey.context_restored) log(`Restored ${CTX_FILE} from the state branch (context/builder-context.md)`)
   if (!!survey.architecture_exists !== !!survey.roadmap_exists && !A.force) {
     return startFailed(`partial_docs: only ${survey.architecture_exists ? survey.architecture : survey.roadmap} exists. Restore the other one, or pass force to regenerate both from scratch`)
   }
   DOCS_EXIST = !!(survey.architecture_exists && survey.roadmap_exists)
-  // Inferred with the docs on disk: every answer counts but the Intake's, which the docs were written after. An architecture
-  // answer still counts, since an architecture reviser's question can be pending on docs that exist.
+  // Inferred with the docs on disk: every answer passed in args counts but the Intake's, which the docs were written after.
+  // An architecture answer still counts, since an architecture reviser's question can be pending on docs that exist. The
+  // answers restored below never count: an earlier run already used them.
   const counted = ANSWERS.filter(a => a.stage !== 'intake')
+  const have = new Set(ANSWERS.map(a => a.id))
+  for (const a of (survey.saved_answers || []).filter(answered)) {
+    if (!a.id || have.has(a.id)) continue
+    have.add(a.id)
+    ANSWERS.push(withStage(a))
+    restored.push(a.id)
+  }
+  if (restored.length) log(`Restored ${restored.length} answer(s) saved on the state branch (design/answers.json): ${restored.join(', ')}`)
   FROM = FROM_ARG || (A.force ? 'intake' : DOCS_EXIST ? (counted.length ? earliestStage(counted.map(a => a.stage)) : 'proposals') : 'intake')
   if (at(FROM) >= at('proposals') && !DOCS_EXIST) {
     FROM = null
@@ -535,6 +642,21 @@ if (BRIEF_MODE) {
 }
 // The docs are written (or rewritten) by /roadmap in this run; otherwise the existing ones are kept and resumed.
 const REGEN = BRIEF_MODE && (!!A.force || !DOCS_EXIST)
+
+// ---- Answers: the ones this run was given, with the ones restored, are kept on the state branch, so the person's decisions
+// outlive the session and a re-run from any clone picks them up. Best effort: the result says whether it worked.
+if (GIVEN) {
+  const store = { source: BRIEF_MODE ? BRIEF_REL : 'concern', answers: ANSWERS.map(a => ({ id: a.id, stage: a.stage, question: a.question || '', answer: a.answer, date: a.date || '' })) }
+  const saved = await agent(
+    GUARD + WHERE + `Save the person's answers to the repository's state branch. Write the text between the -----BEGIN ANSWERS----- and -----END ANSWERS----- lines below (not those lines), verbatim, to a file in a new temporary directory outside ${DIR} (mktemp -d), ` +
+    `then run, in ${DIR}: ${STATE} save <that file> --as design/answers.json -m "brief-to-proposals: the person's answers". Remove the temporary directory afterwards. ` +
+    `Change nothing in ${DIR}'s working tree, index or branches. Saving is best effort: when the script is missing or exits 2, report saved=false with its message, and never retry another way.\n` +
+    `-----BEGIN ANSWERS-----\n${JSON.stringify(store, null, 1)}\n-----END ANSWERS-----`,
+    opts('save-answers', 'Seed', 'lint', { type: 'object', properties: { saved: { type: 'boolean' }, commit: { type: 'string' }, error: { type: 'string' } }, required: ['saved'] }),
+  )
+  answersSaved = !!(saved && saved.saved)
+  log(answersSaved ? `${store.answers.length} answer(s) saved to the state branch (design/answers.json)` : `Answers not saved (best effort): ${(saved && saved.error) || 'the stage failed to report'}`)
+}
 
 // ---- Intake: ask before assuming. One read of the source for what only the person can answer, before any sketch or doc
 // is written on a guess. With on_question 'assume', the recommended options become shared answers for every later stage,
@@ -548,8 +670,10 @@ if (at(FROM) <= at('intake')) {
   }
   const intake = await agent(
     GUARD + WHERE + CTX + answersFor('intake') + `Read ${SOURCE} in full (a long brief in chunks, to the last line), and enough of the tree in ${DIR} to know what exists if it has code. ` +
-    `You are the intake for a design run: before anyone sketches an architecture or writes a doc, find every blocking question. ` + BLOCKING_DEF +
-    `Ask only where a wrong guess would send the architecture, the roadmap's order or the first milestone the wrong way; prefer a few high-value questions, and never one the framing or the answers above already settle. ` +
+    `You are the intake for a design run: before anyone sketches an architecture or writes a doc, find every blocking question and every confirmation. ` + BLOCKING_DEF +
+    `Go through the person-owned choices class by class. For each class the source touches, either quote in notes where the person settled it (the framing, an answer above, or a source the person wrote themselves) or return it: ` +
+    `a blocking question when the source is silent on it or states it two ways, a confirmation (confirm: true, the source's value as the recommended option) when the source was drafted for the person or the framing lists it as open, recommended or not yet decided. ` +
+    `One item per choice; values of one kind (several retention periods, several thresholds) form one confirmation. Never one the framing or the answers above already settle, and never an implementation choice. ` +
     `Each question: why it blocks (where each option sends the design), 2-4 concrete options, and the one you recommend. ` +
     `Return no questions when nothing blocks. In assumptions, list what you would otherwise take as given that the source does not state. Read-only: write no files.`,
     opts('intake', 'Intake', 'intake', INTAKE_SCHEMA),
@@ -558,10 +682,7 @@ if (at(FROM) <= at('intake')) {
   if (asked(intake)) {
     const qs = tagQuestions('intake', intake.questions)
     if (ON_Q !== 'assume') return needsInput(qs, { seeded })
-    for (const q of qs) {
-      ANSWERS.push({ id: q.id, stage: 'intake', question: q.question, answer: `${q.recommended} (assumed: the person chose to proceed on recommendations)` })
-      ASSUMED.push({ stage: 'intake', assumption: `${q.question} -> ${q.recommended}` })
-    }
+    assume(qs)
     log(`Intake: proceeding on ${qs.length} recommended answer(s) (on_question: assume)`)
   } else {
     log('Intake: no blocking questions')
@@ -588,20 +709,23 @@ if (BRIEF_MODE) {
         const sketches = (await parallel(Array.from({ length: PANEL }, (_, i) => () => {
           const angle = ANGLES[i % ANGLES.length]
           return agent(
-            GUARD + WHERE + CTX + answersFor('architecture') + `Read ${SOURCE} in full, and the existing tree in ${DIR} if it has code. Sketch an architecture for it from this angle — ${angle.text} ` +
+            GUARD + WHERE + CTX + answersFor('architecture') + intakeAssumed() + `Read ${SOURCE} in full, and the existing tree in ${DIR} if it has code. Sketch an architecture for it from this angle — ${angle.text} ` +
             `Cover components and technologies, data flow, the major decisions with the options you weighed, security and privacy, how it is deployed and operated ` +
             `(environments, CI/CD, secrets, migrations, monitoring, rollback, release gates such as legal review or store submission), ordered milestones with exit criteria ` +
             `(mark the ones a person must do), the assumptions the design rests on that nobody has verified, and your sketch's weaknesses. ` +
+            `A sketch returns no questions: where the source contradicts the person's framing or an answer, or a person-owned choice (${OWNED}) is settled by none of them, settle nothing silently: name it in assumptions_to_validate, for the judge to ask. ` +
             `Read-only: write no files. Ground every claim about the source in its text.`,
             opts(`sketch:${angle.key}${i >= ANGLES.length ? `-${i}` : ''}`, 'Architecture', 'sketch', SKETCH_SCHEMA),
           ).then(s => s && { angle: angle.key + (i >= ANGLES.length ? `-${i}` : ''), ...s })
         }))).filter(Boolean)
         if (sketches.length) {
           judged = await agent(
-            GUARD + WHERE + CTX + answersFor('architecture') + `Judge these independent architecture sketches for ${SOURCE} (read it in full first). Score each 1-5 on: fit to the source's constraints ` +
+            GUARD + WHERE + CTX + answersFor('architecture') + intakeAssumed() + `Judge these independent architecture sketches for ${SOURCE} (read it in full first). Score each 1-5 on: fit to the source's constraints ` +
             `(builder, budget, timeline, licence, revenue model), time to the first validation, security and privacy, operability and cost, simplicity, and room to grow; ` +
             `total the scores. Then write the synthesis to build on: the winner, with any clearly better idea from the others grafted in, naming what came from where and why. ` +
-            `Keep every decision with its options and choice. The synthesis is saved to the repository's state branch: state the framing's constraints in your own words, and never copy personal data, credentials or the framing text itself into it. Read-only: write no files.\n\nSKETCHES:\n${JSON.stringify(sketches, null, 1)}`,
+            `Keep every decision with its options and choice. ` + BLOCKING_DEF +
+            `A decision the sketches chose differently, or a person-owned choice, that the source, the framing and the answers do not settle is not yours to settle: return it in questions (a confirmation, confirm: true, when one value is the source's or the framing's), ` +
+            `with the sketches' options, why it matters and the one you recommend, and mark it OPEN in the synthesis. Return no questions when nothing is open. The synthesis is saved to the repository's state branch: state the framing's constraints in your own words, and never copy personal data, credentials or the framing text itself into it. Read-only: write no files.\n\nSKETCHES:\n${JSON.stringify(sketches, null, 1)}`,
             opts('judge', 'Architecture', 'judge', JUDGE_SCHEMA),
           )
           if (judged) {
@@ -615,13 +739,32 @@ if (BRIEF_MODE) {
               opts('save-panel', 'Architecture', 'lint', { type: 'object', properties: { saved: { type: 'boolean' }, commit: { type: 'string' }, error: { type: 'string' } }, required: ['saved'] }),
             )
             log(panelSaved && panelSaved.saved ? 'Panel synthesis saved to the state branch (design/panel-synthesis.md)' : `Panel synthesis not saved (best effort): ${(panelSaved && panelSaved.error) || 'the stage failed to report'}`)
+            // The judge asked: assumed like the Intake's, or asked now when a re-run from 'architecture' can build on the saved
+            // synthesis. With no saved synthesis a stop would cost the panel, so /roadmap carries the questions instead.
+            if (asked(judged)) {
+              const qs = tagQuestions('architecture', judged.questions)
+              if (ON_Q === 'assume') {
+                assume(qs)
+                log(`Architecture panel: proceeding on ${qs.length} recommended answer(s) to the judge's question(s) (on_question: assume)`)
+              } else if (panelSaved && panelSaved.saved) {
+                return needsInput(qs, { seeded, panel: judged })
+              } else {
+                judgeOpen = judged.questions
+                log(`Architecture panel: the judge left ${qs.length} question(s) open and the synthesis was not saved, so /roadmap carries them`)
+              }
+            }
           }
         }
       }
+      // The source wins over a synthesis the person has not confirmed; what the synthesis leaves open for the person is asked.
+      const SYNTH_RULE = `An open question the synthesis leaves for the person is a blocking question, never a D-record to confirm later. Every departure from the synthesis is listed, with its reason, in assumptions; ` +
+        `where the framing or an answer confirms the synthesis or one of its choices, a departure from it is a blocking question. `
       const SYNTHESIS = judged
-        ? `Build on this architecture synthesis from an independent panel (a strong input, not a substitute for reading the source; where it contradicts the source, the source wins and you say so):\n${judged.synthesis}\n`
+        ? `Build on the architecture synthesis below, from an independent panel (a strong input, not a substitute for reading the source; where it contradicts the source, the source wins and you say so). ${SYNTH_RULE}` +
+          (judgeOpen.length ? `The panel's judge left these questions for the person, and they could not be asked before this stage: return each one still open in your questions, with your own: ${JSON.stringify(judgeOpen)}\n` : '') +
+          `The synthesis:\n${judged.synthesis}\n`
         : reusedPanel
-        ? `Build on the architecture synthesis an independent panel wrote for this brief in an earlier run (a strong input, not a substitute for reading the source; where it contradicts the source or an answer above, they win and you say so). ` +
+        ? `Build on the architecture synthesis an independent panel wrote for this brief in an earlier run (a strong input, not a substitute for reading the source; where it contradicts the source or an answer above, they win and you say so). ${SYNTH_RULE}` +
           `Read it before invoking the skill: ${STATE} get design/panel-synthesis.md --to <a file in a new temporary directory outside ${DIR}> (this read of the state branch is allowed; it changes nothing in ${DIR}); if that exits 3 or 2, build without it and say so in notes.\n`
         : ''
       arch = await agent(
@@ -634,12 +777,33 @@ if (BRIEF_MODE) {
       if (asked(arch)) return needsInput(tagQuestions('architecture', arch.questions), { seeded, panel: judged })
       if (!arch || arch.stopped) {
         log(`/roadmap stopped: ${(arch && arch.stop_reason) || 'the stage failed to report'}`)
-        return { status: 'failed_at_roadmap', stop_reason: (arch && arch.stop_reason) || '', seeded, panel: judged, ...runInfo() }
+        return { status: 'failed_at_roadmap', stop_reason: (arch && arch.stop_reason) || '', assumptions: ASSUMED, seeded, panel: judged, ...runInfo() }
       }
       log(`Wrote ${arch.architecture} and ${arch.roadmap}: ${arch.milestones.length} milestones`)
     } else {
       arch = surveyArch()
       log(`Resuming the review of the existing ${arch.architecture} and ${arch.roadmap}: /roadmap is not re-run`)
+      // The docs were written before some of the person's answers: those are applied before the review, so the reviewer reads
+      // docs that already say what the person decided. Not a review round; its questions stop the run like any reviser's.
+      const settled = ANSWERS.filter(a => !a.assumed && (a.stage === 'intake' || a.stage === 'architecture'))
+      if (settled.length) {
+        const applied = await agent(
+          WORK + CTX + ASK('architecture') + `${arch.architecture} and ${arch.roadmap} may have been written before some of the person's answers. Read both, and find the answers below that they do not yet reflect. ` +
+          `For each of the two docs that needs a change, invoke the Skill tool with skill "propose" with args "--revise <doc>", applying those answers as its findings, ` +
+          `and tag each decision an answer settles (person, <the answer's date, or today's when it has none>, <the answer's id>). When the docs already reflect every answer, write nothing and say so in summary. ` +
+          `A change an answer calls for that only the person can settle (it is ambiguous, or it contradicts another answer or the framing) is a blocking question, per QUESTIONS: never pick a side. ` +
+          `Edit only ${arch.architecture} and ${arch.roadmap}; never any other doc. Re-run ${LINT} on each revised doc until it reports no errors.\n` +
+          JSON.stringify(settled.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, date: a.date || '' })), null, 2),
+          opts('revise:architecture-answers', 'Architecture', 'revise', REVISE_SCHEMA),
+        )
+        noteAssumptions('architecture', applied)
+        if (asked(applied)) {
+          const qs = tagQuestions('architecture', applied.questions)
+          await checkpoint('Architecture', [arch.architecture, arch.roadmap], 'Checkpoint the draft architecture and roadmap')
+          return needsInput(qs, { seeded, architecture: arch, panel: judged })
+        }
+        log(applied ? `Answers applied to the existing docs: ${applied.summary || 'no summary'}` : 'The stage that applies the answers to the existing docs failed to report; the review checks the docs against them')
+      }
     }
     archReview = await reviewLoop(
       [arch.architecture, arch.roadmap],
@@ -649,10 +813,20 @@ if (BRIEF_MODE) {
     )
     await checkpoint('Architecture', [arch.architecture, arch.roadmap], 'Checkpoint the draft architecture and roadmap')
     if (archReview.questions.length) return needsInput(archReview.questions, { seeded, architecture: arch, panel: judged, architecture_review: archReview })
-    if (!archReview.reviewed) return { status: 'review_failed', resume_from: 'architecture', architecture: arch, panel: judged, architecture_review: archReview, ...runInfo() }
+    if (!archReview.reviewed) return { status: 'review_failed', resume_from: 'architecture', assumptions: ASSUMED, architecture: arch, panel: judged, architecture_review: archReview, ...runInfo() }
     if (!archReview.clean) {
       log('Architecture or roadmap still has blocking findings — stopping before any proposal is written')
-      return { status: 'blocked_at_architecture_review', resume_from: 'architecture', architecture: arch, panel: judged, architecture_review: archReview, ...runInfo() }
+      // The person decides what happens to findings the revise rounds did not clear: the run never picks for them.
+      const ways = [
+        `(A) Another pass: re-run with the same args and from: 'architecture', with max_review_rounds above ${MAX_REVIEW}.`,
+        `(B) Answer the findings that are theirs (scope, money, legal posture, data handling, a departure from what they said): pass each back as an answer (id architecture.d<N>, with the finding as its question), then re-run with from: 'architecture'.`,
+        `(C) Go on with from: 'proposals', accepting the findings that remain.`,
+      ]
+      return {
+        status: 'blocked_at_architecture_review', resume_from: 'architecture',
+        relay: `Show the person architecture_review.findings_remaining, each finding in full, and these ways forward: ${ways.join(' ')} They choose; never choose for them.`,
+        next_steps: ways, assumptions: ASSUMED, architecture: arch, panel: judged, architecture_review: archReview, ...runInfo(),
+      }
     }
     // Re-read the milestones: a revise round may have renumbered or renamed them.
     const fresh = await agent(
@@ -844,7 +1018,7 @@ if (BRIEF_MODE && at(FROM) > at('consistency')) {
     if (consistency.unrouted.length) { consistencyOk = false; log(`Findings name docs this run did not write: ${consistency.unrouted.map(u => u.doc).join(', ')}`) }
     const fixes = await parallel(targets.map((doc, i) => () => agent(
       WORK + CTX + ASK('consistency') + `Invoke the Skill tool with skill "propose" with args "--revise ${doc}", applying these cross-doc findings; decline any you can verify is wrong and give the reason. ` +
-      `A finding only the person can settle is a blocking question, per QUESTIONS: never decline it or pick a side. ` +
+      PERSON_FINDING +
       `Edit only ${doc}. Re-run ${LINT} ${doc} until it reports no errors.\n${JSON.stringify(byDoc[doc], null, 2)}`,
       opts(`revise:consistency-${i + 1}`, 'Consistency', 'revise', REVISE_SCHEMA),
     ).then(r => ({ doc, ...(r || { failed: true }) }))))
@@ -869,14 +1043,20 @@ phase('Lint')
 const lint = await agent(
   GUARD + WHERE + `In ${DIR}, run ${LINT} <doc> --json on each of: ${allDocs.join(', ')}; run ${LINT} <doc> --lanes --allow-draft on each proposal ` +
   `(a preview of how it splits once a person accepts it: the docs are drafts, and without --allow-draft every lane would show as blocked)` +
-  (arch ? `; and ${LINT} ${arch.roadmap} --roadmap --json` : '') + `. Report per doc the error and warning counts and their messages, ` +
-  `per proposal the --lanes errors (e.g. lane_cycle) and the number of chains, lanes, blocked lanes and pending human gates, and the next actionable milestones. Change nothing.`,
+  (arch ? `; ${LINT} ${arch.roadmap} --roadmap --json` : '') + `; and ${LINT} <doc> --decisions on ${arch ? `${arch.architecture} and ` : ''}each proposal. Report per doc the error and warning counts and their messages, ` +
+  `per proposal the --lanes errors (e.g. lane_cycle) and the number of chains, lanes, blocked lanes and pending human gates, and the next actionable milestones. ` +
+  `From each --decisions output, return in unconfirmed every record of its unconfirmed list (the doc, its id, title and by) and in proposed every entry of its proposed list (the doc, its line and text); ` +
+  `a lint that does not know --decisions: return both empty. Change nothing.`,
   opts('lint', 'Lint', 'lint', LINT_SCHEMA),
 )
 const lintErrors = lint ? lint.docs.reduce((n, d) => n + d.errors, 0) + lint.lanes.reduce((n, l) => n + (l.errors || 0), 0) : null
 const unclean = written.filter(p => !p.review || !p.review.clean)
 const laterDocs = BRIEF_MODE ? propDocs.slice(1).map(p => p.doc) : []
 
+// What no person confirmed, shown to the person before they accept a doc: the run's assumptions, the decisions tagged (assumed)
+// or untagged, and the values an author proposed.
+const unconfirmed = (lint && lint.unconfirmed) || [], proposedValues = (lint && lint.proposed) || []
+const named = unconfirmed.slice(0, 12).map(u => `${u.id} "${u.title}" in ${u.doc}`).join('; ') + (unconfirmed.length > 12 ? `; and ${unconfirmed.length - 12} more` : '')
 const questions = pendingQs.concat((consistency && consistency.questions) || [])
 if (questions.length) logQuestions(questions)
 const resumeFrom = questions.length && BRIEF_MODE ? earliestStage(questions.map(q => q.stage)) : ''
@@ -907,6 +1087,14 @@ return {
     questions.length ? `First answer the ${questions.length} question(s) in questions (see relay): the docs that raised them are unwritten or unrevised, and the Consistency phase waits on them.` : null,
     BRANCH ? `The docs, the seeded .claude files and CLAUDE.md are committed on ${BRANCH}${unpushed ? `; a checkpoint did not reach origin (branch.checkpoints says why): push ${BRANCH} once that is fixed` : ', pushed to origin'}. ` +
       `Edit and accept the docs on that branch; a re-run with the same args, from this clone or a fresh one, checks the branch out and picks up the docs where they stand.` : null,
+    !lint || ASSUMED.length || unconfirmed.length || proposedValues.length
+      ? `Before a doc is accepted, show the person this result's assumptions (${ASSUMED.length}), lint.unconfirmed (${lint ? unconfirmed.length : 'not read: the lint failed'} decision(s) no person confirmed${named ? `: ${named}` : ''}) ` +
+        `and lint.proposed (${lint ? proposedValues.length : 'not read'} value(s) an author proposed), and ask them to confirm or correct each. A correction goes back as an answer ` +
+        (BRIEF_MODE
+          ? `(architecture.d<N>, or m<N>.d<K> with milestones: [N], its question naming the decision by title) with from set to that stage, or through the refresh-proposal workflow on the one doc`
+          : `through the refresh-proposal workflow on the doc, or (proposal.d<N>, its question naming the decision by title) to a re-run of this workflow, which writes the proposal again`) +
+        `; the revise tags the decision (person, <date>).`
+      : null,
     'Read and edit the docs. They are drafts (Status: draft): set Status: accepted on each one you approve; nothing is built or bootstrapped from a draft.',
     // Every proposal was written against today's tree, which the earlier milestones will change before the later ones build.
     laterDocs.length ? `Accept the proposals one milestone at a time, in roadmap order. Before accepting each one after the first (${laterDocs.join(', ')}), once the milestones before it have merged, ` +

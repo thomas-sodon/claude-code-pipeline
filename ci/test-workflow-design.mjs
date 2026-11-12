@@ -1,7 +1,9 @@
 // Behavioural tests for brief-to-proposals' resumable design: where a run starts (args.from, or inferred from the answers and
-// the docs on disk), what it keeps, its checkpoints on a design branch, the panel synthesis kept on the state branch, the
-// pairwise Consistency phase and the context file. The workflow body runs against scripted mock agents: a responder picks the
-// reply by the agent's label, and every prompt is recorded so the tests can check which stages ran and what each was told.
+// the docs on disk), what it keeps, its checkpoints on a design branch, the panel synthesis and the person's answers kept on
+// the state branch, the pairwise Consistency phase, the context file, and how the run asks the person instead of choosing for
+// them (the judge's questions, answers applied to existing docs, what nobody confirmed). The workflow body runs against
+// scripted mock agents: a responder picks the reply by the agent's label, and every prompt is recorded so the tests can check
+// which stages ran and what each was told.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -59,7 +61,7 @@ const MILESTONES = [
   M(6, 'Launch', { human_gate: 'release', depends: [5] }),
 ]
 const PATH = { brief: 'docs/brief.md', arch: 'docs/design/architecture.md', roadmap: 'docs/design/roadmap.md', m2: 'docs/design/01-import.md', m3: 'docs/design/02-match.md', m5: 'docs/design/03-alerts.md' }
-const ON_DISK = { brief_exists: true, out_dir: 'docs/design', architecture: PATH.arch, roadmap: PATH.roadmap, architecture_exists: true, roadmap_exists: true, milestones: MILESTONES, panel_synthesis: false }
+const ON_DISK = { brief_exists: true, out_dir: 'docs/design', architecture: PATH.arch, roadmap: PATH.roadmap, architecture_exists: true, roadmap_exists: true, milestones: MILESTONES, panel_synthesis: false, context_exists: true }
 const NO_DOCS = { ...ON_DISK, architecture_exists: false, roadmap_exists: false, milestones: [] }
 const WRITTEN = { out_dir: 'docs/design', architecture: PATH.arch, roadmap: PATH.roadmap, lint_clean: true, milestones: MILESTONES.map(m => ({ ...m, proposal_exists: false })) }
 const SYNTHESIS = 'SYNTHESIS-TEXT: a validation-first architecture'
@@ -335,7 +337,9 @@ await test('brief-to-proposals: context_file reaches every author and reviewer, 
   }
   for (const l of authors) assert.match(prompt(l), /read notes\/builder\.md \(relative to \/abs\/p\) in full: its text is framing from the person, binding/, l)
   for (const l of labels.filter(x => /^(review:|consistency:)/.test(x))) assert.match(prompt(l), /notes\/builder\.md/, l)
-  for (const l of ['seed', 'existing-docs', 'save-panel', 'milestones', 'lint']) assert.doesNotMatch(prompt(l), /notes\/builder\.md/, l)
+  for (const l of ['seed', 'save-panel', 'milestones', 'lint']) assert.doesNotMatch(prompt(l), /notes\/builder\.md/, l)
+  // The survey names it only to check that it exists (and to restore it): it is told never to read it.
+  assert.match(prompt('existing-docs'), /context_exists: whether notes\/builder\.md exists .* Never read it, and never copy any of its text/)
   // Concern mode too.
   const concern = await run(WF, { concern: 'big change', dir: '/abs/p', context_file: 'notes/builder.md' }, design())
   for (const l of ['intake', 'propose']) assert.match(concern.prompt(l), /notes\/builder\.md/, l)
@@ -469,6 +473,275 @@ await test('brief-to-proposals: args that cannot be honoured throw, and a run th
   assert.deepEqual(partial.labels, ['seed', 'existing-docs'])
   const lost = await run(WF, BRIEF, design({ 'existing-docs': null }))
   assert.equal(lost.result.status, 'failed_at_start')
+})
+
+await test('brief-to-proposals: the framing is binding with no source exception, and reviewers report a departure from what the person settled as a bug', async () => {
+  const over = {
+    'review:architecture-1': { findings: [{ doc: PATH.roadmap, severity: 'concern', description: 'x' }], completed: true },
+    'consistency:arch-m2': { findings: [{ doc: PATH.m2, severity: 'bug', description: 'y' }] },
+  }
+  const { labels, prompt } = await run(WF, { ...BRIEF, panel: 3, context: 'CTX-TEXT', context_file: 'notes/builder.md' }, design(over, NO_DOCS))
+  for (const l of labels) assert.doesNotMatch(prompt(l), /unless a source fact contradicts it/, l)
+  for (const l of labels.filter(x => /^(intake|sketch:|judge|roadmap|propose:|revise:)/.test(x))) {
+    assert.match(prompt(l), /Framing from the person, binding\. Where the source, the tree or research contradicts it, pick no side: return a blocking question naming both\. The framing: CTX-TEXT/, l)
+    assert.match(prompt(l), /framing from the person, binding\. Where the source, the tree or research contradicts it, pick no side/, l)
+  }
+  const R4 = /A doc that departs from the person's framing, an answer from the person, or a decision tagged \(person, \.\.\.\), with no newer answer from the person, is a bug whose fix is the question to ask \(with its options\), never a gate or a confirmation at acceptance/
+  const reviewers = labels.filter(x => /^(review:|consistency:)/.test(x))
+  assert.ok(reviewers.includes('review:architecture-1') && reviewers.includes('consistency:arch-m2') && reviewers.includes('review:recheck-1-1'))
+  for (const l of reviewers) {
+    assert.match(prompt(l), R4, l)
+    assert.match(prompt(l), /a choice that follows it or an answer from the person is not a defect: CTX-TEXT/, l)
+  }
+  // The per-doc reviewer also reads the decisions' provenance tags; the pair reviewers do not.
+  assert.match(prompt('review:architecture-1'), /A person-owned decision tagged \(assumed\), or \(source\) when the source was drafted for the person .*is a concern whose fix is the question to ask/)
+  assert.doesNotMatch(prompt('consistency:arch-m2'), /is a concern whose fix is the question to ask/)
+  // Both revisers: a finding that is the person's is a question, a change to what they chose included.
+  for (const l of ['revise:architecture-1', 'revise:consistency-1']) {
+    assert.match(prompt(l), /A finding only the person can settle \(the source is silent or ambiguous on it, the fix would choose for them, or it would change a choice the person made\) is a blocking question, per QUESTIONS/, l)
+    assert.match(prompt(l), /Never change what the person settled/, l)
+    assert.match(prompt(l), /name milestones, steps and decisions by title/, l)
+    assert.match(prompt(l), /never a gate, never a D-record whose Choice awaits confirmation/, l)
+  }
+  // The source still wins over a synthesis nobody confirmed; what the synthesis leaves open is asked.
+  assert.match(prompt('roadmap'), /where it contradicts the source, the source wins and you say so/)
+  assert.match(prompt('roadmap'), /An open question the synthesis leaves for the person is a blocking question, never a D-record to confirm later/)
+  assert.match(prompt('roadmap'), /Every departure from the synthesis is listed, with its reason, in assumptions; where the framing or an answer confirms the synthesis or one of its choices, a departure from it is a blocking question/)
+  const reused = await run(WF, { ...BRIEF, panel: 3, from: 'architecture' }, design({}, { ...NO_DOCS, panel_synthesis: true }))
+  assert.match(reused.prompt('roadmap'), /they win and you say so\)\. An open question the synthesis leaves for the person is a blocking question/)
+  // With no framing at all the reviewers still get the rule; in assume mode a decision tagged (assumed) is no defect.
+  const bare = await run(WF, BRIEF, design({}, NO_DOCS))
+  for (const l of ['review:architecture-1', 'review:m2-1', 'consistency:arch-m2']) assert.match(bare.prompt(l), R4, l)
+  const assumeRun = await run(WF, { ...BRIEF, on_question: 'assume' }, design(over, NO_DOCS))
+  assert.match(assumeRun.prompt('review:architecture-1'), /The person chose to proceed on assumptions, so a decision tagged \(assumed\) is not a defect/)
+  assert.doesNotMatch(assumeRun.prompt('review:architecture-1'), /is a concern whose fix is the question to ask/)
+  assert.match(assumeRun.prompt('revise:architecture-1'), /tag a decision so taken \(assumed\) in the doc, and report it in assumptions/)
+  assert.doesNotMatch(assumeRun.prompt('revise:architecture-1'), /write and change nothing/)
+})
+
+await test('brief-to-proposals: the judge\'s questions stop the run once the synthesis is saved, are assumed, or ride on /roadmap when it was not saved', async () => {
+  const JQ = { question: 'Hosted for everyone, or self-run?', why: 'hosting opens an account in your name', options: ['hosted', 'self-run'], recommended: 'self-run', confirm: true }
+  const judge = { scores: [{ sketch: 'validate-first', total: 26, notes: '' }], winner: 'validate-first', synthesis: SYNTHESIS, questions: [Q, JQ] }
+  const asking = await run(WF, { ...BRIEF, panel: 3, answers: [{ id: 'architecture.q1', answer: 'AA' }] }, design({ judge }, NO_DOCS))
+  assert.equal(asking.result.status, 'needs_input')
+  assert.equal(asking.labels.at(-1), 'save-panel', 'the synthesis is saved before the run stops, and nothing is written after')
+  assert.deepEqual(asking.result.questions.map(q => [q.id, q.stage, q.confirm]), [['architecture.q2', 'architecture', undefined], ['architecture.q3', 'architecture', true]])
+  assert.equal(asking.result.resume_from, 'architecture')
+  assert.match(asking.result.relay, /from: 'architecture'/)
+  assert.match(asking.prompt('judge'), /that the source, the framing and the answers do not settle is not yours to settle: return it in questions/)
+  assert.match(asking.prompt('judge'), /mark it OPEN in the synthesis/)
+  assert.match(asking.prompt('judge'), /The person-owned choices: who the product is for/)
+  // The re-run the relay names builds on that saved synthesis, with the answers.
+  const answers = [{ id: 'architecture.q1', answer: 'AA' }, { id: 'architecture.q2', answer: 'ANSWER-JUDGE-1' }, { id: 'architecture.q3', answer: 'ANSWER-JUDGE-2' }]
+  const followed = await run(WF, { ...BRIEF, panel: 3, from: 'architecture', answers }, design({}, { ...NO_DOCS, panel_synthesis: true }))
+  assert.ok(!followed.labels.includes('judge'))
+  assert.match(followed.prompt('roadmap'), /ANSWER-JUDGE-2/)
+  assert.equal(followed.result.status, 'ready')
+  // on_question assume: each becomes a shared architecture answer and an assumption, as the Intake's do.
+  const assumed = await run(WF, { ...BRIEF, panel: 3, on_question: 'assume' }, design({ judge }, NO_DOCS))
+  assert.equal(assumed.result.status, 'ready')
+  for (const l of ['roadmap', 'review:architecture-1', 'propose:m2', 'review:m2-1', 'consistency:arch-m2']) assert.match(assumed.prompt(l), /Hosted for everyone, or self-run\?","answer":"self-run \(assumed/, l)
+  assert.doesNotMatch(assumed.prompt('intake'), /Hosted for everyone/, 'an architecture answer never reaches the Intake')
+  assert.ok(assumed.result.assumptions.some(a => a.stage === 'architecture' && a.assumption === 'Hosted for everyone, or self-run? -> self-run'))
+  // The save failed, so a re-run could not reuse the panel: no stop; /roadmap carries the questions and returns the open ones.
+  const lost = { judge, 'save-panel': { saved: false, error: 'no state script' } }
+  const unsaved = await run(WF, { ...BRIEF, panel: 3 }, design(lost, NO_DOCS))
+  assert.ok(unsaved.labels.includes('roadmap'))
+  assert.match(unsaved.prompt('roadmap'), /return each one still open in your questions, with your own: .*Hosted for everyone, or self-run\?/)
+  assert.equal(unsaved.result.status, 'ready')
+  const carried = await run(WF, { ...BRIEF, panel: 3 }, design({ ...lost, roadmap: { questions: [JQ] } }, NO_DOCS))
+  assert.equal(carried.result.status, 'needs_input')
+  assert.deepEqual(carried.result.questions.map(q => [q.id, q.confirm]), [['architecture.q1', true]])
+  // A judge that asks nothing changes nothing.
+  const quiet = await run(WF, { ...BRIEF, panel: 3 }, design({}, NO_DOCS))
+  assert.doesNotMatch(quiet.prompt('roadmap'), /return each one still open/)
+  assert.equal(quiet.result.status, 'ready')
+})
+
+await test('brief-to-proposals: an answer whose id names no stage counts as an Intake answer: it reaches every stage and never moves the start', async () => {
+  const odd = [{ id: 'licence', question: 'Which licence variant?', answer: 'ANSWER-LIC' }]
+  const fresh = await run(WF, { ...BRIEF, answers: odd }, design({}, NO_DOCS))
+  for (const l of ['intake', 'roadmap', 'review:architecture-1', 'propose:m2', 'propose:m5', 'consistency:arch-m2']) assert.match(fresh.prompt(l), /ANSWER-LIC/, l)
+  // With the docs on disk it starts nothing earlier than the proposals, as an intake answer would not.
+  const onDisk = await run(WF, { ...BRIEF, answers: odd.concat({ id: 'pricing.q3', answer: 'ANSWER-PRICE' }, { id: 'intake.d2', answer: 'ANSWER-D2' }) }, design())
+  assert.equal(onDisk.result.from, 'proposals')
+  assert.ok(!onDisk.labels.some(l => DESIGN_AGENTS.test(l)), onDisk.labels.join(' '))
+  for (const a of ['ANSWER-LIC', 'ANSWER-PRICE', 'ANSWER-D2']) assert.ok(onDisk.prompt('propose:m5').includes(a), a)
+  // A decision's id (d<N>) and another name's q<N> take no part in a scope's question numbering.
+  const asking = await run(WF, { ...BRIEF, answers: [{ id: 'intake.d4', answer: 'D' }, { id: 'pricing.q3', answer: 'P' }] }, design({ intake: { questions: [Q] } }, NO_DOCS))
+  assert.deepEqual(asking.result.questions.map(q => q.id), ['intake.q1'])
+  // A stage given with the answer is kept when it is a known scope.
+  const staged = await run(WF, { ...BRIEF, answers: [{ id: 'gate-4', stage: 'architecture', answer: 'ANSWER-STAGED' }] }, design())
+  assert.equal(staged.result.from, 'architecture')
+})
+
+await test('brief-to-proposals: the answers a run is given are saved to the state branch with their questions and dates', async () => {
+  const answers = [{ id: 'intake.q1', question: 'Which licence variant?', answer: 'AGPL-3.0-only', date: '2026-11-05' }, { id: 'm3.q1', question: 'Retry how often?', answer: 'A3' }]
+  const { result, labels, prompt } = await run(WF, { ...BRIEF, answers }, design({ 'save-answers': { saved: true, commit: 'abc' } }))
+  assert.deepEqual(labels.slice(0, 3), ['seed', 'existing-docs', 'save-answers'], 'right after the survey, before any design agent')
+  const p = prompt('save-answers')
+  assert.match(p, /pipeline-state\.py save <that file> --as design\/answers\.json/)
+  assert.match(p, /never retry another way/)
+  const saved = JSON.parse(p.match(/-----BEGIN ANSWERS-----\n([\s\S]*)\n-----END ANSWERS-----/)[1])
+  assert.deepEqual(saved, { source: 'docs/brief.md', answers: [
+    { id: 'intake.q1', stage: 'intake', question: 'Which licence variant?', answer: 'AGPL-3.0-only', date: '2026-11-05' },
+    { id: 'm3.q1', stage: 'm3', question: 'Retry how often?', answer: 'A3', date: '' }] })
+  assert.equal(result.answers_saved, true)
+  assert.equal(result.status, 'ready')
+  // The date travels into the prompts with the answer and its id.
+  assert.ok(prompt('propose:m5').includes('{"id":"intake.q1","question":"Which licence variant?","answer":"AGPL-3.0-only","date":"2026-11-05"}'), prompt('propose:m5'))
+  // Best effort: a save that fails is reported and the run goes on.
+  const failedSave = await run(WF, { ...BRIEF, answers }, design({ 'save-answers': { saved: false, error: 'no state script' } }))
+  assert.equal(failedSave.result.answers_saved, false)
+  assert.equal(failedSave.result.status, 'ready')
+  // No answers, nothing to save.
+  const none = await run(WF, BRIEF, design())
+  assert.ok(!none.labels.includes('save-answers'))
+  assert.equal(none.result.answers_saved, undefined)
+  // Concern mode saves after the seed, under the source "concern".
+  const concern = await run(WF, { concern: 'big change', dir: '/abs/p', answers: { 'proposal.q1': 'AP' } }, design({ propose: { doc: 'docs/design/big-change.md', steps: 3, lint_clean: true } }))
+  assert.deepEqual(concern.labels.slice(0, 3), ['seed', 'save-answers', 'intake'])
+  assert.match(concern.prompt('save-answers'), /"source": "concern"/)
+  // A run that cannot start saves nothing: it has not read what is saved, and would overwrite it.
+  const lost = await run(WF, { ...BRIEF, answers }, design({ 'existing-docs': null }))
+  assert.deepEqual(lost.labels, ['seed', 'existing-docs'])
+})
+
+await test('brief-to-proposals: answers saved on the state branch are restored, args win, and a restored one never moves the start', async () => {
+  const disk = { ...ON_DISK, saved_answers: [
+    { id: 'architecture.q1', question: 'Hosted or self-run?', answer: 'SAVED-ARCH', date: '2026-11-05' },
+    { id: 'm3.q1', question: 'Retry how often?', answer: 'SAVED-M3', date: '2026-11-06' }] }
+  const { result, labels, prompt } = await run(WF, { ...BRIEF, answers: [{ id: 'm3.q1', answer: 'ARGS-M3' }] }, design({ 'save-answers': { saved: true } }, disk))
+  assert.match(prompt('existing-docs'), /pipeline-state\.py get design\/answers\.json .*when it exits 0 and the file's source names docs\/brief\.md/)
+  assert.equal(result.from, 'proposals', 'the restored architecture answer does not send the run back to the architecture')
+  assert.ok(!labels.some(l => DESIGN_AGENTS.test(l)), labels.join(' '))
+  assert.deepEqual(result.answers_restored, ['architecture.q1'])
+  assert.match(prompt('propose:m5'), /SAVED-ARCH/)
+  assert.match(prompt('consistency:arch-m3'), /ARGS-M3/)
+  for (const l of labels) assert.doesNotMatch(prompt(l), /SAVED-M3/, l)
+  // What is saved back holds both, so the file never loses an answer.
+  assert.match(prompt('save-answers'), /SAVED-ARCH/)
+  assert.match(prompt('save-answers'), /ARGS-M3/)
+  // Nothing passed: every saved answer is restored, the start stays where the docs put it, and nothing is saved again.
+  const only = await run(WF, BRIEF, design({}, disk))
+  assert.equal(only.result.from, 'proposals')
+  assert.deepEqual(only.result.answers_restored, ['architecture.q1', 'm3.q1'])
+  assert.ok(!only.labels.includes('save-answers'))
+  assert.match(only.prompt('consistency:arch-m3'), /SAVED-M3/)
+  // A restored answer keeps its id out of reach of a new question.
+  const asking = await run(WF, { ...BRIEF, from: 'proposals', milestones: [3] }, design({ 'propose:m3': { questions: [Q] } }, disk))
+  assert.deepEqual(asking.result.questions.map(q => q.id), ['m3.q2'])
+  // None saved, none restored.
+  assert.equal((await run(WF, BRIEF, design())).result.answers_restored, undefined)
+})
+
+await test('brief-to-proposals: a context file that is missing is restored from the state branch, or the run does not start', async () => {
+  const args = { ...BRIEF, context_file: 'notes/builder.md' }
+  const missing = await run(WF, args, design({}, { ...NO_DOCS, context_exists: false }))
+  assert.equal(missing.result.status, 'failed_at_start')
+  assert.match(missing.result.stop_reason, /^context_not_found: notes\/builder\.md does not exist/)
+  assert.match(missing.result.stop_reason, /Copy it back into this checkout or rewrite it with the person, then re-run: a design run without the person's framing would choose for them/)
+  assert.deepEqual(missing.labels, ['seed', 'existing-docs'])
+  assert.match(missing.prompt('existing-docs'), /pipeline-state\.py get context\/builder-context\.md --to notes\/builder\.md \(the one write this stage may make/)
+  assert.match(missing.prompt('existing-docs'), /Read-only but for the one restore step 6 allows/)
+  // Restored: the run goes on.
+  const back = await run(WF, args, design({}, { ...NO_DOCS, context_exists: true, context_restored: true }))
+  assert.equal(back.result.status, 'ready')
+  assert.ok(back.labels.includes('intake'))
+  // With no context_file nothing is restored or required.
+  const none = await run(WF, BRIEF, design({}, { ...NO_DOCS, context_exists: false }))
+  assert.equal(none.result.status, 'ready')
+  assert.doesNotMatch(none.prompt('existing-docs'), /builder-context/)
+  assert.match(none.prompt('existing-docs'), /Read-only: change no file and no git state/)
+})
+
+await test('brief-to-proposals: results that stop early carry the assumptions, and a blocked architecture review hands the person the ways forward', async () => {
+  const finding = { findings: [{ doc: PATH.roadmap, severity: 'concern', description: 'no rollback plan' }], completed: true }
+  const blocked = await run(WF, { ...BRIEF, from: 'architecture', max_review_rounds: 1 }, design({
+    'review:architecture-1': finding, 'review:architecture-2': finding, 'revise:architecture-1': { summary: 'tried', assumptions: ['took weekly backups'] } }))
+  const r = blocked.result
+  assert.equal(r.status, 'blocked_at_architecture_review')
+  assert.deepEqual(r.assumptions, [{ stage: 'architecture', assumption: 'took weekly backups' }])
+  assert.match(r.relay, /Show the person architecture_review\.findings_remaining/)
+  assert.match(r.relay, /never choose for them/)
+  assert.equal(r.next_steps.length, 3)
+  assert.match(r.next_steps[0], /from: 'architecture', with max_review_rounds above 1/)
+  assert.match(r.next_steps[1], /scope, money, legal posture, data handling, a departure from what they said.*architecture\.d<N>, with the finding as its question.*from: 'architecture'/)
+  assert.match(r.next_steps[2], /from: 'proposals', accepting the findings that remain/)
+  for (const s of r.next_steps) assert.ok(r.relay.includes(s), s)
+  assert.equal(r.architecture_review.findings_remaining.length, 1)
+  const noRoadmap = await run(WF, BRIEF, design({ intake: { assumptions: ['EU only'] }, roadmap: { stopped: true, stop_reason: 'error=source_too_vague' } }, NO_DOCS))
+  assert.equal(noRoadmap.result.status, 'failed_at_roadmap')
+  assert.deepEqual(noRoadmap.result.assumptions, [{ stage: 'intake', assumption: 'EU only' }])
+  const noReview = await run(WF, BRIEF, design({ intake: { assumptions: ['EU only'] }, 'review:architecture-1': { findings: [], completed: false } }, NO_DOCS))
+  assert.equal(noReview.result.status, 'review_failed')
+  assert.deepEqual(noReview.result.assumptions, [{ stage: 'intake', assumption: 'EU only' }])
+})
+
+await test('brief-to-proposals: resuming at the architecture applies the person\'s answers to the existing docs before the review', async () => {
+  const answers = [{ id: 'intake.d1', question: 'Which licence variant?', answer: 'AGPL-3.0-only', date: '2026-11-05' }, { id: 'architecture.q1', answer: 'ANSWER-ARCH' }, { id: 'm3.q1', answer: 'ANSWER-M3' }]
+  const { result, labels, prompt } = await run(WF, { ...BRIEF, from: 'architecture', answers }, design())
+  assert.ok(labels.includes('revise:architecture-answers'))
+  assert.ok(labels.indexOf('revise:architecture-answers') < labels.indexOf('review:architecture-1'))
+  assert.ok(!labels.includes('roadmap'))
+  const p = prompt('revise:architecture-answers')
+  assert.match(p, /skill "propose" with args "--revise <doc>"/)
+  assert.match(p, /tag each decision an answer settles \(person, <the answer's date, or today's when it has none>, <the answer's id>\)/)
+  assert.match(p, /When the docs already reflect every answer, write nothing/)
+  assert.match(p, /Edit only docs\/design\/architecture\.md and docs\/design\/roadmap\.md/)
+  for (const s of ['"id": "intake.d1"', 'Which licence variant?', '"date": "2026-11-05"', 'ANSWER-ARCH', 'QUESTIONS: this stage runs unattended']) assert.ok(p.includes(s), s)
+  assert.doesNotMatch(p, /ANSWER-M3/, 'a milestone\'s answer is not the architecture\'s to apply')
+  assert.equal(result.status, 'ready')
+  assert.equal(result.architecture_review.revise_rounds, 0, 'applying the answers is not a review round')
+  // Its question stops the run like any reviser's: after the Architecture checkpoint, before the review.
+  const asking = await run(WF, { ...BRIEF, branch: 'design/20261110', from: 'architecture', answers }, design({ 'revise:architecture-answers': { questions: [Q], assumptions: ['kept the old name'] } }))
+  assert.equal(asking.result.status, 'needs_input')
+  assert.deepEqual(asking.result.questions.map(q => q.id), ['architecture.q2'])
+  assert.equal(asking.result.resume_from, 'architecture')
+  assert.equal(asking.labels.at(-1), 'checkpoint:architecture')
+  assert.ok(!asking.labels.includes('review:architecture-1'))
+  assert.deepEqual(asking.result.assumptions, [{ stage: 'architecture', assumption: 'kept the old name' }])
+  // It runs only for the docs that existed, and only with an answer in the Intake's or the architecture's scope.
+  const milestoneOnly = await run(WF, { ...BRIEF, from: 'architecture', answers: [{ id: 'm3.q1', answer: 'A3' }] }, design())
+  assert.ok(!milestoneOnly.labels.includes('revise:architecture-answers'))
+  const fresh = await run(WF, { ...BRIEF, answers: [{ id: 'intake.q1', answer: 'AI' }] }, design({}, NO_DOCS))
+  assert.ok(!fresh.labels.includes('revise:architecture-answers'), '/roadmap wrote the docs on the answers')
+  const laterStage = await run(WF, { ...BRIEF, answers: [{ id: 'intake.q1', answer: 'AI' }] }, design())
+  assert.ok(!laterStage.labels.includes('revise:architecture-answers'), 'a run that starts at the proposals leaves the architecture alone')
+  // A restored answer counts; a recommendation the run assumed is not the person's and is never applied as theirs.
+  const restoredRun = await run(WF, { ...BRIEF, from: 'architecture' }, design({}, { ...ON_DISK, saved_answers: [{ id: 'intake.q1', answer: 'SAVED-INTAKE' }] }))
+  assert.match(restoredRun.prompt('revise:architecture-answers'), /SAVED-INTAKE/)
+  const assumed = await run(WF, { ...BRIEF, from: 'intake', on_question: 'assume' }, design({ intake: { questions: [Q] } }))
+  assert.ok(assumed.labels.includes('review:architecture-1') && !assumed.labels.includes('revise:architecture-answers'))
+  // A stage that fails to report does not stop the run: the review checks the docs against the answers.
+  const lost = await run(WF, { ...BRIEF, from: 'architecture', answers }, design({ 'revise:architecture-answers': null }))
+  assert.ok(lost.labels.includes('review:architecture-1'))
+  assert.match(lost.prompt('review:architecture-1'), /ANSWER-ARCH/)
+})
+
+await test('brief-to-proposals: the Lint stage lists what no person confirmed, and the next steps say to show it before a doc is accepted', async () => {
+  const lint = { docs: [], lanes: [], next_milestones: [],
+    unconfirmed: [{ doc: PATH.arch, id: 'D3', title: 'Data store', by: 'assumed' }, { doc: PATH.m2, id: 'D1', title: 'File format', by: '' }],
+    proposed: [{ doc: PATH.m2, line: 40, text: 'Retention: 30 days (proposed)' }] }
+  const { result, prompt } = await run(WF, { ...BRIEF, from: 'lint' }, design({ lint }))
+  assert.match(prompt('lint'), /proposal-lint\.py <doc> --decisions on docs\/design\/architecture\.md and each proposal/)
+  assert.match(prompt('lint'), /return in unconfirmed every record of its unconfirmed list .* and in proposed every entry of its proposed list/)
+  assert.deepEqual(result.lint.unconfirmed.map(u => u.id), ['D3', 'D1'])
+  const i = result.next_steps.findIndex(s => s.startsWith('Before a doc is accepted'))
+  assert.ok(i >= 0 && i < result.next_steps.findIndex(s => s.startsWith('Read and edit the docs')), result.next_steps.join('\n'))
+  const step = result.next_steps[i]
+  assert.match(step, /lint\.unconfirmed \(2 decision\(s\) no person confirmed: D3 "Data store" in docs\/design\/architecture\.md; D1 "File format" in docs\/design\/01-import\.md\)/)
+  assert.match(step, /lint\.proposed \(1 value\(s\) an author proposed\), and ask them to confirm or correct each/)
+  assert.match(step, /\(architecture\.d<N>, or m<N>\.d<K> with milestones: \[N\], its question naming the decision by title\) with from set to that stage, or through the refresh-proposal workflow on the one doc; the revise tags the decision \(person, <date>\)/)
+  // The run's assumptions alone call for the step; with nothing unconfirmed there is none.
+  const assumedOnly = await run(WF, BRIEF, design({ intake: { assumptions: ['EU only'] } }, NO_DOCS))
+  assert.match(assumedOnly.result.next_steps.find(s => s.startsWith('Before a doc is accepted')), /this result's assumptions \(1\)/)
+  const clean = await run(WF, { ...BRIEF, from: 'lint' }, design())
+  assert.ok(!clean.result.next_steps.some(s => s.startsWith('Before a doc is accepted')))
+  // Concern mode has no architecture: the decisions are read from the proposal alone.
+  const concern = await run(WF, { concern: 'big change', dir: '/abs/p' }, design({ propose: { doc: 'docs/design/big-change.md', steps: 3, lint_clean: true }, lint: { ...lint, unconfirmed: [], proposed: lint.proposed } }))
+  assert.match(concern.prompt('lint'), /--decisions on each proposal/)
+  assert.match(concern.result.next_steps.find(s => s.startsWith('Before a doc is accepted')), /through the refresh-proposal workflow on the doc/)
 })
 
 process.exit(failed ? 1 : 0)
