@@ -1,6 +1,6 @@
 # Pipeline handoff: claude-code-pipeline
 
-<!-- Written by /handoff at 2026-11-12T03:06:00Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
+<!-- Written by /handoff at 2026-11-12T03:50:00Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
 
 ## Goal
 
@@ -8,19 +8,18 @@ This is work on the pipeline itself, not a product run. The person asked for a c
 
 ## Where things stand
 
-- Roadmap: none (the pipeline's own repository has no design docs). Stage: implementation rounds 2 and 3 of 4 are running; then the docs, a review of the whole diff and the final push.
-- Review: done. Eight reviewers found 84 issues (44 after merging duplicates); a second pass mined a real product run in a private repository for evidence (30 findings); a skeptic checked each. After round 1, every finding was checked again against the changed tree: what is still open is in `runs/20261112T030300Z-ask-first-remaining-work.json` (42 items; musts n5, n8, n11, n12, n13, n22, n23, n27, n28).
-- Round 1: committed and pushed, four commits on `claude/gallant-pascal-w9y8ez` (`46347a7` lint reads who decided each D-record; `a93eaf0` design commands ask the person's choices; `9f45c8f` /start-product confirms the brief, /handoff keeps answers and standing rules; `3ba6f67` brief-to-proposals asks in batches and saves answers). Every CI check passed at `3ba6f67` except shellcheck, which is not installed in this container (no `.sh` file changed).
-- Branches: `claude/gallant-pascal-w9y8ez` (pushed at `3ba6f67`, no PR: the person has not asked for one). Also unmerged on origin and not part of this work: `feat/idea-to-inception`, and the branch of PR #10.
+- Roadmap: none (the pipeline's own repository has no design docs). Stage: the code, commands and tests are changed and pushed; the docs are not yet updated, a few build-half items are unverified, and the whole diff has not had its final review.
+- Review: done. Eight reviewers found 84 issues (44 after merging duplicates); a second pass mined a real product run in a private repository for evidence (30 findings); a skeptic checked each, and after the first round every finding was checked again against the changed tree.
+- Implemented, committed and pushed: eight commits on `claude/gallant-pascal-w9y8ez`, `46347a7` to `7468c0d` (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`): the lint reads who decided each D-record; the design commands, /start-product and /handoff; brief-to-proposals; the build commands; bootstrap and refresh-proposal; the lane engine, the chains and the bug backlog. Each commit passes the test suite on its own.
+- CI: every step of `.github/workflows/ci.yml` passes locally at `7468c0d` except shellcheck, which is not installed in this container (no `.sh` file changed). No PR is open for the branch, so GitHub has not run it.
+- NOT done: `README.md`, `docs/REFERENCE.md`, `docs/PROCESS.md` and `examples/` still describe the old behaviour in many places (`docs/PROPOSALS.md` is updated for the D-record tags). Until they are, the branch's docs disagree with its code.
+- Branches: `claude/gallant-pascal-w9y8ez` (pushed at `7468c0d`, no PR: the person has not asked for one). Also unmerged on origin and not part of this work: `feat/idea-to-inception`, and the branch of PR #10.
 - Open PRs: #10 "ci: configure Mergify merge queue" (not this work).
-- Uncommitted work: rounds 2 and 3 are being written in a container-local git worktree, `/home/user/ccp-work` (branch `work/ask-first`, at `3ba6f67` plus uncommitted edits to `.claude/commands/bootstrap.md`, `.claude/workflows/bootstrap-repo.js`, `.claude/workflows/plan-to-merged-pr.js` and more as the agents go). It exists only in this container. The session's notes, the full review findings and the evidence from the private repository are local too and are deliberately not on this public branch.
+- Uncommitted work: none. (A container-local worktree, `/home/user/ccp-work` on branch `work/ask-first`, holds the same commits and is not needed.)
 
 ## In flight
 
-- `implement-ask-first-round2` (an ad hoc Workflow script, still running in this session): packages E1 (`plan-to-merged-pr.js`) then E3 (`proposal-build-chain.js`, `ship-chain.js`, `bug-fix-backlog.js`), E2 (`bootstrap.md`, `bootstrap-repo.js`, `refresh-proposal.js`, the wrappers test) and E4 (the build commands). Its instructions: `runs/20261112T030300Z-ask-first-WP-E.md`.
-- `implement-ask-first-round3` (still running in this session): packages G1 (`brief-to-proposals.js`, `ci/test-workflow-design.mjs`) and G2 (`roadmap.md`, `propose.md`, `review-proposal.md`, `start-product.md`). Its instructions: `runs/20261112T030300Z-ask-first-WP-G.md`.
-- Neither can be resumed from another session. This session means to wait for both, run the CI checks, commit and push their work, and save this handoff again. If a new session finds the branch still at `3ba6f67`, the two rounds were lost with the container: redo them from the two instruction files.
-- The vocabulary and rules every package follows: `runs/20261112T030300Z-ask-first-SPEC.md`.
+none
 
 ## Waiting on the person
 
@@ -40,39 +39,43 @@ These ids are this session's own: no pipeline workflow takes them as `answers`.
 
 ## Assumptions to review
 
-- The wider asking is the default and there is no new dial: no Pipeline config key or workflow arg sets how readily the pipeline asks; `on_question: 'assume'` stays the only way to proceed without answers (made by this session, in the spec).
-- Who decided is a closed tag on each D-record heading, `(person, <date>[, <ref>])`, `(source)` or `(assumed)`, and the lint only warns on a missing or malformed one, so older docs keep passing (this session; commit `46347a7`).
-- The builder framing may be kept on the state branch, which is as visible as the repository, only when the person says yes to a consent question in /start-product; the default stays local only (this session; commit `9f45c8f`).
-- A design run saves the answers it was given to `design/answers.json` on the state branch and restores the ones a re-run does not pass (this session; commit `3ba6f67`). Answers can name prices, a licence or a repository's visibility, and that branch is public when the repository is.
-- A name, a licence, and an org or bundle id are now asked and recorded as decisions; they are no longer decision gates before Bootstrap (this session; commit `a93eaf0`).
-- Left as they are: the 20-milestone budget still counts human gates (the real run folded research and decisions into its Bootstrap gate to stay under it); no up-front question pass for build lanes (verdict n26); uncommitted lane work is still lost if a container ends while a question waits (n36).
+- The wider asking is the default and there is no new dial: no Pipeline config key or workflow arg sets how readily the pipeline asks; `on_question: 'assume'` stays the only way to proceed without answers (this session, in the spec).
+- Who decided is a closed tag on each D-record heading, `(person, <date>[, <ref>])`, `(source)` or `(assumed)`; the lint only warns on a missing or malformed one, so older docs keep passing (commit `46347a7`).
+- The builder framing may be kept on the state branch, which is as visible as the repository, only when the person says yes to a consent question in /start-product; the default stays local only (`9f45c8f`).
+- A design run saves the answers it was given to `design/answers.json` on the state branch and restores the ones a re-run does not pass (`3ba6f67`). Answers can name prices, a licence or a repository's visibility, and that branch is public when the repository is.
+- A name, a licence, and an org or bundle id are asked and recorded as decisions; they are no longer decision gates before Bootstrap (`a93eaf0`).
+- In brief mode every answer now reaches every author and reviewer of the design run, not only the stage that asked (`66e2ead`).
+- `max_milestones: 0` now means no proposal: the run stops after the reviewed architecture and roadmap (`66e2ead`).
+- plan-to-merged-pr restores a branch's saved plan on a re-run instead of planning again; a new arg, `replan: true`, plans again (`7468c0d`).
+- A recorded gate Outcome replaces a decision tagged as the person's unless that decision's date is later, which is a question (`66e2ead`, /propose --revise).
+- Left as they are: the 20-milestone budget still counts human gates (the real run folded research and decisions into its Bootstrap gate to stay under it); no up-front question pass for build lanes; lane work a stage left uncommitted is rebuilt from the saved plan if the container ends while a question waits.
 - Commits carry `Co-Authored-By: Claude <noreply@anthropic.com>` and the session link, with no model name (this session).
-- Round 1 was pushed before the review of the whole diff, to keep it safe from a lost container (this session).
-- This handoff's linked files were stripped of the private repository's name and of one private idea's name before they were saved here (this session).
+- The handoff's linked files were stripped of the private repository's name and of one private idea's name before they were saved here (this session).
 
 ## Next
 
 This is work on the pipeline itself (the ask-first change), not a product run: there is no roadmap. Continue on branch claude/gallant-pascal-w9y8ez.
 
 Checks to run first:
-- `git fetch origin claude/gallant-pascal-w9y8ez && git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`: which rounds reached the branch (four commits = round 1 only).
-- `python3 .claude/scripts/pipeline-state.py list runs/`: the instruction files named above are there.
+- `git fetch origin claude/gallant-pascal-w9y8ez && git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`: eight commits ending `7468c0d` are there.
+- `python3 .claude/scripts/pipeline-state.py list runs/`: the linked files are there.
 
-Then, in order, on `claude/gallant-pascal-w9y8ez` (no pipeline workflow does this; use subagents, one per group of files, as the instruction files do):
+Then, in order (no pipeline workflow does this; use subagents, each owning a disjoint set of files, and commit per theme):
 
-1. Rounds 2 and 3, if their commits are not on the branch: implement `runs/20261112T030300Z-ask-first-WP-E.md` and `...-WP-G.md`. They cite local verdict files that no longer exist: use the `remaining_change` entries of `runs/20261112T030300Z-ask-first-remaining-work.json` instead (its `build-ship` list for WP-E, its `design` list for WP-G), verifying each against the code first.
-2. Round 4, the build half's part of the design list: n5 (answers carry their question text everywhere; plan-to-merged-pr never reuses a question id), n28 (answers given while a lane was built reach its ship and monitor runs), n37 (an answer without a lane), n25 (design answers reach bootstrap), and the `bootstrap.md`, `bootstrap-repo.js`, `refresh-proposal.js` and `pipeline-state.py` parts of n3, n4, n14.
-3. The docs: `README.md`, `docs/REFERENCE.md`, `docs/PROCESS.md` (a gap entry for assumptions and answers, the ask points in the diagram, G1's cut-off sentence), `docs/PROPOSALS.md` and `examples/`, so each says what the code now does: confirmations, the D-record tags and `--decisions`, answers with their question and date, `design/answers.json`, `context/builder-context.md`, the judge's stop, the new statuses, and one place that says where and how often the person is asked.
-4. Run every step of `.github/workflows/ci.yml` locally, have the whole diff against `origin/main` reviewed by fresh subagents (correctness of the workflow scripts, rules that contradict each other across commands, docs that disagree with code), fix what holds, commit and push. Open a pull request only if the person asks.
+1. Build-half leftovers. In `runs/20261112T030300Z-ask-first-remaining-work.json`, list `design`, take n5, n28, n37, n25 and the `bootstrap.md`, `bootstrap-repo.js`, `refresh-proposal.js` and `pipeline-state.py` parts of n3, n4, n14. The later rounds touched those files without having these verdicts, so verify each against the tree first and implement only what is still open (n5 and n28 are probably mostly done: question ids no longer repeat, and a lane's answers are written into its saved plan). Every other entry of that file was worked in rounds 2 and 3.
+2. The docs. `runs/20261112T035000Z-ask-first-followups.md` lists, per package, what the implementing agents said must change in files they did not own: almost all of it is `README.md`, `docs/REFERENCE.md`, `docs/PROCESS.md` and `examples/`. Make each say what the code now does: confirmations and the person-owned choices; the D-record tags and `proposal-lint.py --decisions`; answers as `{ id, answer, question, date }` and the `intake.d<N>` ids; `design/answers.json` and `context/builder-context.md` on the state branch; the judge's stop; the new and changed result statuses and fields; /bootstrap's questions and resume; polish, the comment step and the CI-fix step asking; the PR's `## Assumptions to review`; and one place that says where and how often the person is asked. In `docs/PROCESS.md` add a gap entry for assumptions and answers, the ask points to the diagram, and finish G1's cut-off sentence. The follow-ups also name two small code items: the `ci/check-skill-refs.mjs` rule from the bootstrap package, and the context guard's SessionStart text.
+3. Run every step of `.github/workflows/ci.yml` locally. Have the whole diff against `origin/main` reviewed by fresh subagents: the workflow scripts' logic (answer routing, the restored plan, resume paths), rules that contradict each other across the commands, and docs that disagree with the code. Fix what holds, commit and push. Open a pull request only if the person asks.
+
+The vocabulary and rules every change follows are in `runs/20261112T030300Z-ask-first-SPEC.md`. The two `...-WP-E.md` and `...-WP-G.md` files are done and kept only as a record.
 
 ## Environment
 
 - Session: Claude Code cloud; repository thomas-sodon/claude-code-pipeline, checked out at `/home/user/claude-code-pipeline` (a new session's checkout may be elsewhere); `MAIN_BRANCH`: main (no `CLAUDE.md` here, so the default); state branch `pipeline/state`.
 - GitHub: `GITHUB_ACCESS` unset; gh not logged in, so the GitHub MCP connector is the access in use.
 - Secrets the work needs, by name: none.
-- Brief: none (not a product run). The idea skill's repository and the private product repository were attached read-only as evidence; a new session that needs them asks the person to attach them again.
+- Brief: none (not a product run). The idea skill's repository and the private product repository were attached read-only as evidence; the remaining work does not need them.
 - Builder context: none (not a product run).
-- This session may push only `claude/gallant-pascal-w9y8ez` and, since 2026-11-12, `pipeline/state`.
+- The session that wrote this could push only `claude/gallant-pascal-w9y8ez` and, since 2026-11-12, `pipeline/state`.
 
 ## Rules
 
