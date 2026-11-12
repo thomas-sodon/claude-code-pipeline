@@ -23,15 +23,22 @@ export const meta = {
 //   efforts?: { bootstrap, ...plan-to-merged-pr's keys }  bootstrap (default 'medium') is the /bootstrap stage's effort; the
 //                             other keys go to the ship run
 //   on_question?: 'stop'|'assume'  default 'stop': a blocking question (one only the person can answer) stops the run with
-//                             status needs_input; 'assume' takes each recommended option instead and lists it in assumptions
-//   answers?: [{ id, answer }] the questions a needs_input result returned, each with the person's answer (or { <id>: answer }).
-//                             bootstrap.q<N> reach the bootstrap stage and the ship run; the ship run's own ids
-//                             (merge_check.q<N>, monitor.q<N>) reach the ship run only, so a resume (resumeFromRunId) replays
-//                             the bootstrap stage from the record
+//                             status needs_input, before /bootstrap's first write; 'assume' takes each recommended option
+//                             instead and lists it in assumptions
+//   answers?: [{ id, answer, question?, date? }]  the questions a needs_input result returned, each with its question text,
+//                             the person's answer and the date they gave it (or { <id>: answer }). bootstrap.q<N>, and
+//                             bootstrap.d<N> (an assumption the person corrected, or a decision they made outside the questions),
+//                             reach the bootstrap stage and the ship run; the ship run's own ids (merge_check.q<N>,
+//                             monitor.q<N>) reach the ship run only, so a resume (resumeFromRunId) replays the bootstrap stage
+//                             from the record
+// Every result carries assumptions: [{ stage, assumption }], the choices no person confirmed. The bootstrap stage's also go to
+// the ship run as pr_note, so the PR body shows them, and the first next step says to show them to the person before the merge.
 // Root mode: when the remote has no commits, /bootstrap makes the root commit on local main; nothing is shipped, and the next
 // steps say to push main (the one push to main a person makes). A re-run once the commit exists changes nothing in the
 // repository: /bootstrap reports it already bootstrapped and the branch is shipped again (an open PR is picked up, not opened
-// twice), or the result says the bootstrap has merged.
+// twice), or the result says the bootstrap has merged. A run that stopped after its first write and before its commit
+// (error=gates_red, a question a gate raised) leaves an unfinished bootstrap/<date> branch: the re-run resumes on it. A branch
+// with no bootstrap commit is never shipped.
 const A = args || {}
 if (!A.architecture) throw new Error('bootstrap-repo: args.architecture (the accepted architecture doc, relative to dir) is required')
 if (!A.dir) throw new Error('bootstrap-repo: args.dir (absolute path of the repository to bootstrap) is required')
@@ -50,11 +57,17 @@ const opts = (label, ph, effortKey, schema) => {
   if (schema) o.schema = schema
   return o
 }
-// The ship-only args plan-to-merged-pr gets: the bootstrap branch, plus the settings this run was given for it.
+// The ship-only args plan-to-merged-pr gets: the bootstrap branch, plus the settings this run was given for it, and the
+// bootstrap stage's assumptions as pr_note, so the PR body shows the person what nobody confirmed before they merge.
 const shipArgsFor = branch => {
   const s = { ship_only: true, branch, title: TITLE, dir: DIR }
   for (const k of ['main_branch', 'ai_review_check', 'github_access', 'gate', 'commit_trailers', 'on_question']) if (A[k] !== undefined) s[k] = A[k]
   if (Object.keys(SHIP_EFFORTS).length) s.efforts = SHIP_EFFORTS
+  const taken = ASSUMED.filter(a => a.stage === 'bootstrap').map(a => a.assumption)
+  if (taken.length) {
+    s.pr_note = `a section headed "## Assumptions to review" (one section only: add these lines to it when the body already has one), ` +
+      `holding the choices /bootstrap made that the person has not confirmed, one bullet each:\n${taken.map(t => `- assumed (bootstrap): ${oneLine(t, 300)}`).join('\n')}\n`
+  }
   return s
 }
 
@@ -83,15 +96,23 @@ const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers
 const scopeOf = id => String(id || '').split('.')[0]
 const BOOT_ANSWERS = ANSWERS.filter(a => scopeOf(a.id) === 'bootstrap')
 const answersText = list => list.length
-  ? `Answers from the person to questions an earlier run raised (binding, like an explicit constraint; never re-ask them): ${JSON.stringify(list.map(a => ({ question: a.question || a.id, answer: a.answer })))}\n`
+  ? `Answers from the person to questions an earlier run raised (binding, like an explicit constraint; never re-ask them, and never change what one settled: a reason to change it is a blocking question): ` +
+    `${JSON.stringify(list.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n`
   : ''
 const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No one can answer a question mid-run, so never wait for one and never use a question tool. ` +
-  `A blocking question is one only the person can answer (what they intend, a requirement or choice the architecture leaves out or states two ways and the skeleton would bake in, a trade-off that is theirs to make, or a blocker whose way forward is their call) and whose plausible answers lead to materially different work. ` +
+  `A blocking question is one only the person can answer (what they intend, a requirement or choice the architecture leaves out or states two ways and the skeleton would bake in, a trade-off that is theirs to make, ` +
+  `a conflict between what the person said (an answer, the framing, a decision the architecture tags (person, ...)) and what you find in the architecture, the tree or your research, or a blocker whose way forward is their call) ` +
+  `and whose plausible answers lead to materially different work: a different skeleton, promise, cost or legal exposure. In such a conflict pick no side: ask, naming both. ` +
+  `A person-owned choice that no decision of the architecture and no answer settles is asked, never assumed: the command's "Questions before assumptions" section names the ones a skeleton meets ` +
+  `(the copyright holder, an existing LICENSE of another licence, no licence decision, a published name). ` +
+  `Never change what the person settled: an answer or a decision tagged (person, ...) is changed only by a newer answer from the person; a reason to change it is a blocking question. ` +
+  `A question, its options and the recommendation name decisions and milestones by title; a number alone is never enough (numbers move between revisions). ` +
   `Settle yourself anything the architecture, the roadmap, CLAUDE.md, the tree or research can settle; never ask about it. An error= stop the command defines is a stop to report, not a question. ` +
   (ON_Q === 'assume'
-    ? `The person chose to proceed on assumptions: for each blocking question, take the option you recommend and report it in assumptions as "<question> -> <option taken>". `
-    : `Never guess the answer to a blocking question: stop there, change nothing further and commit nothing (what the command already wrote stays; a re-run resumes from it), and return every such question (all of them, in one pass) in questions, each with why it blocks, 2-4 concrete options and the one you recommend. `) +
-  `Report in assumptions every other choice you made that the inputs did not settle (empty when none). `
+    ? `The person chose to proceed on assumptions: for each blocking question, take the option you recommend (for a conflict with what the person said, what the person said; an existing LICENSE is never replaced) and report it in assumptions as "<question> -> <option taken>". `
+    : `Never guess the answer to a blocking question: stop before the first write (create no branch, write no file) and return every such question (all of them, in one pass) in questions, each with why it blocks, 2-4 concrete options and the one you recommend. ` +
+      `A question that surfaces only after the first write stops the run where it is: commit nothing, keep the files, return it the same way and name the unfinished branch in branch (a re-run resumes on it). `) +
+  `Report in assumptions every other choice you made that the inputs did not settle, with every line the command's report lists under Assumptions (empty when none). `
 const QUESTION = {
   type: 'object',
   properties: {
@@ -103,8 +124,8 @@ const QUESTION = {
   required: ['question', 'why', 'options', 'recommended'],
 }
 const QA = {
-  questions: { type: 'array', items: QUESTION, description: 'blocking questions only the person can answer; non-empty means you stopped there and committed nothing' },
-  assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice you made that the inputs did not settle' },
+  questions: { type: 'array', items: QUESTION, description: 'blocking questions only the person can answer; non-empty means you stopped before the first write (or where a later one surfaced) and committed nothing' },
+  assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice you made that the inputs did not settle, with every line of the report\'s Assumptions; already_bootstrapped: the lines the bootstrap commit\'s body lists under Assumptions:' },
 }
 const ASSUMED = []
 const noteAssumptions = (stage, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) if (a) ASSUMED.push({ stage, assumption: a }); return r }
@@ -115,11 +136,22 @@ const tagQuestions = (scope, qs) => {
   for (const a of ANSWERS) { const m = String(a.id || '').match(/^([a-z_]+)\.q(\d+)$/); if (m && m[1] === scope) n = Math.max(n, Number(m[2])) }
   return qs.map((q, i) => { const { id: _id, stage: _stage, ...rest } = q; return { id: `${scope}.q${n + i + 1}`, stage: scope, ...rest } })
 }
-const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
-  `Then re-run this workflow with the same args plus answers (each question's id with the person's answer) and resumeFromRunId set to this run's id: ` +
-  `the stages before the one that asked replay from the record, and what /bootstrap wrote (its files, or its commit) is kept.`
-const MONITOR_RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
-  `The bootstrap PR is already open: re-run plan-to-merged-pr with this result's ship.resume_monitor as args plus answers (each question's id with the person's answer), ` +
+// The relays of a needs_input result. One opening: who asks and how, the assumptions to show with the questions, and what goes
+// back with each answer. How the re-run goes on depends on who asked: the bootstrap stage, the ship run, or its monitor.
+const SHOW_ASSUMED = `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id bootstrap.d<N>, with the assumption or the decision as its question). `
+const WITH_ANSWERS = `answers (each question's id and question text with the person's answer and the date they gave it, added to any answers given before)`
+const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
+  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
+  SHOW_ASSUMED + `Then re-run this workflow with the same args plus ${WITH_ANSWERS} and resumeFromRunId set to this run's id: `
+// The bootstrap stage asked: before its first write (no branch named), or later, with its files left on the unfinished branch.
+const bootRelay = branch => RELAY + `the bootstrap stage runs again with the answers. ` + (branch
+  ? `Its question surfaced after its first write: nothing is committed, the files it wrote stay on ${branch}, and the re-run resumes there.`
+  : `It asked before its first write, so nothing was written: no branch, no file.`)
+// The ship run asked (its merge check or its PR stage): the bootstrap commit exists.
+const SHIP_RELAY = RELAY + `the commit /bootstrap made is kept (a stage whose prompt is unchanged replays from the record), and the ship run starts again with the answers.`
+const MONITOR_RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
+  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
+  SHOW_ASSUMED + `The bootstrap PR is already open: re-run plan-to-merged-pr with this result's ship.resume_monitor as args plus ${WITH_ANSWERS}, ` +
   `in monitor-only mode, so the PR is observed afresh. The next_steps still apply once it merges.`
 const logQuestions = questions => {
   log(`${questions.length} question(s) only the person can answer — status needs_input`)
@@ -129,11 +161,11 @@ const logQuestions = questions => {
 const BOOTSTRAP_SCHEMA = {
   type: 'object',
   properties: {
-    outcome: { type: 'string', enum: ['committed', 'already_bootstrapped', 'stopped'], description: 'committed: /bootstrap made its one commit in this run; already_bootstrapped: it found an earlier bootstrap (a bootstrap commit on origin/main, or a bootstrap/* branch) and changed nothing; stopped: an error= stop, or blocking questions (in questions)' },
+    outcome: { type: 'string', enum: ['committed', 'already_bootstrapped', 'stopped'], description: 'committed: /bootstrap made its one commit in this run; already_bootstrapped: it found a bootstrap commit (trailer Bootstrapped-by: /bootstrap) on origin/main, on a bootstrap/* branch or, with an empty remote, on local main, and changed nothing; stopped: an error= stop, or blocking questions (in questions). A bootstrap/* branch with no bootstrap commit is an unfinished run that /bootstrap resumes, never already_bootstrapped' },
     root_mode: { type: 'boolean', description: 'true when the remote had no commits, so the commit is the root commit on local main, which a person pushes' },
-    branch: { type: 'string', description: 'branch mode: the bootstrap/<date> branch that holds the commit; root mode: main; empty when stopped or when the bootstrap has already merged' },
+    branch: { type: 'string', description: 'branch mode: the bootstrap/<date> branch that holds the commit; root mode: main; empty when the bootstrap has already merged; when stopped: the unfinished bootstrap/<date> branch that holds uncommitted work, else empty (nothing was written)' },
     merged: { type: 'boolean', description: 'already_bootstrapped only: true when the bootstrap commit (trailer Bootstrapped-by: /bootstrap) is already on origin/main' },
-    commit: { type: 'string', description: 'the bootstrap commit\'s short sha, when there is one' },
+    commit: { type: 'string', description: 'the bootstrap commit\'s short sha; empty when there is none (stopped)' },
     stop_reason: { type: 'string', description: 'when stopped on an error=: its code and the next action /bootstrap names, verbatim; else empty' },
     summary: { type: 'string', description: 'one line: what the skeleton holds (packages, the gates and fix rounds, the CI checks, the licence), or where the earlier bootstrap is' },
     left_out: { type: 'array', items: { type: 'string' }, description: 'pre-existing files the commit left out on purpose (e.g. the brief), as its report lists them' },
@@ -183,8 +215,9 @@ const boot = await agent(
   GUARD + WHERE + ASK_RULE + answersText(BOOT_ANSWERS) + GH_ACCESS + GATE_NOTE + TRAILER_NOTE +
   `Invoke the Skill tool with skill "bootstrap" with args ${JSON.stringify(ARCH)} and follow it to the end: its checks, the skeleton, the install, the gates until green, and its one commit. ` +
   `It never pushes and never opens a PR, and neither do you: this workflow ships the commit afterwards. ` +
-  `Then return its outcome from its report: committed, already_bootstrapped (it found an earlier bootstrap and changed nothing) or stopped (an error= stop, or blocking questions); ` +
+  `Then return its outcome from its report: committed, already_bootstrapped (it found a bootstrap commit and changed nothing; never for a bootstrap/* branch that holds no bootstrap commit, which is an unfinished run the command resumes) or stopped (an error= stop, or blocking questions); ` +
   `root_mode, the branch, the commit's short sha, a one-line summary and the files it left out of the commit on purpose. ` +
+  `For already_bootstrapped, the short sha is that commit's, and assumptions holds the lines its body lists under Assumptions:. ` +
   `In next_steps, put every next step its report prints, each verbatim with the values it filled in, except reviewing the commit and shipping it (the PR, or in root mode pushing main): this workflow gives those itself. ` +
   `On an error= stop, next_steps is the next action it names.`,
   opts('bootstrap', 'Bootstrap', 'bootstrap', BOOTSTRAP_SCHEMA),
@@ -195,8 +228,11 @@ if (asked(boot)) {
   const questions = tagQuestions('bootstrap', boot.questions)
   logQuestions(questions)
   return {
-    status: 'needs_input', questions, relay: RELAY, assumptions: ASSUMED, bootstrap,
-    next_steps: [`First answer the ${questions.length} question(s) in questions (see relay): nothing is committed yet, and the files /bootstrap wrote stay for the re-run.`],
+    status: 'needs_input', questions, relay: bootRelay(bootstrap.branch), assumptions: ASSUMED, bootstrap,
+    next_steps: [`First answer the ${questions.length} question(s) in questions (see relay): nothing is committed, and ` +
+      (bootstrap.branch
+        ? `the uncommitted files /bootstrap wrote stay on ${bootstrap.branch}, where the re-run resumes.`
+        : `nothing was written: /bootstrap asked before its first write, so it created no branch and no file.`)],
   }
 }
 const AFTER = ((boot && boot.next_steps) || []).filter(Boolean)
@@ -214,14 +250,24 @@ log(boot.outcome === 'committed'
 if (boot.outcome === 'already_bootstrapped' && boot.merged) {
   return { status: 'already_bootstrapped', assumptions: ASSUMED, bootstrap, next_steps: AFTER }
 }
+// Never ship a branch with no bootstrap commit: that is an unfinished run, which /bootstrap resumes on a re-run.
+if (boot.outcome === 'already_bootstrapped' && !String(boot.commit || '').trim()) {
+  return failed(`the bootstrap stage reported an earlier bootstrap${boot.branch ? ` on ${boot.branch}` : ''} but no bootstrap commit; nothing was shipped`,
+    [`Look for the bootstrap commit (git -C ${DIR} log --all --oneline --grep='^Bootstrapped-by: /bootstrap'). None: the branch is an unfinished run, so re-run this workflow with the same args and /bootstrap resumes on it. ` +
+      `One exists: ship its branch with plan-to-merged-pr ${JSON.stringify(shipArgsFor('bootstrap/<date>'))}.`].concat(AFTER))
+}
 const LEFT_OUT = bootstrap.left_out
+// What nobody confirmed with the person is shown to them before the skeleton reaches main.
+const showAssumed = before => ASSUMED.length
+  ? ` Before ${before}, show the person this result's assumptions (${ASSUMED.length}): a line they correct is a change to make on the branch first.`
+  : ''
 const leftOutStep = LEFT_OUT.length ? [`/bootstrap left ${LEFT_OUT.join(', ')} out of its commit on purpose: check that the PR's files hold none of them before you merge.`] : []
 // ---- Root mode: an empty remote has no base for a PR. The root commit on local main is pushed by a person, never by a workflow.
 if (boot.root_mode) {
   log('Root mode: nothing to ship — a person pushes main')
   return {
     status: 'root_commit', assumptions: ASSUMED, bootstrap,
-    next_steps: [`Review the root commit (git -C ${DIR} show --stat HEAD), then push it yourself: git push -u origin main — the one push to main a person makes by hand, since an empty repository has no base for a PR. Nothing was shipped.`].concat(AFTER),
+    next_steps: [`Review the root commit (git -C ${DIR} show --stat HEAD), then push it yourself: git push -u origin main — the one push to main a person makes by hand, since an empty repository has no base for a PR. Nothing was shipped.${showAssumed('the push')}`].concat(AFTER),
   }
 }
 // Never ship anything but the bootstrap branch: a wrong report must not open a PR from main or another branch.
@@ -234,7 +280,7 @@ const SHIP_ARGS = shipArgsFor(BRANCH)
 if (!SHIP) {
   return {
     status: 'committed', assumptions: ASSUMED, bootstrap,
-    next_steps: [`Review the commit (git -C ${DIR} show --stat ${BRANCH}), then ship it: run the plan-to-merged-pr workflow with ${JSON.stringify(SHIP_ARGS)}. It re-runs the gates, opens the PR and babysits its CI; a person merges it.`]
+    next_steps: [`Review the commit (git -C ${DIR} show --stat ${BRANCH}), then ship it: run the plan-to-merged-pr workflow with ${JSON.stringify(SHIP_ARGS)}. It re-runs the gates, opens the PR and babysits its CI; a person merges it.${showAssumed('the merge')}`]
       .concat(leftOutStep, AFTER),
   }
 }
@@ -261,7 +307,7 @@ if (ship.status === 'needs_input' && asked(r)) {
   logQuestions(questions)
   const monitorAsked = r.stage === 'monitor' && !!ship.resume_monitor
   return {
-    status: 'needs_input', questions, relay: monitorAsked ? MONITOR_RELAY : RELAY, assumptions: ASSUMED, bootstrap, ship,
+    status: 'needs_input', questions, relay: monitorAsked ? MONITOR_RELAY : SHIP_RELAY, assumptions: ASSUMED, bootstrap, ship,
     next_steps: [`First answer the ${questions.length} question(s) in questions (see relay): the commit is on ${BRANCH}${monitorAsked ? ` and ${prRef} is open` : ''}, and its ship run waits on them.`]
       .concat(leftOutStep, AFTER),
   }
@@ -271,7 +317,7 @@ const status = ship.status === 'OPEN' || ship.status === 'monitor_failed' ? 'pr_
   : ship.status === 'CLOSED' ? 'closed'
   : 'ship_failed'
 const first = status === 'pr_open'
-  ? [`Review and merge ${prRef} yourself${ship.final_state ? ` (${ship.final_state})` : ''}. Nothing watches it after this run: to pick up later comments, conflicts or red CI, re-run plan-to-merged-pr with ship.resume_monitor as args (monitor-only).`].concat(leftOutStep)
+  ? [`Review and merge ${prRef} yourself${ship.final_state ? ` (${ship.final_state})` : ''}. Nothing watches it after this run: to pick up later comments, conflicts or red CI, re-run plan-to-merged-pr with ship.resume_monitor as args (monitor-only).${showAssumed('the merge')}${SHIP_ARGS.pr_note ? ' The PR body was given /bootstrap\'s under "Assumptions to review".' : ''}`].concat(leftOutStep)
   : status === 'merged' ? [`${prRef} has merged.`]
   : status === 'closed' ? [`${prRef} was closed without merging. To ship it again, reopen it, or ${RERUN}: a new PR is opened from ${BRANCH}.`]
   : [`Shipping stopped (${ship.status}${ship.reason ? `: ${ship.reason}` : ''}); the commit is on ${BRANCH}. Fix what stopped it, then ${RERUN} and it ships again, or run plan-to-merged-pr with ${JSON.stringify(SHIP_ARGS)}.`]
