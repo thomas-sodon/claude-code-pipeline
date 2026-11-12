@@ -4,10 +4,10 @@
 Run from the repo root: python3 ci/test_proposal_lint.py
 
 The tests check the documented format (docs/PROPOSALS.md) and CLI, not the
-implementation: every error and warning code, the size budgets, --repo, --as,
---tick, --lanes, --roadmap and --claude-md. The script is always run as a
-subprocess, in temp directories; docs at the size limits are generated, not
-committed as fixtures.
+implementation: every error and warning code, the size budgets, the D-record
+provenance tags, --repo, --as, --tick, --lanes, --roadmap, --decisions and
+--claude-md. The script is always run as a subprocess, in temp directories; docs
+at the size limits are generated, not committed as fixtures.
 It also checks ci/lint-doc-examples.py finds the examples it must lint, and that the
 `docs` CI job script in /bootstrap's template and examples/docs-lint-job.yml is one
 script that works.
@@ -45,7 +45,8 @@ ERROR_CODES = {'malformed_step', 'duplicate_step', 'step_numbering', 'missing_fi
                'bad_proposal'}
 WARNING_CODES = {'unknown_key', 'missing_acceptance', 'lane_mixed', 'step_too_big', 'no_kind',
                  'missing_status', 'gate_without_outcome', 'outcome_on_code_step', 'proposal_not_written',
-                 'xref_unreadable', 'proposal_in_steps', 'source_unresolved'}
+                 'xref_unreadable', 'proposal_in_steps', 'source_unresolved', 'decision_untagged',
+                 'bad_decision_tag'}
 INLINE_WARNINGS = {'file_not_found', 'new_file_exists', 'missing_section', 'unexpected_steps',
                    'milestone_ticked_incomplete', 'milestone_complete_unticked'}
 # Errors only a mode reports (--lanes, --roadmap, --claude-md): each is exercised by a test below.
@@ -125,6 +126,18 @@ def architecture(skip=(), status='accepted', extra=''):
     body = ''.join('## %s\n\nText.\n\n' % s for s in ARCH_SECTIONS if s not in skip)
     head = '# Architecture: Test\n\n' + ('Status: %s\n\n' % status if status else '')
     return head + body + extra
+
+
+def record(n, title, tag=None):
+    """One D-record: its heading, ending in "(TAG)" when TAG is given, and a short body."""
+    return '### D%d: %s%s\n\n- Options: a; b.\n- Choice: a.\n\n' % (n, title, ' (%s)' % tag if tag else '')
+
+
+def with_decisions(text, *records):
+    """TEXT (from proposal() or architecture()) with RECORDS as the body of its ## Decisions section."""
+    old = '## Decisions\n\nText.\n'
+    assert text.count(old) == 1, text
+    return text.replace(old, '## Decisions\n\n' + ''.join(records).rstrip('\n') + '\n', 1)
 
 
 class Base(unittest.TestCase):
@@ -272,7 +285,7 @@ class TestCli(Base):
 
     def test_json_schema(self):
         out = self.assertClean(proposal(step(1, lane='core'), gate(2), step(3, deps='1, 2', files=['a.ts', 'b.ts (new)'])))
-        for k in ('doc', 'kind', 'errors', 'warnings', 'steps'):
+        for k in ('doc', 'kind', 'errors', 'warnings', 'steps', 'decisions'):
             self.assertIn(k, out)
         s1, s2, s3 = out['steps']
         for k in ('n', 'title', 'done', 'line', 'human_gate', 'files', 'depends', 'acceptance', 'lane'):
@@ -579,6 +592,256 @@ class TestArchitectureLint(Base):
 
     def test_step_list_is_unexpected(self):
         self.assertWarning(architecture(extra='## Steps\n\n' + step(1)), 'unexpected_steps')
+
+
+# ---- D-records: who decided ---------------------------------------------------------------------
+
+DECISION_KEYS = ['id', 'n', 'title', 'line', 'by', 'date', 'ref']
+DECISION_CODES = ('decision_untagged', 'bad_decision_tag')
+# Trailing parentheticals that start like a tag and are not one of the closed forms.
+BAD_TAGS = ('person', "person's decision, 2026-11-05", 'person 2026-11-05', 'person, 2026-02-30',
+            'person, 05-11-2026', 'person, 2026-11-05, two words', 'person, 2026-11-05, intake.q2, edit',
+            'Person, 2026-11-05', 'source: the brief', 'source of truth', 'assumed by the author', 'Assumed')
+
+
+def brief(decisions):
+    return [(d['id'], d['title'], d['by'], d['date'], d['ref']) for d in decisions]
+
+
+class TestDecisions(Base):
+    def found(self, out):
+        return [w for w in out['warnings'] if w['code'] in DECISION_CODES]
+
+    def heading(self, out, item):
+        with open(out['doc'], encoding='utf-8') as f:
+            return f.read().splitlines()[item['line'] - 1]
+
+    def decisions_mode(self, path, *extra, cwd=None):
+        rc, stdout, err = run(path, '--decisions', *extra, cwd=cwd)
+        self.assertEqual(rc, 0, stdout + err)
+        return json.loads(stdout)
+
+    def test_each_tag_form_is_parsed(self):
+        text = with_decisions(proposal(step(1)),
+                              record(1, 'Language and framework', 'source'),
+                              record(3, 'Data store', 'assumed'),
+                              record(7, 'Free-check input', 'person, 2026-11-05'),
+                              record(12, 'Auth', 'person, 2026-11-12, architecture.q2'))
+        out = self.assertClean(text)
+        self.assertEqual(out['warnings'], [])
+        self.assertEqual(brief(out['decisions']),
+                         [('D1', 'Language and framework', 'source', '', ''),
+                          ('D3', 'Data store', 'assumed', '', ''),
+                          ('D7', 'Free-check input', 'person', '2026-11-05', ''),
+                          ('D12', 'Auth', 'person', '2026-11-12', 'architecture.q2')])
+        for d in out['decisions']:
+            self.assertEqual(list(d), DECISION_KEYS)
+            self.assertEqual(d['id'], 'D%d' % d['n'])
+            self.assertTrue(self.heading(out, d).startswith('### %s: %s (' % (d['id'], d['title'])))
+
+    def test_person_refs(self):
+        refs = ('intake.q2', 'intake.d3', 'framing', 'roadmap.md#4', '01-status-page.md#4', 'edit')
+        text = with_decisions(proposal(step(1)), *[record(n, 'Choice %d' % n, 'person, 2026-11-05, ' + ref)
+                                                   for n, ref in enumerate(refs, 1)])
+        out = self.assertClean(text)
+        self.assertEqual(out['warnings'], [])
+        self.assertEqual([(d['by'], d['date'], d['ref']) for d in out['decisions']],
+                         [('person', '2026-11-05', ref) for ref in refs])
+
+    def test_an_ordinary_trailing_parenthetical_is_part_of_the_title(self):
+        text = with_decisions(proposal(step(1)),
+                              record(1, 'Client', 'web'),
+                              record(2, 'Retention', 'personal data'),
+                              record(3, 'Hosting', 'see D1'),
+                              record(4, 'Layout (monorepo)', 'assumed'),
+                              record(5, 'Store (web)', 'person, 2026-11-05'))
+        out = self.assertClean(text)
+        self.assertEqual(brief(out['decisions']),
+                         [('D1', 'Client (web)', '', '', ''),
+                          ('D2', 'Retention (personal data)', '', '', ''),
+                          ('D3', 'Hosting (see D1)', '', '', ''),
+                          ('D4', 'Layout (monorepo)', 'assumed', '', ''),
+                          ('D5', 'Store (web)', 'person', '2026-11-05', '')])
+        # untagged records, not bad tags
+        self.assertEqual(codes(self.found(out)), ['decision_untagged'])
+
+    def test_records_are_read_under_decisions_and_outside_fences_only(self):
+        text = with_decisions(proposal(step(1)),
+                              '```md\n' + record(8, 'Fenced', 'assumed') + '```\n\n',
+                              '~~~\n### D9: Also fenced\n~~~\n\n',
+                              '### Notes on the records\n\n',
+                              '#### D10: A deeper heading\n\n',
+                              record(2, 'Real', 'source'))
+        text = text.replace('## Design\n\nText.\n', '## Design\n\n### D1: A heading in another section\n', 1)
+        out = self.assertClean(text)
+        self.assertEqual(brief(out['decisions']), [('D2', 'Real', 'source', '', '')])
+        self.assertEqual(out['warnings'], [])
+
+    def test_architecture_records_and_none_in_a_roadmap(self):
+        out = self.assertClean(with_decisions(architecture(), record(1, 'Data store', 'person, 2026-10-30'),
+                                              record(2, 'One repository')))
+        self.assertEqual(brief(out['decisions']), [('D1', 'Data store', 'person', '2026-10-30', ''),
+                                                   ('D2', 'One repository', '', '', '')])
+        self.assertEqual(codes(out['warnings']), ['decision_untagged'])
+        rm = roadmap(milestone(1, gate_kind='ops')) + '\n## Decisions\n\n' + record(1, 'Untagged') + record(2, 'Bad', 'person')
+        out = self.assertClean(rm)
+        self.assertEqual((out['kind'], out['decisions'], out['warnings']), ('roadmap', [], []))
+
+    def test_docs_without_records_have_an_empty_list_and_no_warning(self):
+        for text in (proposal(step(1)), architecture(), proposal(step(1), full=False)):
+            out = self.assertClean(text)
+            self.assertEqual((out['decisions'], self.found(out)), ([], []))
+
+    def test_untagged_is_one_warning_per_doc_naming_every_record(self):
+        text = with_decisions(proposal(step(1)),
+                              record(1, 'Tagged', 'assumed'),
+                              record(2, 'Untagged'),
+                              record(3, 'Bad', 'person'),
+                              record(4, 'Also untagged', 'web'),
+                              record(10, 'Untagged too'))
+        rc, out = self.lint_text(text)
+        self.assertEqual((rc, out['errors']), (0, []))
+        untagged = [w for w in out['warnings'] if w['code'] == 'decision_untagged']
+        self.assertEqual(len(untagged), 1)
+        self.assertTrue(self.heading(out, untagged[0]).startswith('### D2: '))
+        self.assertEqual(re.findall(r'\bD\d+\b', untagged[0]['message']), ['D2', 'D4', 'D10'])
+        for form in ('(person, YYYY-MM-DD)', '(person, YYYY-MM-DD, <ref>)', '(source)', '(assumed)'):
+            self.assertIn(form, untagged[0]['message'])
+        # one record: the same single warning
+        out = self.assertWarning(with_decisions(proposal(step(1)), record(1, 'Only')), 'decision_untagged')
+        self.assertEqual(codes(self.found(out)), ['decision_untagged'])
+        self.assertIn('D1 has no provenance tag', self.found(out)[0]['message'])
+
+    def test_bad_tag_is_one_warning_per_record_and_counts_as_untagged(self):
+        text = with_decisions(proposal(step(1)), *[record(n, 'Choice %d' % n, tag)
+                                                   for n, tag in enumerate(BAD_TAGS, 1)])
+        rc, out = self.lint_text(text)
+        self.assertEqual((rc, out['errors']), (0, []))
+        # each record is reported by bad_decision_tag only: no decision_untagged beside it
+        self.assertEqual(codes(self.found(out)), ['bad_decision_tag'] * len(BAD_TAGS))
+        for n, (tag, d, w) in enumerate(zip(BAD_TAGS, out['decisions'], self.found(out)), 1):
+            with self.subTest(tag=tag):
+                self.assertEqual(brief([d]), [('D%d' % n, 'Choice %d (%s)' % (n, tag), '', '', '')])
+                self.assertEqual(w['line'], d['line'])
+                self.assertTrue(w['message'].startswith('D%d: "(%s)" is not a provenance tag' % (n, tag)))
+                self.assertIn('(person, YYYY-MM-DD, <ref>)', w['message'])
+
+    def test_tag_warnings_never_fail_the_lint(self):
+        path = self.write('d.md', with_decisions(proposal(step(1)), record(1, 'Untagged'), record(2, 'Bad', 'person')))
+        rc, out, _ = run(path)
+        self.assertEqual(rc, 0)
+        lines = out.strip().splitlines()
+        self.assertRegex(lines[0], '^' + re.escape(path) + r':\d+: W decision_untagged: D1 has no provenance tag')
+        self.assertRegex(lines[1], '^' + re.escape(path) + r':\d+: W bad_decision_tag: D2: "\(person\)" is not ')
+        self.assertIn('0 errors, 2 warnings', lines[-1])
+        # --lanes still derives: the warnings ride along
+        lanes = self.lanes(path)
+        self.assertEqual(chain_keys(lanes), [['s1']])
+        self.assertEqual(codes(lanes['warnings']), ['decision_untagged', 'bad_decision_tag'])
+
+    def test_tolerated_spacing_and_trailing_comment(self):
+        text = with_decisions(proposal(step(1)),
+                              '### D1:  Spaced  ( person , 2026-11-05 , intake.d3 )   <!-- confirmed -->\n\n',
+                              '### D2: Tight (person,2026-11-05)\n\n')
+        out = self.assertClean(text)
+        self.assertEqual(out['warnings'], [])
+        self.assertEqual(brief(out['decisions']), [('D1', 'Spaced', 'person', '2026-11-05', 'intake.d3'),
+                                                   ('D2', 'Tight', 'person', '2026-11-05', '')])
+
+    def test_crlf_headings(self):
+        text = with_decisions(proposal(step(1)), record(1, 'Data store', 'assumed'), record(2, 'Auth'))
+        out = self.assertClean(text.replace('\n', '\r\n'))
+        self.assertEqual(brief(out['decisions']), [('D1', 'Data store', 'assumed', '', ''), ('D2', 'Auth', '', '', '')])
+
+    def mode_doc(self):
+        long_line = 'The price is 9 a month (proposed; the person fixes it at the pricing confirmation). ' + 'x' * 300
+        text = with_decisions(proposal(step(1, desc='Alert above 5 failures an hour (proposed).')),
+                              record(1, 'Language', 'source'),
+                              record(2, 'Data store', 'assumed'),
+                              record(3, 'Price', 'person, 2026-11-05, intake.q2'),
+                              record(4, 'Hosting'),
+                              record(5, 'Licence', 'person'),
+                              '   Retention is 30 days (proposed: fixed at roadmap gate "Approve the privacy notice").  \n\n',
+                              '```\nA fenced value (proposed) is not listed.\n```\n\n',
+                              long_line + '\n')
+        return text, long_line
+
+    def test_decisions_mode_lists_unconfirmed_and_proposed(self):
+        text, long_line = self.mode_doc()
+        path = self.write('d.md', text)
+        before = self.read(path)
+        out = self.decisions_mode(path)
+        self.assertEqual(list(out), ['doc', 'kind', 'decisions', 'unconfirmed', 'proposed'])
+        self.assertEqual((out['doc'], out['kind']), (path, 'proposal'))
+        self.assertEqual(out['decisions'], self.lint(path)[1]['decisions'])
+        self.assertEqual([d['id'] for d in out['decisions']], ['D1', 'D2', 'D3', 'D4', 'D5'])
+        # assumed, untagged, and a bad tag (which counts as untagged): everything but source and person
+        self.assertEqual(brief(out['unconfirmed']), [('D2', 'Data store', 'assumed', '', ''),
+                                                     ('D4', 'Hosting', '', '', ''),
+                                                     ('D5', 'Licence (person)', '', '', '')])
+        for d in out['unconfirmed']:
+            self.assertIn(d, out['decisions'])
+        lines = text.splitlines()
+        self.assertEqual([p['text'] for p in out['proposed']],
+                         ['Retention is 30 days (proposed: fixed at roadmap gate "Approve the privacy notice").',
+                          long_line[:200],
+                          '1. [ ] **Step 1.** Alert above 5 failures an hour (proposed).'])
+        for p in out['proposed']:
+            self.assertEqual(list(p), ['line', 'text'])
+            self.assertTrue(lines[p['line'] - 1].strip().startswith(p['text']))
+        self.assertEqual(self.read(path), before)
+
+    def test_decisions_mode_ignores_lint_errors_and_budgets(self):
+        text = with_decisions(proposal(step(1, deps=None), 'not a step\n2. [ ] broken\n', status='nonsense'),
+                              record(1, 'Data store', 'assumed'))
+        path = self.write('d.md', text)
+        rc, out = self.lint(path)
+        self.assertEqual(rc, 1)
+        self.assertTrue({'missing_depends', 'malformed_step', 'bad_status'} <= set(codes(out['errors'])))
+        res = self.decisions_mode(path)
+        self.assertEqual((brief(res['decisions']), brief(res['unconfirmed'])),
+                         ([('D1', 'Data store', 'assumed', '', '')], [('D1', 'Data store', 'assumed', '', '')]))
+        self.assertNotIn('errors', res)
+        # an architecture with a section missing, and a doc over its error limit
+        arch = self.write('a.md', with_decisions(architecture(skip=('Testing',)), record(1, 'Store', 'source')))
+        self.assertEqual(self.lint(arch)[0], 1)
+        res = self.decisions_mode(arch)
+        self.assertEqual((res['kind'], brief(res['decisions']), res['unconfirmed']),
+                         ('architecture', [('D1', 'Store', 'source', '', '')], []))
+        big = self.write('big.md', sized('proposal', 80 * KB + 1, with_decisions(proposal(step(1)), record(1, 'Store'))))
+        self.assertEqual(self.lint(big)[0], 1)
+        self.assertEqual([d['id'] for d in self.decisions_mode(big)['unconfirmed']], ['D1'])
+
+    def test_decisions_mode_on_a_roadmap_and_a_doc_with_no_kind(self):
+        rm = roadmap(step(1, gate='decision — continue only if 20 teams post within 60 days (proposed)', acc='recorded'))
+        path = self.write('roadmap.md', rm + '\n## Decisions\n\n' + record(1, 'Not a roadmap\'s to record'))
+        res = self.decisions_mode(path)
+        self.assertEqual((res['kind'], res['decisions'], res['unconfirmed']), ('roadmap', [], []))
+        self.assertEqual(len(res['proposed']), 1)
+        self.assertIn('20 teams post within 60 days (proposed)', res['proposed'][0]['text'])
+        # a doc with no kind is read as a proposal, as the lint reads it
+        notes = self.write('notes.md', '# Notes\n\n## Decisions\n\n' + record(1, 'Store', 'assumed'))
+        res = self.decisions_mode(notes)
+        self.assertEqual((res['kind'], brief(res['decisions'])), ('proposal', [('D1', 'Store', 'assumed', '', '')]))
+        empty = self.decisions_mode(self.write('p.md', proposal(step(1))))
+        self.assertEqual((empty['decisions'], empty['unconfirmed'], empty['proposed']), ([], [], []))
+
+    def test_decisions_mode_resolves_nothing_from_any_cwd(self):
+        # refs to docs that do not exist are not read: the mode needs only the doc itself
+        text = with_decisions(proposal(step(1, deps='gone.md#3'), source='roadmap.md#9'), record(1, 'Store', 'assumed'))
+        self.write('sub/d.md', text)
+        res = self.decisions_mode(os.path.join('sub', 'd.md'), cwd=self.tmp)
+        self.assertEqual((res['doc'], [d['id'] for d in res['decisions']]), (os.path.join('sub', 'd.md'), ['D1']))
+
+    def test_decisions_mode_exit_codes_and_usage(self):
+        ok = self.write('ok.md', with_decisions(proposal(step(1)), record(1, 'Store', 'assumed')))
+        self.assertEqual(run(os.path.join(self.tmp, 'missing.md'), '--decisions')[0], 2)
+        self.assertEqual(run(self.write('bin.md', b'# Proposal: x\n\xff\xfe\n'), '--decisions')[0], 2)
+        self.assertEqual(run(ok, '--decisions')[0], 0)
+        self.assertEqual(run(ok, '--decisions', '--json')[1], run(ok, '--decisions')[1])
+        for other in (['--lanes'], ['--tick', '1'], ['--roadmap'], ['--claude-md', ok]):
+            with self.subTest(other=other):
+                self.assertEqual(run(ok, '--decisions', *other)[0], 2)
 
 
 # ---- --repo -----------------------------------------------------------------------------------
@@ -1402,6 +1665,14 @@ class TestDocsJob(Base):
         self.assertEqual(rc, 1, out)
         self.assertIn('E too_many_steps', out)
 
+    def test_a_doc_written_before_the_decision_tag_still_passes(self):
+        self.write('docs/design/02-q.md', with_decisions(proposal(step(1)), record(1, 'Data store'),
+                                                         record(2, 'Price', 'person')))
+        rc, out = self.run_job()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('W decision_untagged', out)
+        self.assertIn('W bad_decision_tag', out)
+
     def test_claude_md_drift_fails_only_when_bootstrapped(self):
         with open(os.path.join(self.tmp, 'CLAUDE.md'), encoding='utf-8') as f:
             text = f.read()
@@ -1439,6 +1710,17 @@ class TestDocExamples(Base):
         self.assertIn('inner fence', found[1][1])
         lines = text.splitlines()
         self.assertEqual([lines[n - 1] for n, _ in found], ['```md', '````markdown'])
+
+    def test_proposals_md_examples_tag_every_record_with_each_form_once(self):
+        forms = set()
+        for n, (_line, text) in enumerate(self.load().examples(os.path.join(ROOT, 'docs', 'PROPOSALS.md'))):
+            rc, out = self.lint(self.write('example-%d.md' % n, text), '--no-resolve-xrefs')
+            self.assertEqual(rc, 0, out['errors'])
+            self.assertEqual([w for w in out['warnings'] if w['code'] in DECISION_CODES], [])
+            if out['kind'] != 'roadmap':
+                self.assertTrue(out['decisions'], 'the %s example has no D-record' % out['kind'])
+            forms.update((d['by'], bool(d['ref'])) for d in out['decisions'])
+        self.assertEqual(forms, {('person', False), ('person', True), ('source', False), ('assumed', False)})
 
     def test_cli_reports_a_broken_example(self):
         path = self.write('doc.md', 'x\n\n```sh\nls\n```\n\n```md\n' + proposal(step(1, deps=None)) + '```\n')

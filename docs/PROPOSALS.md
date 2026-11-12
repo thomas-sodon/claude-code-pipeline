@@ -77,6 +77,65 @@ longer matches the tree is a `concern`) and `/propose --revise <doc>` on its
 findings. For a long roadmap, propose only the next milestone (`max_milestones: 1`)
 and the rest with `/propose --milestone=N` as each comes up.
 
+### Who decided
+
+Every D-record heading under `## Decisions`, in the architecture and in a proposal,
+ends with one tag that says who made the choice:
+
+| Tag | Means |
+|---|---|
+| `(person, YYYY-MM-DD)`, `(person, YYYY-MM-DD, <ref>)` | the person chose it, on the date they said it. `<ref>` is where, as one word: an answer id (`intake.q2`, `intake.d3`), `framing`, a gate (`roadmap.md#4`) or `edit`. |
+| `(source)` | the source states it, and either the source is the person's own writing or the choice is not person-owned |
+| `(assumed)` | the author chose |
+
+    ### D1: Language and framework (source)
+    ### D3: Data store (assumed)
+    ### D7: Free-check input (person, 2026-11-05)
+    ### D12: Auth (person, 2026-11-12, architecture.q2)
+
+The **person-owned choices** are: who the product is for and what its first release
+leaves out; platforms and distribution, hosted or self-run; price, plans, the
+revenue model, and anything that costs money or opens an account in the person's
+name (a host, a paid API, a billing provider, a store); the licence and its variant,
+and the legal and compliance posture; what personal data is collected, how long it
+is kept and who receives it; names (product, package, domain, organization or
+bundle id); the repository's owner and visibility; stop and go criteria, thresholds
+and dates; and a stack, provider or environment the person must run or pay for
+themselves.
+
+- A person-owned choice taken from a source that was drafted for the person (a
+  `new-software-idea` brief is one) is never `(source)`: the author asks the person
+  to confirm it, and it becomes `(person, …)` once they do.
+- `(assumed)` on a person-owned choice is allowed only when the run proceeds on
+  assumptions (the invoking prompt says so; workflows: `on_question: 'assume'`).
+  Otherwise the choice is asked first.
+- **A `person` record is binding.** Only a newer answer from the person changes it.
+  A reason to change it (the source, the tree or research contradicts it) is a
+  question for the person, never an edit; a reviewer reports such a change as a
+  `bug` whose fix is the question to ask, with its options.
+- **`(proposed)` marks a value, not a record.** A threshold, a retention period or a
+  price the author proposes is labelled `(proposed)` and says where the person fixes
+  it: a confirmation asked now when it is a promise they own and can answer from
+  what they know, else the gate whose `Acceptance:` records it. Authors write no
+  other provenance mark.
+
+A record with no tag is W `decision_untagged`: one warning per doc, at its first
+untagged record, naming each, so a doc written before the tag keeps passing. A
+trailing parenthetical that starts with the word `person`, `source` or `assumed`,
+in upper or lower case, and is not one of the forms above, such as `(person)` with
+no date or `(assumed by the author)`, is W `bad_decision_tag`, and its record
+counts as untagged. Any other trailing parenthetical (`### D5: Client (web)`) is
+part of the title. `--json` lists the records as
+`decisions: [{id, n, title, line, by, date, ref}]`, where `by` is `person`,
+`source`, `assumed` or `''`.
+
+`proposal-lint.py <doc> --decisions` answers "what has nobody confirmed with the
+person?". It prints `{doc, kind, decisions, unconfirmed, proposed}`: `unconfirmed`
+holds the records tagged `(assumed)` or not tagged, and `proposed` every line
+outside a code fence that contains `(proposed`, as `{line, text}`. It only reads
+and never lints: it exits 0 on any doc it can read, lint errors or not, a roadmap
+included (no decisions; its `(proposed)` lines are listed).
+
 ## Steps and milestones
 
 A proposal's `## Steps` and a roadmap's `## Milestones` share one grammar:
@@ -151,14 +210,22 @@ A step only a person can do is a gate: `Human gate: <kind> — <text>` instead o
 
 | Kind | For |
 |---|---|
-| `research` | data a person gathers: interviews, real samples, measurements, a provider's written answer. What public sources can settle is desk research in a Decision instead, with links and the date checked. |
-| `decision` | go / no-go, legal or compliance sign-off, a choice the person owns |
+| `research` | what needs data, an account, a paid search or a legal opinion: interviews, real samples, measurements, a provider's written answer. What public sources can settle (a store, registry or register with a public search included) is desk research in a Decision instead, with its result, links and the date checked. |
+| `decision` | what waits on evidence the plan produces, on finished work or on an outside party: a go / no-go on its stop criteria, a legal or compliance sign-off. Never a choice the person can make now (below). |
 | `ops` | accounts, domains, DNS, provider and billing setup, secrets (by NAME, per environment), bootstrapping the repository |
 | `release` | production deploys, publishing a package or tagged version, store submissions, flag flips, observation windows |
 
 A gate sits right after the code it follows; its `Acceptance:` names the evidence
 that closes it. The pipeline never does a gate: lanes that depend on one stay
 blocked until a person ticks it.
+
+**A choice the person can make now is a question, never a gate.** The author asks
+it before writing, in one batch with every other question, and records the answer
+as a `(person, …)` D-record ([Who decided](#who-decided)). It is never parked in a
+gate, in a D-record whose Choice awaits confirmation, or in something left for
+acceptance. A `decision` gate holds only what waits on evidence the plan produces,
+on finished work or on an outside party; a `research` gate only what needs data, an
+account, a paid search or a legal opinion.
 
 **Release ownership.** Each production release, package or tag publish, store
 submission or launch is gated exactly once. By default it is a `release` gate in the proposal whose code it
@@ -193,7 +260,7 @@ There is no conditional syntax. When later steps depend on what a gate finds:
 | `## Goals` / `## Non-goals` | for a milestone: its exit criteria |
 | `## Current state` | today's tree, cited by path and symbol; greenfield: `No code yet` |
 | `## Design` | components, interfaces, data model, data flow, trust boundaries; each alternative for conditional work |
-| `## Decisions` | `### D1: <decision>` with Options (two or more), Choice, Why, Consequences, Revisit if |
+| `## Decisions` | `### D1: <decision> (<tag>)` with Options (two or more), Choice, Why, Consequences, Revisit if; the tag says [who decided](#who-decided) |
 | `## Security and privacy` | what the change could let go wrong (data exposure, weakened safety or permission rules, supply-chain or release integrity, untrusted input); data classes, where personal data lives and for how long, encryption, third parties and what they receive, secrets by NAME; or `none: <why>` |
 | `## Rollout and operations` | how the change reaches its users (deploy, package or tag publish, store submission, users copying or upgrading files) and compatibility for installed copies; environments, config and secret NAMES, migrations, flags, monitoring, rollback, launch gates; or `none: <why>` when nothing reaches anyone |
 | `## Risks and open questions` | each with its mitigation and the step that retires it |
@@ -232,7 +299,7 @@ An `incident` table and two API routes (post, list). Confirmed subscribers get a
 
 ## Decisions
 
-### D1: Notification channel
+### D1: Notification channel (person, 2026-11-09, 01-status-page.md#4)
 
 - Options: email to confirmed subscribers; an RSS feed.
 - Choice: email (step 4's Outcome).
@@ -303,10 +370,12 @@ a short paragraph on the ordering, then `## Milestones` (E `missing_section` /
   milestone): those belong to proposal steps.
 - Order: on a greenfield repo the Bootstrap `ops` gate comes before any code
   milestone. Only the `decision` or `research` gates whose outcome the skeleton bakes
-  in (a name, namespace or licence) precede it, and it depends on them; `/bootstrap`
-  stops (`bootstrap_gates_pending`) until each is ticked with an `Outcome:`. Then
-  the source's cheapest validation, a `decision` gate applying its stop criteria (not
-  its success criteria; a threshold the source does not give is labelled proposed),
+  in (a name, namespace or licence that waits on a legal opinion, a paid search or an
+  outside party; one the person can choose now is a question, not a gate) precede it,
+  and it depends on them; `/bootstrap` stops (`bootstrap_gates_pending`) until each
+  is ticked with an `Outcome:`. Then the source's cheapest validation, a `decision`
+  gate applying its stop criteria (not its success criteria; a threshold the source
+  does not give is labelled `(proposed)`),
   and everything that result could cancel after it. Every legal check, account or secret, release
   and store submission is a gate; a release is a roadmap milestone only when one
   launch ships several milestones' work (see *Release ownership*).
@@ -358,7 +427,7 @@ Ship the public page first: it is the cheapest test of whether teams use it.
 | `## System overview` | one paragraph and a diagram of components, data flow, trust boundaries |
 | `## Components` | per component: responsibility, technology, interfaces, directory |
 | `## Data model` | entities, key fields, data class, where each lives, retention |
-| `## Decisions` | D-records, each weighing two or more options |
+| `## Decisions` | D-records, each weighing two or more options, each heading ending in the tag that says [who decided](#who-decided) |
 | `## Security and privacy` | data classes, encryption, auth, secrets, third parties, retention, threats, compliance items and the milestone that clears each |
 | `## Invariants` | bullets, each an enforceable rule; `/bootstrap` copies them verbatim into `CLAUDE.md`, and `--claude-md` checks the copy |
 | `## Repository layout` | the directory tree `/bootstrap` scaffolds; an entry marked `(from milestone N)` is left to that milestone |
@@ -413,13 +482,29 @@ team member ──(session)──> api
 
 ## Decisions
 
-### D1: Data store
+### D1: Data store (person, 2026-10-30)
 
 - Options: managed Postgres (backups included); SQLite on the app host (free, backups are ours).
 - Choice: managed Postgres.
 - Why: one part-time builder must not run backups (brief: team constraint).
 - Consequences: a `DATABASE_URL` secret per environment.
 - Revisit if: hosting cost exceeds the brief's margin target.
+
+### D2: Language and framework (source)
+
+- Options: TypeScript on Node with Fastify; Go with the standard library.
+- Choice: TypeScript on Node with Fastify.
+- Why: the brief names TypeScript as the one language its builder ships in.
+- Consequences: one toolchain for `apps/api` and `apps/web`.
+- Revisit if: a second builder joins with another stack.
+
+### D3: One repository (assumed)
+
+- Options: one repository for both apps; one per app.
+- Choice: one repository.
+- Why: one CI run and atomic changes across the API and the page.
+- Consequences: workspace tooling at the root.
+- Revisit if: the apps get separate teams.
 
 ## Security and privacy
 
@@ -586,9 +671,10 @@ A doc over a budget is split, not squeezed:
 An error is a lint error like any other: `--lanes` gives the doc no lanes,
 `/plan --proposal`, `/impl` and `/bootstrap` stop on it (`doc_malformed`), and
 the CI `docs` job fails. `/review-proposal` reports a warning as a `concern` and
-an error as a `bug`, naming the split. `--tick` never lints, so a person can still
-tick a gate in an oversized doc. `--no-size-limits` turns the checks off, for a
-doc written before the budgets until it is split.
+an error as a `bug`, naming the split. `--tick` and `--decisions` never lint, so a
+person can still tick a gate in an oversized doc, and its decisions can still be
+listed. `--no-size-limits` turns the checks off, for a doc written before the
+budgets until it is split.
 
 ## Lint codes
 
@@ -619,6 +705,7 @@ doc written before the budgets until it is split.
 | `too_many_milestones` | W | a roadmap has more than 20 milestones |
 | `lane_mixed` | W | a lane mixes ticked and unticked steps |
 | `gate_without_outcome`, `outcome_on_code_step` | W | see *Outcome* |
+| `decision_untagged`, `bad_decision_tag` | W | a D-record heading with no provenance tag (one warning per doc, naming each record), or with a trailing parenthetical that starts like a tag and is not one (see *Who decided*) |
 | `xref_unreadable` | W | a `<file>.md#N` doc cannot be read |
 | `source_unresolved` | W | a proposal's `Source:` names a roadmap milestone that cannot be resolved; `--lanes` blocks every lane (`milestone_unresolved`) |
 | `file_not_found`, `new_file_exists` | W | `--repo`: `Files:` disagree with the tree |

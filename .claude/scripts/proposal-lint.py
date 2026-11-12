@@ -11,21 +11,27 @@ Usage:
   proposal-lint.py DOC --lanes [--root DIR] [--date YYYYMMDD] [--branch-prefix PREFIX]
                                [--remote-heads FILE] [--repo DIR] [--allow-draft]
   proposal-lint.py DOC --tick N[,N...]
+  proposal-lint.py DOC --decisions
   proposal-lint.py ROADMAP --roadmap
   proposal-lint.py ARCHITECTURE --claude-md PATH [--json]
 
 Exit status: 0 = no errors (warnings allowed); 1 = lint errors, or a --tick /
 --lanes request that cannot be met; 2 = usage error or unreadable DOC.
---lanes, --roadmap and --tick always print JSON. --claude-md lints ARCHITECTURE and checks
-that CLAUDE.md at PATH carries its ## Invariants and ## Testing bodies verbatim
-(claude_md_drift). Every mode that lints (all but --tick) applies the size budgets:
-bytes per doc kind (doc_too_big), steps per proposal (too_many_steps) and milestones
-per roadmap (too_many_milestones), warning above the soft limit and erroring above the
-hard one; --no-size-limits turns them off. The script never runs git and never touches
-the network: it reads only the files it is given.
+--lanes, --roadmap, --tick and --decisions always print JSON. --claude-md lints
+ARCHITECTURE and checks that CLAUDE.md at PATH carries its ## Invariants and ## Testing
+bodies verbatim (claude_md_drift). --decisions only reads: it lists the D-records under
+## Decisions with who decided each (the provenance tag that ends the heading), those
+nobody confirmed with the person, and every line that carries a (proposed) value; it
+never lints, so it exits 0 on any DOC it can read. Every mode that lints (all but --tick
+and --decisions) applies the size budgets: bytes per doc kind (doc_too_big), steps per
+proposal (too_many_steps) and milestones per roadmap (too_many_milestones), warning
+above the soft limit and erroring above the hard one; --no-size-limits turns them off.
+The script never runs git and never touches the network: it reads only the files it is
+given.
 """
 
 import argparse
+import datetime
 import json
 import math
 import os
@@ -47,6 +53,10 @@ FILE_RE = re.compile(r'`([^`]+)`(\s*\(new\))?')
 XREF_RE = re.compile(r'^(\S+?\.md)#(\d+)$')
 SOURCE_REF_RE = re.compile(r'(\S+?\.md)#(\d+)')
 COMMENT_RE = re.compile(r'<!--.*?-->')
+DECISION_RE = re.compile(r'^### D(\d+):\s*(.*?)\s*$')
+PAREN_RE = re.compile(r'^(.*?)\s*\(([^()]*)\)$')      # a heading's trailing parenthetical
+PERSON_TAG_RE = re.compile(r'^person\s*,\s*(\d{4}-\d{2}-\d{2})(?:\s*,\s*([^\s,()]+))?$')
+TAG_WORD_RE = re.compile(r'^(person|source|assumed)\b', re.I)
 
 GATE_KINDS = ('research', 'decision', 'ops', 'release')
 KEYS = {'files': 'files', 'depends on': 'depends', 'acceptance': 'acceptance',
@@ -60,6 +70,17 @@ ARCH_SECTIONS = ('Context', 'System overview', 'Components', 'Data model', 'Deci
                  'Security and privacy', 'Invariants', 'Repository layout', 'Quality gates',
                  'Environments and deployment', 'Testing', 'Risks and open questions')
 CLAUDE_MD_SECTIONS = ('Invariants', 'Testing')   # /bootstrap copies these bodies verbatim
+# Who decided a D-record (docs/PROPOSALS.md, Who decided): the closed tags that end its heading.
+DECISION_KEYS = ('id', 'n', 'title', 'line', 'by', 'date', 'ref')
+TAG_FORMS = '(person, YYYY-MM-DD), (person, YYYY-MM-DD, <ref>), (source) or (assumed)'
+BAD_TAG_HINTS = {
+    'person': 'person is lowercase and is followed by the date the person said it, a real YYYY-MM-DD, then at '
+              'most one ref with no space in it',
+    'source': 'source stands alone, in lowercase',
+    'assumed': 'assumed stands alone, in lowercase',
+}
+PROPOSED_MARK = '(proposed'
+PROPOSED_TEXT_MAX = 200
 MAX_FILES = 8
 MAX_SENTENCES = 7
 
@@ -96,6 +117,8 @@ class Doc(object):
         self.header = {}
         self.sections = []          # (name, line)
         self.steps = []
+        self.decisions = []         # D-records under ## Decisions (architecture and proposal)
+        self.proposed = []          # {line, text} of every line outside a code fence that has "(proposed"
         self.errors = []
         self.warnings = []
 
@@ -141,6 +164,8 @@ def parse(path):
             continue
         if in_fence:
             continue
+        if PROPOSED_MARK in line:
+            doc.proposed.append({'line': i, 'text': line.strip()[:PROPOSED_TEXT_MAX]})
         if doc.kind is None and line.startswith('# '):
             m = H1_RE.match(line)
             if m:
@@ -162,6 +187,11 @@ def parse(path):
             m = HEADER_RE.match(line)
             if m:
                 doc.header[m.group(1).lower()] = COMMENT_RE.sub('', m.group(2)).strip()
+            continue
+        if section is not None and section.lower() == 'decisions':
+            m = DECISION_RE.match(COMMENT_RE.sub('', line))
+            if m:
+                doc.decisions.append(decision(i, int(m.group(1)), m.group(2)))
             continue
         if section is None or section.lower() not in ('steps', 'milestones'):
             continue
@@ -208,9 +238,46 @@ def parse(path):
             last_key = None
     if doc.kind is None:
         doc.kind = 'unknown'
+    if doc.kind == 'roadmap':
+        doc.decisions = []      # a roadmap records no decisions: they live in the architecture and the proposals
     for s in doc.steps:
         interpret_keys(doc, s)
     return doc
+
+
+def valid_date(text):
+    try:
+        datetime.date(*[int(p) for p in text.split('-')])
+    except ValueError:
+        return False
+    return True
+
+
+def decision(line, n, text):
+    """One D-record from its heading text (what follows "### D<N>:"). The trailing parenthetical is its
+    provenance tag when it is one of the closed forms (TAG_FORMS); the title is the text without it. Any other
+    trailing parenthetical stays in the title and the record is untagged; one that starts like a tag without
+    being one is also kept in '_bad_tag', for bad_decision_tag."""
+    d = {'id': 'D%d' % n, 'n': n, 'title': text, 'line': line, 'by': '', 'date': '', 'ref': ''}
+    m = PAREN_RE.match(text)
+    if not m:
+        return d
+    tag = m.group(2).strip()
+    person = PERSON_TAG_RE.match(tag)
+    if person and valid_date(person.group(1)):
+        d.update(by='person', date=person.group(1), ref=person.group(2) or '')
+    elif tag in ('source', 'assumed'):
+        d['by'] = tag
+    else:
+        if TAG_WORD_RE.match(tag):
+            d['_bad_tag'] = tag
+        return d
+    d['title'] = m.group(1)
+    return d
+
+
+def public_decision(d):
+    return dict((k, d[k]) for k in DECISION_KEYS)
 
 
 def interpret_keys(doc, s):
@@ -289,6 +356,7 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None, size_limits=True):
                  '(authors write draft; a person sets accepted)')
     elif status.lower() not in STATUSES:
         doc.err(1, 'bad_status', 'Status must be one of %s; got %r' % (', '.join(STATUSES), status))
+    check_decisions(doc)
     if doc.kind == 'architecture':
         for name in ARCH_SECTIONS:
             if not doc.has_section(name):
@@ -398,6 +466,23 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None, size_limits=True):
             if s['proposal'] and not os.path.isfile(os.path.join(base, s['proposal'])) and not s['done']:
                 doc.warn(s['line'], 'proposal_not_written', 'milestone %d: %s does not exist yet'
                          % (s['n'], s['proposal']))
+
+
+def check_decisions(doc):
+    """decision_untagged, once per doc at its first untagged D-record, and bad_decision_tag per record whose
+    trailing parenthetical starts like a tag without being one (docs/PROPOSALS.md, Who decided). Both are
+    warnings, so a doc written before the tag keeps passing."""
+    untagged = [d['id'] for d in doc.decisions if not d['by'] and '_bad_tag' not in d]
+    reported = False
+    for d in doc.decisions:
+        if '_bad_tag' in d:
+            word = TAG_WORD_RE.match(d['_bad_tag']).group(1).lower()
+            doc.warn(d['line'], 'bad_decision_tag', '%s: "(%s)" is not a provenance tag (%s); end the heading '
+                     'with %s' % (d['id'], d['_bad_tag'], BAD_TAG_HINTS[word], TAG_FORMS))
+        elif not d['by'] and not reported:
+            reported = True
+            doc.warn(d['line'], 'decision_untagged', '%s %s no provenance tag; end each D-record heading with who '
+                     'decided it: %s' % (', '.join(untagged), 'has' if len(untagged) == 1 else 'have', TAG_FORMS))
 
 
 def kb(size):
@@ -769,6 +854,16 @@ def roadmap_report(doc, cache):
             'milestones': out, 'next': nxt}
 
 
+# ---- decisions --------------------------------------------------------------------------------
+
+def decisions_report(doc):
+    """--decisions: every D-record with who decided it, the ones nobody confirmed with the person (assumed, or
+    untagged) and the lines that carry a (proposed) value. Read from the parse alone: nothing is linted."""
+    decisions = [public_decision(d) for d in doc.decisions]
+    return {'doc': doc.path, 'kind': 'proposal' if doc.kind == 'unknown' else doc.kind, 'decisions': decisions,
+            'unconfirmed': [d for d in decisions if d['by'] in ('assumed', '')], 'proposed': doc.proposed}
+
+
 # ---- tick -------------------------------------------------------------------------------------
 
 def tick(path, numbers):
@@ -916,6 +1011,8 @@ def main(argv=None):
     mode.add_argument('--lanes', action='store_true', help='derive build lanes and chains (JSON)')
     mode.add_argument('--tick', metavar='N[,N...]', help='tick these steps in place (JSON)')
     mode.add_argument('--roadmap', action='store_true', help='report roadmap progress (JSON)')
+    mode.add_argument('--decisions', action='store_true', help='list the D-records with who decided each, those '
+                      'nobody confirmed with the person, and the (proposed) lines (JSON); reads only, never lints')
     mode.add_argument('--claude-md', metavar='PATH', help='lint an architecture doc and check that CLAUDE.md at PATH '
                       'carries its ## Invariants and ## Testing bodies verbatim')
     p.add_argument('--root', help='--lanes: directory for lane worktrees')
@@ -952,6 +1049,9 @@ def main(argv=None):
         if a.remote_heads and not os.path.isfile(a.remote_heads):
             print('proposal-lint: cannot read %s' % a.remote_heads, file=sys.stderr)
             return 2
+        if a.decisions:
+            print(json.dumps(decisions_report(doc), indent=1))
+            return 0
         check(doc, repo=a.repo, resolve_xrefs=not a.no_resolve_xrefs, cache=cache, size_limits=not a.no_size_limits)
         if a.lanes:
             if doc.kind != 'proposal':
@@ -981,7 +1081,8 @@ def main(argv=None):
         if a.json:
             print(json.dumps({'doc': doc.path, 'kind': doc.kind, 'title': doc.title, 'header': doc.header,
                               'errors': doc.errors, 'warnings': doc.warnings,
-                              'steps': [public_step(s) for s in doc.steps]}, indent=1))
+                              'steps': [public_step(s) for s in doc.steps],
+                              'decisions': [public_decision(d) for d in doc.decisions]}, indent=1))
         else:
             for e in sorted(doc.errors, key=lambda x: (x.get('path', ''), x['line'])):
                 print('%s:%d: E %s: %s' % (e.get('path', doc.path), e['line'], e['code'], e['message']))
