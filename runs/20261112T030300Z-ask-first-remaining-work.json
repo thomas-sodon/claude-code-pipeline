@@ -1,0 +1,669 @@
+{
+ "build-ship": [
+  {
+   "n": 7,
+   "group": "build",
+   "title": "Lane and bootstrap assumptions never reach later stages, the PR or person",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "The build side is byte-identical to the base. Smallest change, reusing plan_ref, pr_note and the intakeAssumed pattern: (1) .claude/workflows/plan-to-merged-pr.js: a helper like brief-to-proposals' intakeAssumed() adds the ASSUMED entries so far to the impl, review, fix, polish and merge-check prompts (\"choices earlier stages made that the person has not confirmed: keep each, never ask it again, it is no defect; a reason to change one is a blocking question\"); the fixer prompt (557-560) also gets AUTHORITATIVE, the plan the reviewer already gets; merge-check step 5 (618-622) saves the plan with an appended `## Assumptions to review` section (ASSUMED by stage, then the answers given), so a ship-only run in another session reads it through plan_ref; the create-pr and ready-pr prompts (667-686) tell the skill to put that list in the PR body (same run: ASSUMED and ANSWERS; ship-only: the restored plan's section); done() (448) returns `declined`, collected from history; RELAY (262-264) gains the sentence \"Also show the person this result's assumptions\". (2) .claude/commands/create-pr.md step 8: an optional `## Assumptions to review` section after Deploy notes, copied from the plan's section of that name or the caller's list, omitted when empty. (3) .claude/commands/plan.md, Plan layout: an optional `## Assumptions` section holding what Report line 183 lists, so the planner's own travel in the plan text. (4) .claude/workflows/bootstrap-repo.js: shipArgsFor (54-59) passes the bootstrap stage's assumptions as pr_note, and the first next step says to show them before merging. (5) .claude/workflows/bug-fix-backlog.js:539,549: pr_note adds \"not reproduced by a failing test before the fix\" for an issue with a note, and the lane result carries `assumptions`. (6) Small: proposal-build-chain.js result (258-268) gets a top-level `assumptions: [{ lane, stage, assumption }]`; brief-to-proposals.js:900 failed_at_propose adds `assumptions: ASSUMED`. (7) docs/REFERENCE.md 621-624, 716-720 and 870-873 state which results carry the field and that the PR body shows it; README.md 216-222 and step 3 say the person is shown them before accepting or merging. Not worth doing: a `decisions.md` beside the drafts (a second source; the D-record tags and `proposal-lint.py --decisions` already do it) and a ship-chain top-level list (the PR body covers it).",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/commands/create-pr.md",
+    ".claude/commands/plan.md",
+    ".claude/workflows/bootstrap-repo.js",
+    ".claude/workflows/bug-fix-backlog.js",
+    ".claude/workflows/proposal-build-chain.js",
+    ".claude/workflows/brief-to-proposals.js",
+    "docs/REFERENCE.md",
+    "README.md",
+    "ci/test-workflow-questions.mjs",
+    "ci/test-workflow-shipping.mjs",
+    "ci/test-workflow-wrappers.mjs",
+    "ci/test-workflow-design.mjs"
+   ],
+   "tests": "ci/test-workflow-questions.mjs: an assumption the impl stage returns appears in the apply-review-fixes-1, polish-1 and merge-check prompts; the create-pr prompt carries an assumption and an answer under `## Assumptions to review`; the fixer prompt holds the plan; a result lists `declined`. ci/test-workflow-shipping.mjs: the merge-check save text ends with the section; a ship-only run with plan_ref tells /create-pr to copy the plan's section; a proposal-build-chain result has top-level assumptions with the lane. ci/test-workflow-wrappers.mjs: a bootstrap assumption reaches the ship run's pr_note and next_steps[0]. ci/test-workflow-design.mjs: failed_at_propose carries assumptions."
+  },
+  {
+   "n": 8,
+   "group": "build",
+   "title": "/bootstrap has no question contract; LICENSE holder and licence conflict go unasked",
+   "status": "partly_fixed",
+   "priority": "must",
+   "remaining_change": ".claude/commands/bootstrap.md is identical to the base: no 'Questions before assumptions', line 131 still says \"holder unknown \u2192 leave the placeholder and say so\" and \"An existing `LICENSE` is kept; report it when it differs\", and Report has no Assumptions bullet. Change: (1) bootstrap.md: add `## Questions before assumptions` between 'Check the repository is greenfield' and 'Create the bootstrap branch' (the five bullets of plan.md:112-116, with `error=needs_input` for an unattended run; every question collected before the first write, and printed under --dry-run). It names what is the person's when no Decision or answer settles it: the copyright holder, only when the licence's canonical text has a holder line (options: the repository owner the architecture records, the `git config user.name` value, a name the person gives; never the brief's builder, never a placeholder); an existing LICENSE whose licence differs from the architecture's licence Decision (ask which holds, naming both; the file, the manifests and the README then agree); no licence Decision; a package name, scope or bundle id no Decision settles. Step 7 (line 131) points there instead of leaving a placeholder or keeping a differing file. Report gains `**Assumptions**` (an action pinned by tag, an SPDX-only LICENSE, every other unsettled choice), and the closing line adds \"for `error=needs_input`, the questions\". (2) roadmap.md line 210: the parenthesis reads \"licence and the name its copyright notice carries\", so the design batch asks the holder and /bootstrap rarely has to. (3) start-product.md item 4: when the repository already holds a LICENSE of another licence than the brief's, the confirmation names both and recommends neither (the tree shows the file; the conflict is the person's, and this is the first batch). (4) docs/REFERENCE.md:813: add `/bootstrap` and `/start-product` to the commands that ask.",
+   "files": [
+    ".claude/commands/bootstrap.md",
+    ".claude/commands/roadmap.md",
+    ".claude/commands/start-product.md",
+    "docs/REFERENCE.md",
+    "ci/check-skill-refs.mjs",
+    "ci/test-workflow-wrappers.mjs"
+   ],
+   "tests": "ci/check-skill-refs.mjs: for each `skill \"<name>\"` invoked inside an agent prompt that carries ASK( or ASK_RULE, require `error=needs_input` in .claude/commands/<name>.md (it fails today for bootstrap only; plan, impl, roadmap, propose and merge-main pass). ci/test-workflow-wrappers.mjs: the existing copyright-line fixture stays; add that a bootstrap assumption such as 'SPDX-only LICENSE' is returned in result.assumptions."
+  },
+  {
+   "n": 11,
+   "group": "build",
+   "title": "A bootstrap run stopped mid-way cannot resume: its checks refuse it",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": "Nothing changed: bootstrap.md and bootstrap-repo.js are identical to the base. (1) .claude/commands/bootstrap.md, 'Check the repository is greenfield': step 4 reads already bootstrapped only when a commit with the trailer `Bootstrapped-by: /bootstrap` is on origin/main or on a `bootstrap/*` branch, local or on origin; a local `bootstrap/*` branch with no such commit is an earlier run that stopped before committing, and the run resumes on it. Step 5's Resume also covers a tracked `CLAUDE.md` that carries this command's marker and HEAD on such an unfinished branch: that run's files (the modified CLAUDE.md and .gitignore, the skeleton's own paths) are kept and checked against the architecture, not `dirty_tree`; step 6 already says \"Outside resume\". 'Create the bootstrap branch' reuses the unfinished branch instead of appending `-2`. Line 139's \"a re-run resumes\" is then true for gates_red and secret_in_commit too. (2) The 'Questions before assumptions' section of finding 8 sits before 'Create the bootstrap branch', so a question stop leaves no branch and no file. (3) .claude/workflows/bootstrap-repo.js: line 93 becomes \"stop before the first write: create no branch, write no file, and return every such question\"; RELAY (120) and the needs_input next step (199) say that nothing was written; the outcome description (132) says \"a bootstrap commit on origin/main or on a bootstrap/* branch\"; and before the ship (after line 216) an `already_bootstrapped` report with merged false and an empty `commit` returns failed(...), so a branch with no bootstrap commit is never shipped. (4) docs/REFERENCE.md 783 and 905-906 follow.",
+   "files": [
+    ".claude/commands/bootstrap.md",
+    ".claude/workflows/bootstrap-repo.js",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-wrappers.mjs"
+   ],
+   "tests": "ci/test-workflow-wrappers.mjs: in 'a bootstrap question stops before shipping', assert the bootstrap prompt says \"before the first write\" and no longer \"what the command already wrote stays\", and that next_steps[0] says nothing was written; a new case where the stage reports `already_bootstrapped`, merged false, commit '' ends failed_at_bootstrap with the nested workflow never called (noShip)."
+  },
+  {
+   "n": 15,
+   "group": "build",
+   "title": "/polish cannot ask; behaviour-changing fixes applied, deferred concerns count as clean",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/plan-to-merged-pr.js: add 'polish' to KINDS (223) between 'fix' and 'merge_check' (a kind of its own, since ids restart at q1 each run and a polish question under 'fix' would share `fix.q1` with the fixer's); POLISH_SCHEMA (321-329) gets `...QA` and a required `unfixed: [{ file, severity, description }]` for bugs and concerns only (suggestions and nits stay out, or polish would never be clean); the prompt (582-585) uses ASK('polish') in place of answersFor('fix') and replaces \"Fix every bug found\" with \"fix every bug found; a fix that changes observable behaviour the plan and the design doc do not call for, or a concern whose resolution is the person's call, is a blocking question per QUESTIONS, never applied on a guess and never deferred; list in unfixed every bug or concern you leave unfixed, with the reason\"; then `noteAssumptions('polish', p)`, `if (asked(p)) return needsInput('polish', p)`, and `clean` (589) also requires an empty `unfixed`. A loop that ends with unfixed items keeps today's behaviour (polish_clean false, full gates at the merge check) and done() carries them as `polish_unfixed`; line 588 logs p.summary. .claude/commands/polish.md step 5: one unattended paragraph, as plan.md:114 has it: when no one can answer, a fresh or ledger fix that changes behaviour the plan does not call for, and a concern it would surface, stop with `error=needs_input` (id, why, options, recommended); Safety line 104 and step 9's \"stop and ask the user\" point to it. docs/REFERENCE.md 613 and 830: the stage list gains `polish`, and the result fields gain `polish_unfixed`.",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/commands/polish.md",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-questions.mjs: add 'polish-1' to the list at line 83; add ['polish', 'polish'] to the loop at line 71 (a polish question returns needs_input, stage polish, id polish.q1, and merge-check never runs); a polish round that fixes 0 but returns one `unfixed` concern is not clean (polish_clean false, polish_unfixed listed, the merge-check prompt asks for the full gates); the answers test at line 93 still finds a fix answer in polish-1."
+  },
+  {
+   "n": 27,
+   "group": "build",
+   "title": "Lane re-run after a later-stage question re-plans without the answer",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": ".claude/workflows/plan-to-merged-pr.js, Plan phase, when `branch` is given and there is no plan_text (470-506): the planner prompt, the same text on every run so a same-session resume still replays it from the record, starts with `python3 .claude/scripts/pipeline-state.py get plans/<branch-slug>.md` (planRefFor(BRANCH)). Exit 0, and the saved plan's Context names the same proposal and steps: an earlier run of this lane planned it, so invoke no planning skill and return that text as `plan` with the branch. Otherwise plan as now and, as the last step, save the plan file to that path with `pipeline-state.py save ... --as plans/<branch-slug>.md` (best effort), reporting `plan_saved` (new PLAN_SCHEMA field); PLAN_REF is set from it, so a needs_input result at impl or fix already carries plan_ref. The merge check's save (618-622) stays, for plan_text runs and a failed early save. No later-kind answer is added to the planner prompt: a planner that never runs twice for one lane can neither contradict nor re-ask, and adding answers would stop the replay line 221 relies on. Do not add a restore agent keyed on later-kind answers: it diverges a same-session resume at its first call and re-runs the review live. .claude/workflows/proposal-build-chain.js: RELAY (63-65) and the header (36-39) say the lane that asked continues from its saved plan. docs/REFERENCE.md 345-347, 844-847, 887-899, 1071 and 1131, README.md:521 and docs/PROCESS.md G12 (line 342) say the plan is saved when planning ends. Shared with finding 36 (one plan save) and finding 7 (the merge-check save appends the assumptions).",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/workflows/proposal-build-chain.js",
+    "docs/REFERENCE.md",
+    "docs/PROCESS.md",
+    "README.md",
+    "ci/test-workflow-shipping.mjs",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-shipping.mjs: with `branch: 'feat/p-s1'`, prompt('plan') names `pipeline-state.py get plans/feat-p-s1-<hash>.md` before the skill call and the save to the same path after it, and is byte-identical with and without an `impl.q1` answer; a planner that reports plan_saved followed by an impl question returns needs_input with plan_ref set; a planner reply that restored the plan is used as the plan. ci/test-workflow-questions.mjs: the 'never earlier ones' test (87-96) stays green, and the proposal-build-chain relay names the saved plan."
+  },
+  {
+   "n": 36,
+   "group": "build",
+   "title": "Uncommitted lane work is lost when the container ends mid-question",
+   "status": "open",
+   "priority": "could",
+   "remaining_change": "After finding 27's change (the plan saved when planning ends, restored by the next run) the smallest change is wording that is true: .claude/workflows/plan-to-merged-pr.js RELAY (262-264) and .claude/workflows/proposal-build-chain.js RELAY (63-65) say \"the lane continues from its saved plan; its uncommitted work is kept only while this checkout exists, and a new container builds the lane again from that plan with the answers\"; .claude/commands/handoff.md line 30 lists a lane stopped on a question with its plan_ref beside the uncommitted-work risk; docs/REFERENCE.md 844-847 and 887-899 say the same instead of \"builds again in its kept worktree\" and \"starts where the repository, origin and the state branch say the work is\". Not recommended now: a `wip/<branch-slug>.patch` on the state branch (a new state path, an extra agent at every impl or fix question, and a patch that may not apply once the base has moved).",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/workflows/proposal-build-chain.js",
+    ".claude/commands/handoff.md",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-questions.mjs: the needs_input relay of plan-to-merged-pr and of proposal-build-chain names the saved plan and says the uncommitted work lives only in the checkout (one assert.match each)."
+  },
+  {
+   "n": 12,
+   "group": "ship-monitor-a",
+   "title": "Monitor's process-comments step cannot ask; person's review reply never read",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": "(1) .claude/workflows/plan-to-merged-pr.js, Monitor, the process-comments step (the `if (last.actionable_comments > 0)` block, lines 786-800): build its prompt with ASK_RULE (`GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + KEEP_OUT + ...`, as merge-main at line 775 does) and add one sentence, reusing the fix stage's wording at line 559: a human reviewer's request that contradicts the plan, the design doc (above all a decision tagged `(person, ...)`) or an answer above, and any item, human or AI, whose fix is a product or trade-off choice neither the plan nor the design doc settles, is a blocking question, per QUESTIONS: never apply it and never decline it. Validate every item before changing anything, handle the others as usual, post NO reply on that thread (so the observe step still counts it and the monitor-only re-run reaches it with the answer; a 'Surfaced for human review' reply would hide it from actionable_comments), and return the question naming the thread (URL, reviewer, their words) and what the plan or doc says. In assume mode: keep the plan, post the existing non-terminal out-of-scope reply, list it in assumptions. After the call add `noteAssumptions('monitor', c)` and, once the action is pushed to `actions`, `if (asked(c)) return needsInput('monitor', c, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME })`. In needsInput's monitor relay say 'each question's id and question text with the person's answer' (a monitor-only re-run has no record; answersFor already reads a.question). (2) Same file, OBSERVE_SCHEMA.actionable_comments (line 341) and observe step 3 (line 743): a thread counts again when a real user's reply that asks for a change or a question comes after the last terminal or out-of-scope reply. (3) .claude/commands/process-comments.md: line 38 limits 'the strongest reason to decline' to an AI comment; 'Validate' gains one bullet in /merge-main's one-sentence form (verdict `needs-person`: interactive, ask with options apply / decline / a named variant and a recommendation; unattended, leave that thread without a reply, finish the rest and stop with `error=needs_input` printing the question); 'Select the comments' step 3 makes a thread eligible again on such a later human reply; the Report's verdict list and the opening contract sentence name the exception. (4) docs/REFERENCE.md 'Answering questions': add `/process-comments` to the commands that ask (line 813) and the review-comment case to the monitor bullet (lines 830-832); README.md: the `/process-comments` row of the command table (line 365). Not needed: `declined` in ACTION_SCHEMA, `monitor_declined` and any ship-chain.js change (ship-chain already sends a monitor answer to a monitor-only run of the open PR; the declines are in the PR threads).",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/commands/process-comments.md",
+    "ci/test-workflow-questions.mjs",
+    "docs/REFERENCE.md",
+    "README.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, monitor section (OBS, MON): (a) observe-1 returns actionable_comments 1 and process-comments-1 returns { questions: [Q] }: status needs_input, stage 'monitor', questions[0].id 'monitor.q1', resume_monitor deep-equals MON, relay matches /monitor-only/ and /question text/, the last call is process-comments-1, and its prompt matches /QUESTIONS: this stage runs unattended/, /human reviewer's request that contradicts the plan/ and /post no reply on that thread/; (b) on_question 'assume' with process-comments-1 returning assumptions ['x']: result.assumptions deep-equals [{ stage: 'monitor', assumption: 'x' }]; (c) MON plus answers [{ id: 'monitor.q1', question: 'T', answer: 'ANSWER-MON' }]: the process-comments-1 prompt carries ANSWER-MON; (d) the observe-1 prompt carries the reopened-thread wording."
+  },
+  {
+   "n": 13,
+   "group": "ship-monitor-a",
+   "title": "bug-fix-backlog lane questions cannot be answered; assumptions and resume_monitor dropped",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": ".claude/workflows/bug-fix-backlog.js, Ship stage (lines 529-548), following bootstrap-repo.js's slimShip and MONITOR_RELAY: (1) keep the child args in a const (`laneArgs = { ...SHARED, concern, plan_text: planText, dir: l.dir, branch: l.branch, pr_note }`) and call plan-to-merged-pr with it plus the lane's answers. (2) The lane result also returns `assumptions: (r && r.assumptions) || []` always, and when the child has them `stage`, `plan_ref`, `handoff`, `resume_monitor`, `left_uncommitted` and `reason` (stop_reason, else merge_check.blocked_reason, else pr_stage.blocked_reason). (3) Replace RELAY for lane questions: when `r.stage === 'monitor'` and the child gave resume_monitor, 'the lane's PR is already open: re-run plan-to-merged-pr with this lane's resume_monitor as args plus answers, in monitor-only mode'; otherwise return `resume_args: laneArgs` and 're-run plan-to-merged-pr with this lane's resume_args plus answers (each question's id and question text with the person's answer); never re-run bug-fix-backlog for it: its triage would judge the kept worktree, which now holds the fix, or skip the issue once its own PR is open'. resumeFromRunId is no alternative: REFERENCE.md:882-885 says a resume of parallel lanes can diverge and repeat work. (4) Smaller, same edit: TRIAGE_SCHEMA gains an optional `assumptions` and the triage prompt one sentence (list every choice the plan makes that the issue and the code do not settle), returned in the lane's assumptions as stage 'triage'. Update the `answers` header comment (line 30). docs/REFERENCE.md: the lane result fields (lines 754-763), the bug-fix-backlog half of the 'Answering questions' bullet (lines 844-849) and the 'Resuming' bullet (line 908) describe the new route and fields; README.md, bug-fix-backlog section step 4: one sentence that a lane's question is answered through plan-to-merged-pr with the lane's resume_args, or resume_monitor once its PR is open.",
+   "files": [
+    ".claude/workflows/bug-fix-backlog.js",
+    "ci/test-workflow-questions.mjs",
+    "docs/REFERENCE.md",
+    "README.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, under the comment at line 290 that already claims bug-fix-backlog coverage, with lanes given and the triage and reproduce mocks of the existing intake-answer test: (a) the child returns { status: 'needs_input', stage: 'fix', questions: [{ id: 'fix.q1', ...Q }], assumptions: [{ stage: 'impl', assumption: 'a' }] }: the lane carries questions tagged with its lane, resume_args deep-equal to the args the child was called with, a relay matching /re-run plan-to-merged-pr with this lane's resume_args/ and not /re-run bug-fix-backlog/, and the assumptions; (b) stage 'monitor' with resume_monitor: the lane carries it, no resume_args, and the relay matches /resume_monitor/ and /monitor-only/; (c) the child returns { status: 'OPEN', handoff, resume_monitor, plan_ref, assumptions, left_uncommitted }: each is on the lane result; (d) { status: 'blocked_at_merge_check', merge_check: { blocked_reason: 'why' } } gives reason 'why'."
+  },
+  {
+   "n": 29,
+   "group": "ship-monitor-b",
+   "title": "Close-out never shows the milestone's Acceptance or names pending gates",
+   "status": "open",
+   "priority": "could",
+   "remaining_change": "No question and no relay: the proposed closeout.q1 would be over-asking. Only the reporting gap is worth closing. .claude/workflows/plan-to-merged-pr.js, close-out agent prompt (steps 2-3) and CLOSEOUT_SCHEMA: add two reported fields copied verbatim from lint JSON the agent already runs: `pending: [{ n, title, human_gate }]` beside `pending_steps` (each unticked step's title and its `Human gate:` text, '' for a code step), and, when the Source: milestone resolved, `milestone: { n, title, acceptance }` (from `proposal-lint.py <roadmap> --json`, the milestone's step entry). The result's closeout becomes `{ proposal_complete: true, edits, next_milestone, roadmap, milestone }` or `{ proposal_complete: false, pending_steps, pending }`; the two log lines name the pending gates by title and print the Acceptance line next to the milestone tick the person makes. ship-chain.js passes closeout through unchanged. docs/REFERENCE.md, the `closeout` bullet under Result statuses, lists the two fields.",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    "ci/test-workflow-questions.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, 'plan-to-merged-pr: a merged PR with a proposal reports the close-out edits without making them': the closeout mock returns `milestone` and `pending`; assert both reach result.closeout, that the prompt asks for each pending step's title and Human gate text and the milestone's Acceptance verbatim, and that the MERGED result carries no questions and no relay."
+  },
+  {
+   "n": 30,
+   "group": "ship-monitor-b",
+   "title": "CI-fix step can change test assertions without asking or recording",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/plan-to-merged-pr.js, Monitor loop, the fix-ci agent (label fix-ci-<r>, lines 802-811): put ASK_RULE in its prompt, as the merge-main step has, plus: never get green by changing what an existing test asserts, deleting a test, or editing a CI workflow, a required check, the QUALITY_GATES line or a threshold unless the plan or the design doc calls for that change (then name the test and the plan line in assumptions); when neither decides whether the test or the code is right, that is a blocking question naming the test, what it asserts and the two readings: push nothing and return it. After the call add `noteAssumptions('monitor', f)` and `if (asked(f)) return needsInput('monitor', f, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME })`, exactly as merge-main does. No `tests_changed` schema field: the existing assumptions list carries it. Then one sentence each in .claude/commands/quality-gates.md ('Fix discipline', Test failures bullet) and .claude/commands/process-comments.md ('Quality gates', after 'update those tests'): when neither the plan nor the design doc says whether the test or the code is right, ask the person (unattended: stop with error=needs_input) instead of editing the assertion, and list every changed assertion in the report. docs/REFERENCE.md 'Answering questions', plan-to-merged-pr bullet: a monitor question also comes from the CI fix. (The process-comments prompt's own ASK_RULE belongs to finding 12; add it once.)",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/commands/quality-gates.md",
+    ".claude/commands/process-comments.md",
+    "ci/test-workflow-questions.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, new test in monitor-only mode with observe-1 { ci_state: 'red', ci_red_caused_by_pr: true }: prompt('fix-ci-1') matches /QUESTIONS: this stage runs unattended/ and the never-change-an-assertion sentence; fix-ci-1 returning { questions: [Q] } gives status needs_input, stage monitor, id monitor.q1, resume_monitor present and no later call; fix-ci-1 returning assumptions puts { stage: 'monitor', ... } in result.assumptions."
+  },
+  {
+   "n": 31,
+   "group": "ship-monitor-b",
+   "title": "ship-chain drops the reason and findings when a lane stops",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/ship-chain.js: slim() also keeps `stage` and a one-line `reason` computed as bootstrap-repo.js slimShip already does (merge_check.blocked_reason, else pr_stage.blocked_reason, else stop_reason, else merge_check.merge_check when status is blocked_at_merge_check), and the blocking `review_findings` (bug and concern only), one line each. The lane_failed stop reason in the `status !== 'OPEN' || !pr` branch (line 264) uses that reason, 'plan-to-merged-pr ended with <status>: <reason>' plus the number of blocking findings, instead of merge_check.blocked_reason alone. The header comment's slim field list gains the three fields. docs/REFERENCE.md, ship-chain result (lines 681-700): add `stage`, `reason` and `review_findings` to the slim child result and say stopped_at.reason carries the child's reason.",
+   "files": [
+    ".claude/workflows/ship-chain.js",
+    "ci/test-workflow-questions.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, 'ship-chain: stops on a closed PR, a PR still open at the wait cap, or a lane that did not ship': add a blocked_at_pr child ({ pr_stage: { blocked: true, blocked_reason: 'distinct issue numbers #4 and #9' } }) and a blocked_at_review child ({ merge_check: {...}, review_findings: [a bug, a nit] }); assert stopped_at.reason contains the blocked_reason, lanes[0].result.reason is set and result.review_findings holds only the bug; a blocked_at_merge_check child surfaces its merge_check text. ci/test-workflow-shipping.mjs:393's deepEqual on a MERGED lane stays valid."
+  },
+  {
+   "n": 32,
+   "group": "ship-monitor-b",
+   "title": "ship-chain's wait reports but never acts on the person's review comments",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/ship-chain.js: WAIT_SCHEMA gains `needs_monitor: boolean`, and waitRound's prompt defines it: the PR is still OPEN at the end of the round and a person's review thread or top-level comment has no reply after it, changes were requested, the PR conflicts with its base, or a check is red. In the Wait loop, when a round reports OPEN with needs_monitor and fewer than 3 re-monitors have run for this lane, run `workflow('plan-to-merged-pr', { ...common, pr: pr.pr_number })` (monitor-only, the call the Ship branch already makes for an open PR), set entry.result = slim(r), stop the chain on needs_input with the lane-tagged questions exactly as the Ship branch does, take MERGED or CLOSED from its status, and otherwise go on waiting; past the cap the wait continues and ends not_merged with the notes as today. docs/PROCESS.md G1 status sentence ('While it waits it does not act'), README.md 'ship-chain' step 3, and docs/REFERENCE.md (the not_merged line and wait_notes) say the wait re-runs the monitor when the PR needs action, at most three times per lane.",
+   "files": [
+    ".claude/workflows/ship-chain.js",
+    "ci/test-workflow-questions.mjs",
+    "docs/REFERENCE.md",
+    "README.md",
+    "docs/PROCESS.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, new ship-chain tests: (a) wait-s1-1 { state: 'OPEN', needs_monitor: true } then wait-s1-2 { state: 'MERGED' }: the nested runs are ship-only then monitor-only ({ pr: 10 }, no ship_only) and the chain goes on to lane s2; (b) the re-monitor returning needs_input stops the chain with its questions tagged lane s1 and the relay; (c) needs_monitor on every round with max_wait_rounds 5 gives exactly 3 monitor-only runs and status not_merged."
+  },
+  {
+   "n": 33,
+   "group": "ship-monitor-b",
+   "title": "Intake confirmation does not say confirmed-fixed issues get closed publicly",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": "No second question and no /bug-fix change. .claude/workflows/bug-fix-backlog.js, the Intake's intake.q1 question and INTAKE_RELAY: when args.close is not false, `why` gains one sentence: an issue that triage and two independent refuters find already fixed on main is closed in public with a comment quoting the evidence. INTAKE_RELAY tells the session to say so and, when the person wants those only reported, to add close: false to the re-run's args (the Intake prompt does not depend on close, so an accept replayed with resumeFromRunId still matches its fingerprint). With close: false each lane result also carries, beside confirmed_fixed_unclosed, the prepared `{ number, close_reason, close_comment }` (a sibling field, so the numbers list keeps its shape) so the person can post it without a second triage. README.md 'bug-fix-backlog' Intake paragraph and docs/REFERENCE.md (the `close` arg and the intake.q1 description) say the question names the closes.",
+   "files": [
+    ".claude/workflows/bug-fix-backlog.js",
+    "ci/test-workflow-questions.mjs",
+    "ci/test-workflow-github-access.mjs",
+    "README.md",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, 'bug-fix-backlog: without lanes the Intake proposes lanes and stops with one question': assert questions[0].why names the public close and the two refuters, the relay names close: false, and there is still exactly one question; with close: false in args the sentence is absent. ci/test-workflow-github-access.mjs (it already mocks triage, refute-close and close): a run with close: false makes no close:k call and the lane result lists the issue with its close_comment."
+  },
+  {
+   "n": 42,
+   "group": "ship-monitor-b",
+   "title": "Commands lack /merge-main's conflict stop and use the globally newest plan",
+   "status": "open",
+   "priority": "could",
+   "remaining_change": "Text only, three commands. .claude/commands/process-comments.md, 'Load the implementation plan': replace the /impl-style lookup with /merge-main's 'Originating plan' order: a plan the caller handed over; else the branch-name plan `$PLANS_DIR/<slug>.md` (where a monitor run restores plan_ref); else the folder pointer when its cited files overlap the PR's diff; never the globally newest plan. After 'strongest reason to decline a comment' add: with no plan, or one judged low-confidence, a human comment is never declined on plan grounds. .claude/commands/review-changes.md step 1a: the same lookup, dropping the 'most recently modified' fallback. .claude/commands/quality-gates.md step 5 and process-comments.md 'Commit, push, and reply' step 3: resolve conflicts as /merge-main step 5 does, including its stop (git merge --abort, push nothing, ask; unattended: error=needs_input) when neither side's intent decides.",
+   "files": [
+    ".claude/commands/process-comments.md",
+    ".claude/commands/review-changes.md",
+    ".claude/commands/quality-gates.md"
+   ],
+   "tests": "None: no CI test reads these commands' prose (ci/check-skill-refs.mjs checks only skill names and flags, and no test or doc pins the fallback wording). Run python3 ci/lint-doc-examples.py and node ci/check-skill-refs.mjs after the edit."
+  },
+  {
+   "n": 38,
+   "group": "orchestrator",
+   "title": "No overview of ask points; on_question dial unguarded and missing from Quickstart",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": "(1) Guard the dial, one clause in three places. .claude/scripts/claude-md-base.md, the person's-choice bullet (line 10): after \"re-runs it with `answers`\" add \"and passes `on_question: 'assume'` only when the person said to proceed on assumptions\". docs/REFERENCE.md, \"Answering questions\", last paragraph (:870): replace \"is for runs no one will answer\" with \"is the person's choice to proceed without being asked: the session that runs a workflow passes it only when the person said so, never on its own and never to get past a `needs_input`\"; the rest of the paragraph stays. README.md, `brief-to-proposals` step 1 (:388): the same clause. (2) Say where the person is asked in the text that exists, with no table of ids. README.md Quickstart steps 1-2 (:37-55) are rewritten to match the work tree: /start-product asks one batch (the builder framing, the brief's choices as confirmations, the repository's owner and visibility, where the framing is kept) and prints the answers in the call; the design run can stop to ask at the Intake, before /roadmap, at a milestone and in Consistency, each a re-run from `resume_from`, and lists what nobody confirmed before a doc is accepted; one link to REFERENCE.md#answering-questions. REFERENCE.md \"Answering questions\" (:813-816) names /start-product among the commands that ask and gains one line on confirmations (`confirm: true` in the example at :819). Left out on purpose: a config key, a third value, `on_question` in /start-product's printed call, the id table, and a throw on an unknown value (it already falls back to 'stop', the asking side).",
+   "files": [
+    ".claude/scripts/claude-md-base.md",
+    "docs/REFERENCE.md",
+    "README.md",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-questions.mjs: one small test that reads .claude/scripts/claude-md-base.md and asserts the person's-choice bullet says `on_question: 'assume'` is passed only when the person said to proceed on assumptions. The README and REFERENCE edits have no test beyond ci/lint-doc-examples.py staying green."
+  },
+  {
+   "n": 43,
+   "group": "orchestrator",
+   "title": "Relay and CLAUDE.md omit question tool, why, unattended runs, plain sessions",
+   "status": "partly_fixed",
+   "priority": "could",
+   "remaining_change": "(1) One shared first sentence in every relay: brief-to-proposals.js relay() (:241), plan-to-merged-pr.js RELAY (:262), bootstrap-repo.js RELAY and MONITOR_RELAY (:118, :121), refresh-proposal.js RELAY (:92), proposal-build-chain.js RELAY (:63), ship-chain.js RELAY (:75), bug-fix-backlog.js RELAY (:55). It becomes: \"Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions.\" (2) brief-to-proposals.js relay() only, one clause after the assumptions sentence: an answer that leaves the choice to you is passed as \"<the recommended option> (assumed: the person left it to the recommendation)\", which the authors already tag (assumed) and the Lint stage lists as unconfirmed. (3) docs/REFERENCE.md \"Watching a handed-off PR\" (:955-959): the Unattended bullet gets its own prompt ending \"on needs_input, print its questions in full (id, why, options, recommended) and stop; answer none and re-run nothing\", plus one sentence: an unattended run cannot ask, its questions are only in that run's output (the scheduled task's session, or your cron's log), and the same question returns on each run until a session re-runs monitor-only with `answers`. (4) .claude/scripts/claude-md-base.md:10: after \"through the session's question tool\" add \"or as one numbered list when it has none\". No decision log, and no /handoff from a scheduled monitor: its full rewrite would replace the orchestrator's `## Next` in STATE.md.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/workflows/bootstrap-repo.js",
+    ".claude/workflows/refresh-proposal.js",
+    ".claude/workflows/proposal-build-chain.js",
+    ".claude/workflows/ship-chain.js",
+    ".claude/workflows/bug-fix-backlog.js",
+    ".claude/scripts/claude-md-base.md",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-questions.mjs: one new test that reads the seven workflow sources and asserts the same first relay sentence (its \"each with its why\", \"never dropping or merging one to fit\" and \"never re-run with on_question: 'assume' unless the person says\" clauses) is in all eight relay constants; extend the Intake relay test (:197-201) with the delegated-answer clause. The existing /never answer them on their behalf/ matches in test-workflow-questions.mjs, test-workflow-design.mjs and test-workflow-wrappers.mjs stay green because that phrase is kept."
+  },
+  {
+   "n": 39,
+   "group": "docs-tests",
+   "title": "Question, answer and assumption behaviours lack regression tests",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "Tests only; no workflow changes (a read-only mock probe of the work tree showed every behaviour below already holds, so these are pins). (a) ci/test-workflow-design.mjs: a fresh run { ...BRIEF, panel: 3, answers: [{ id: 'intake.q1', question, answer, date }] } on NO_DOCS with one concern from review:architecture-1 asserts the answer and its question text in sketch:validate-first, sketch:trust-first, sketch:operate-first, judge and revise:architecture-1 (today only roadmap and review:architecture-1 are pinned; a judge that lost answersFor('architecture') would re-ask what the person already answered). (b) ci/test-workflow-design.mjs: a run whose roadmap, propose:m2 and revise:consistency-1 replies carry assumptions asserts result.assumptions lists each with stage architecture, m2 and consistency, and a concern-mode run asserts stage proposal (four noteAssumptions sites are unpinned: roadmap, propose:m<N>, concern propose, consistency revisers). (c) ci/test-workflow-questions.mjs: proposal-build-chain in derive mode (derive-lanes reply with two chains) where one lane returns needs_input asserts result.status 'needs_input', result.questions tagged with the lane, result.relay, that each nested run got only its own answers plus on_question, and that the ship_plan leaves the asking lane out; and in the existing ship-chain needs-input test pass on_question and assert it on every nested run. (d) ci/test-workflow-questions.mjs: on_question: 'asume' (brief-to-proposals with an Intake question) and 'Assume' (plan-to-merged-pr with a planner question) both end needs_input; no throw is needed, the fallback is the asking side. (e) Optional, in the assume test: with answers passed and an Intake question assumed, the save-answers payload holds no '(assumed' entry. Drop the finding's sub-item 4 as proposed: there is no answers_so_far field, an assumed pick is not the person's answer, and it already travels in the docs as an (assumed) tag that lint.unconfirmed lists; saving it as an answer would be a second source of truth. ci/test-workflow-wrappers.mjs needs nothing: its assume and assumption-collection cases exist (lines 230-236, 405-411).",
+   "files": [
+    "ci/test-workflow-design.mjs",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-design.mjs: 'a person's Intake answer on a fresh run reaches the sketches, the judge and the architecture reviser' and 'assumptions an author or reviser reports reach the result with their stage (roadmap, a milestone, consistency, concern mode)'. ci/test-workflow-questions.mjs: 'proposal-build-chain: derive mode carries a lane's questions up as needs_input and passes each lane its own answers and on_question'; add on_question to 'ship-chain: a lane that needs input stops the chain...'; 'an on_question value other than assume stops, as stop does' (brief-to-proposals and plan-to-merged-pr); extend the assume loop in 'every author is told...' to propose:m2."
+  },
+  {
+   "n": 44,
+   "group": "docs-tests",
+   "title": "PROCESS.md draws one ask point, omits answer gaps, G1 cut off",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": "docs/PROCESS.md is unchanged since 0255e07, and the first round made more of it stale. (1) G1 *Fix:* (lines 163-164): restore the lost ending from commit d98eb6f, '... then fills `predecessor_prs` and ships the next, stopping on anything other than `MERGED`.', before *Status:*. (2) Diagram, DESIGN subgraph: relabel intake 'Intake: blocking questions and confirmations?' and ask 'Answer questions and confirmations; re-run with every answer and from'; add one line 'panel & roadmap & rrev & props & cons -. \"needs_input\" .-> ask'; relabel the start node to say it asks the batch (builder framing, the brief's choices, the repository) before the checklist. Do not draw edges from the other subgraphs into that node (its 're-run with from' is brief-to-proposals only): add one sentence to the legend paragraph instead, saying bootstrap-repo, refresh-proposal and every lane stage (plan, impl, fix, merge check, monitor; carried up by proposal-build-chain and ship-chain) stop the same way with needs_input and the result's relay says how to re-run. (3) Reuse the existing gaps for two of the three the finding proposes: G15 *Status* gains that /start-product asks the brief's choices as confirmations in one batch and prints them as the call's answers (intake.d<N>); G11 *Status* and its diagram label change from 'the brief and the builder context stay local' to: the state branch also holds design/answers.json (the answers a brief-to-proposals run was given, restored by a later run) and, only with the person's consent, context/builder-context.md; the brief stays local. (4) Add one new gap, G16 'Choices made for the person went unreviewed', *Status:* partly fixed, with node G16 linked to accept: fixed by the Intake's class-by-class sweep with confirm: true, the D-record tags and proposal-lint.py --decisions, the result's lint.unconfirmed and lint.proposed with the next step 'Before a doc is accepted...', and /handoff's Assumptions to review; still open: only brief-to-proposals saves answers (the lane, bootstrap, refresh and bug workflows take them from the run's args and STATE.md), and their relays do not say to show the assumptions. The same state-branch fact is stated the old way in README.md lines 641-644 ('kept out of every commit and off the state branch') and docs/REFERENCE.md lines 1062-1063 and its path table ('it never holds the brief, the builder context'; no design/answers.json or context/builder-context.md rows): change them in the same commit, or G11's new status contradicts both.",
+   "files": [
+    "docs/PROCESS.md",
+    "README.md",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "None to add: no CI check reads PROCESS.md, and it holds no design-doc example. After the edit, python3 ci/lint-doc-examples.py must still pass, and the mermaid block should be rendered once by hand to check the new edges and the G16 node."
+  }
+ ],
+ "design": [
+  {
+   "n": 2,
+   "group": "intake-a",
+   "title": "Brief outranked the person via \"unless a source fact contradicts it\"",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "Three leftovers, one small edit each, no new mechanism. (1) .claude/workflows/brief-to-proposals.js `BINDING` (line 124): every /start-product run contradicts the brief by construction (framing \"Claude Code writes the code\" vs the brief's Assumed builder; any corrected confirmation vs the brief's field), and \"pick no side: return a blocking question\" plus the sketch line 716 (\"where the source contradicts the person's framing or an answer ... name it ... for the judge to ask\") invites re-asking what the person just answered, after the panel has run. Afterwards BINDING reads: binding; on the point it addresses it replaces what the source says (the brief's Assumed builder, a field the person corrected): follow it, say so in the doc, never ask it again; where another part of the source, the tree or research makes it impossible to follow, pick no side and return a blocking question naming both. Line 716 limits itself to that second case. Mirror the same sentence in roadmap.md:78 and propose.md:75 (\"What the person said outranks the source: in such a conflict pick no side and ask\"). (2) Judge prompt, lines 723-724, unchanged from base: \"fit to the source's constraints (builder, budget, timeline, licence, revenue model)\" becomes \"fit to the constraints: the framing's and the answers' where they speak, the source's (builder, budget, timeline, licence, revenue model) where they are silent\"; roadmap.md:123 \"prefer what the stated team can build\" becomes \"what the builder the framing names (the source's stated team when there is no framing) can build and run within its budget\". (3) Coverage pairPrompt, line 969, unchanged from base and not routed through review-proposal step 4: add \"A part of the brief that the person's framing or an answer replaces or rules out is not a gap.\" Docs: docs/REFERENCE.md \"Answering questions\" gains one sentence stating the rule (what the person said replaces the brief's value on the same point and is not asked again; any other conflict with it is a blocking question). README.md and docs/PROCESS.md need no change. The finding's five-level precedence ladder is not needed: the pieces are already stated where each stage meets them.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    ".claude/commands/roadmap.md",
+    ".claude/commands/propose.md",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "In ci/test-workflow-design.mjs, test \"the framing is binding with no source exception...\" (lines 478-520): update the two BINDING regexes (486-487) to the new sentence and assert every author prompt (intake, sketch:*, judge, roadmap, propose:*, revise:*) contains the \"replaces what the source says ... never ask it again\" clause; assert prompt('judge') matches /fit to the constraints: the framing's and the answers' where they speak/ and does not match /fit to the source's constraints/; assert prompt('consistency:brief-roadmap') matches /the person's framing or an answer replaces or rules out is not a gap/. Existing assertions (no \"unless a source fact contradicts it\", the R4 reviewer sentence, \"the source wins\" over an unconfirmed synthesis) stay."
+  },
+  {
+   "n": 16,
+   "group": "intake-b",
+   "title": "Framing /start-product assumed is still handed to authors as the person's binding word",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": "Reuse the confirmation mechanism; no new stage or arg. (1) .claude/workflows/brief-to-proposals.js: CTX_FILE_NOTE (:125-127) and the context-file sentence of REVIEW_CTX (:130) gain one clause: when the file has a line starting `- Not confirmed by me yet`, /start-product assumed the framing, so it is an assumption to keep (or return a question to change), not the person's word, and no decision that rests on it is tagged (person, ...), until an answer confirms it. The Intake prompt (:674-676) adds: return such a framing as ONE confirmation (confirm: true, 'Should the design follow this builder framing?', the file's lines as the recommended option) in the same batch; under on_question 'assume' the existing assume() lists it in assumptions. (2) .claude/commands/start-product.md: the 'Proceeding on assumptions' bullet (:135) and the report's Assumptions bullet (:169) say the design run's Intake asks the assumed framing again as a confirmation, as they already say for the intake.d<N> choices. (3) docs/REFERENCE.md context_file comment (:427-428): one clause.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    ".claude/commands/start-product.md",
+    "ci/test-workflow-questions.mjs",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-questions.mjs (Intake class-sweep test, :174): with context_file set, the intake prompt names the `- Not confirmed by me yet` line and says to return the framing as one confirmation. ci/test-workflow-design.mjs (context_file test, :328): every author and reviewer prompt carries the 'not the person's word' clause and the :338 regex still matches; an Intake that returns that confirmation stops with intake.q1 confirm: true, and with on_question 'assume' it appears in result.assumptions."
+  },
+  {
+   "n": 17,
+   "group": "intake-b",
+   "title": "No stop between architecture and proposals; max_milestones 0 still means all",
+   "status": "partly_fixed",
+   "priority": "could",
+   "remaining_change": "No architecture.confirm question: it would repeat what those stages ask and put author-owned D-records (framework, data store) to the person on every run. Only the missing stop remains: max_milestones: 0 and milestones: [] still propose everything (probed on the work tree: three proposals). In brief-to-proposals.js (:108, :853, :856) make MAX_M null only when the arg is absent, else Math.max(0, Number(...)), and slice when MAX_M !== null, so max_milestones: 0 writes and reviews the architecture and roadmap, proposes nothing, skips Consistency and lints (probed on a patched copy: status ready with the 'Before a doc is accepted' step; no existing test breaks). Say so in the args comment (:52-53), docs/REFERENCE.md args block (:439-440) and README.md 'Re-running' (:423-431): 0 stops after the reviewed architecture, and a re-run with from: 'proposals' writes the proposals.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md",
+    "README.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs: { ...BRIEF, max_milestones: 0 } on NO_DOCS runs no propose: and no consistency: label, returns ready, and next_steps holds the 'Before a doc is accepted' step when the lint reply has an unconfirmed record; max_milestones: 1 still proposes exactly one."
+  },
+  {
+   "n": 18,
+   "group": "intake-b",
+   "title": "Panel can now ask; only the docs still omit the judge's stop",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "Docs only. docs/REFERENCE.md: the brief-to-proposals needs_input bullet (:705) lists the panel's judge (synthesis saved, nothing written, resume_from 'architecture' builds on it), and the on_question comment (:446) says the judge's recommended options become shared answers too. README.md step 2 Architecture (:390-395) and the docs/PROCESS.md design diagram (:34-43: a needs_input edge from the panel and from /roadmap to the ask node) say the same. No mechanism for the rest: a /roadmap question still repeats /roadmap's research, and the panel too when the state-branch save failed, which is rare and would need a second copy of the synthesis.",
+   "files": [
+    "docs/REFERENCE.md",
+    "README.md",
+    "docs/PROCESS.md"
+   ],
+   "tests": ""
+  },
+  {
+   "n": 19,
+   "group": "intake-b",
+   "title": "Reviewers now check docs against answers; relay still routes corrections past the architecture",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "brief-to-proposals.js relay() (:241-252): it tells the caller to pass any corrected assumption as intake.d<N>, at every stop. At a stop with resume_from 'proposals' or 'consistency' the architecture and roadmap exist and no stage applies an intake answer to them (revise:architecture-answers runs only when the run starts at or before 'architecture'; ci/test-workflow-design.mjs:709-710 pins that), so the correction reaches the written architecture only if a pair reviewer notices. For those two stops the relay says: a correction to what the written architecture or roadmap says is passed as architecture.d<N>, and the re-run then uses from: 'architecture' (it applies the answer to both docs before their review); a correction to one written proposal is m<N>.d<K> with milestones: [N]. These are the ids next_steps already names (:1094). docs/REFERENCE.md 'Answering questions' (:833-845) gains the same sentence. Optional, same line as R4 (:131): say the fix is to follow what the person said, and the question only where the author had a reason to depart.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs, the relay test at :394: the relay of a proposals-stage and of a consistency-stage stop names architecture.d<N> with from: 'architecture'; an Intake-stage and an architecture-stage relay keep intake.d<N>. Extend :681: an architecture.d1 answer reaches revise:architecture-answers."
+  },
+  {
+   "n": 20,
+   "group": "intake-b",
+   "title": "needs_input still hides a failed and an unclean sibling; re-run returns ready",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/brief-to-proposals.js, the final result block (:1053-1088). (1) The relay's milestones are the ones that asked plus the ones whose /propose failed (no doc exists, so nothing is overwritten), with the relay text saying so; resume_from is the earliest stage among the questions and 'proposals' when a proposal failed (a consistency-only stop would otherwise never write it). (2) When there are questions and a failed or unclean proposal, the result carries also_needs_attention: [{ milestone, doc, reason }] and next_steps gets a second line: answering the questions fixes none of these; after the re-run, run the refresh-proposal workflow on each proposal that still has findings before accepting it. docs/REFERENCE.md: the needs_input bullet (:705) and 'Kept proposals ... are not re-reviewed or counted as unreviewed in the status' (:944-945) say the same; README.md step 3 (:396-400) one clause. Optional third step, only if a false ready must be impossible: the Lint agent reads each kept proposal's review ledger copy (reviews/proposal-<doc-slug>.json) and a kept doc with an open bug or concern counts as unclean.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md",
+    "README.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs, new case after :461: three unwritten proposals; propose:m2 stopped, propose:m3 asks, review:m5-* keeps one bug through max_review_rounds. Assert status needs_input, the relay holds 'milestones: [2, 3]', also_needs_attention names milestone 2 with its stop_reason and milestone 5 with its doc, and a next step names refresh-proposal; the follow-up run with milestones: [2, 3] proposes both and keeps 5. The prefix asserted at :447 ('(the milestones that asked') must still match."
+  },
+  {
+   "n": 21,
+   "group": "intake-b",
+   "title": "A milestone's answer still never reaches sibling authors or an earlier stage",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "brief-to-proposals.js answersFor (:166-177): in brief mode give every answer to every author, reviewer and pair (drop the two filters) and add to the preamble: the first part of each id names the stage that asked (intake, architecture, m<N> for milestone N's proposal, consistency); an answer asked elsewhere binds here wherever the same choice arises, and one plainly about another doc's detail does not. Concern mode keeps today's order rule (it has two scopes, and its resume replays the Intake only while the Intake's prompt is unchanged). revise:architecture-answers keeps its own list of intake and architecture answers. Update the comments at :64-69 and :141-146, docs/REFERENCE.md 'Answering questions' (:833-836) and README.md:653.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-questions.mjs",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md",
+    "README.md"
+   ],
+   "tests": "Probed on a patched copy: three assertions pin the old routing and change. ci/test-workflow-questions.mjs:257-263 (ANSWER-M2 now reaches intake, roadmap and the m3 prompts); ci/test-workflow-design.mjs:145 (propose:m5 now holds ANSWER-M3) and :693 (check the applied list after the last 'no errors.' line, not the whole prompt). Add: a run with from: 'intake', force and an architecture.q1 answer shows that answer to the Intake; a concern-mode Intake still gets no proposal.q answer."
+  },
+  {
+   "n": 22,
+   "group": "intake-b",
+   "title": "Coverage gap still offers the roadmap reviser a scope cut as a fix",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": ".claude/workflows/brief-to-proposals.js:1011, the description of the finding built from each coverage gap: 'Coverage gap: <g>. Plan it in a milestone (or the proposal that should hold it). Leaving it out is the person's call: unless the brief, the framing or an answer already rules it out or defers it, return it as a blocking question (options: the milestone to plan it in, by title; defer it past the first release; drop it), every gap in one batch.' When an answer rules a part out, the reviser states that in the roadmap's ordering paragraph with the answer's id (neither roadmap.md nor architecture.md has an Out of scope section: .claude/commands/roadmap.md:127-165). README.md step 4 Consistency (:401-405): one clause, a part of the brief no milestone plans is put to the person.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs",
+    "README.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs:306: the roadmap reviser's prompt holds the new 'Leaving it out is the person's call' sentence and no longer 'or state in Out of scope'; add a case where the roadmap's revise:consistency-<n> returns the gap as a question: status needs_input, id consistency.q1, resume_from 'consistency'."
+  },
+  {
+   "n": 23,
+   "group": "intake-b",
+   "title": "Relay after a force run still says 'the same args'",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": ".claude/workflows/brief-to-proposals.js: a flag set when this run's /roadmap wrote the docs under force (after :782). relay() (:241-252) appends under force: when the docs were regenerated, 'Leave force out of the re-run: this run already regenerated architecture.md and roadmap.md, and force would write them again (from: 'proposals' or later refuses it)'; when they were not yet (an Intake, judge or /roadmap stop), 'Keep force: the docs are not regenerated yet'. The finding's blanket 'leave force out' would be wrong for those three stops: without force a re-run from 'architecture' resumes the review of the OLD docs. The same clause goes into the blocked_at_architecture_review ways (:821-823, 'the same args' and from: 'proposals') and the branch next step 'a re-run with the same args' (:1089). Say it in the args comment (:54-55), docs/REFERENCE.md force arg (:441-442) and 'Re-running a design run' (:920-945), and README.md 'Re-running' (:423-431).",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md",
+    "README.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs: { ...BRIEF, force: true } with docs on disk and revise:architecture-1 asking: the relay says to leave force out; the re-run without force and with from: 'architecture' has no roadmap label, runs revise:architecture-answers and proposes only m5. A force run stopped by the Intake, or by the judge with the synthesis saved, says to keep force. blocked_at_architecture_review under force names force in next_steps."
+  },
+  {
+   "n": 34,
+   "group": "intake-b",
+   "title": "Intake still re-runs after its own stop; earlier answers now carry their question text",
+   "status": "partly_fixed",
+   "priority": "could",
+   "remaining_change": "Keep resume_from 'intake' in brief mode: resuming at 'architecture' would drop the Intake's assumptions from every later prompt and from the final result (intakeAssumed, :218-221) and put any follow-up behind the panel; the repeat costs one agent. Two small changes. (1) Concern mode: round 1 put save-answers before the Intake (:648-659), so a resume with resumeFromRunId diverges after seed and the Intake runs live on every answered question, against the relay ('the stages before the ones that asked replay from the record', :251-252); run the save after the Intake stage in concern mode. (2) docs/REFERENCE.md still shows answers as [{ id, answer }] (:446, :824-826): say they carry question and date, since an answer passed without its question reaches the Intake as its id alone and can be asked again. ADJACENT, new in round 1 and not part of this finding (must): a concern-mode run given answers saves { source: 'concern' } over design/answers.json (:649-652), so a later brief-mode run restores none of the brief's answers (:599-600 requires the source to name the brief); save concern-mode answers under their own path, or not at all.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs",
+    "docs/REFERENCE.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs:603: the concern-mode labels become seed, intake, save-answers; add an assertion that a concern-mode save-answers prompt does not write design/answers.json. ci/test-workflow-questions.mjs:171 and ci/test-workflow-design.mjs:402 keep resume_from 'intake'."
+  },
+  {
+   "n": 3,
+   "group": "answers-durability",
+   "title": "Answers and framing had no durable record across runs and sessions",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "1. brief-to-proposals.js, save-answers block (\"if (GIVEN)\", store.source 'concern'): a concern-mode run must not write design/answers.json. Today it runs no survey, so it replaces the product's saved answers with its own (probe: labels seed, save-answers, intake; no read first), and the next brief-mode run restores nothing because the file's source no longer names the brief. Save a concern run's answers as design/answers-concern.json (never restored), or not at all. In the brief-mode restore loop, an answer passed without question or date takes them from the saved entry of the same id, so an id-only re-pass never blanks the record (probe: it is saved back with question ''). 2. refresh-proposal.js (unchanged since base): its review and revise prompts gain one sentence beside ANSWERS_TEXT: read design/answers.json from the state branch (pipeline-state.py get; exit 3 or 2 means none) and treat its answers as the person's, binding, never re-asked, a choice that follows one not a defect, an m<N> answer only for that milestone's proposal; it also accepts context and context_file with brief-to-proposals' CTX and REVIEW_CTX wording, and brief-to-proposals' next_steps (lines 1100-1103) print context_file in the refresh-proposal call when the run had one. Without this a refresh protects only what became a (person, ...) D-record: an answer that became plain text (an experiment already run, a risk accepted, a scope line) is judged against the brief again. 3. Docs, all unchanged since base: docs/REFERENCE.md state-branch table gains design/answers.json; 'Answering questions' and 'Resuming, in this session or a new one' say the design run saves and restores answers (answers_saved, answers_restored) and that refresh-proposal reads them; README.md 'Context and handoffs' and Quickstart step 5; docs/PROCESS.md G11 status; pipeline-state.py docstring lines 9-14. 4. Could: the log line at brief-to-proposals.js:856 and bootstrap.md:175 name the workflow re-run (from: 'proposals', milestones: [N]) instead of a bare /propose --milestone=N, since only the workflow restores the answers.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    ".claude/workflows/refresh-proposal.js",
+    ".claude/commands/bootstrap.md",
+    ".claude/scripts/pipeline-state.py",
+    "docs/REFERENCE.md",
+    "README.md",
+    "docs/PROCESS.md",
+    "ci/test-workflow-design.mjs",
+    "ci/test-workflow-wrappers.mjs"
+   ],
+   "tests": "ci/test-workflow-design.mjs: replace the assertion at 601-604 (\"Concern mode saves ... under the source concern\") with: a concern run's save-answers prompt never names design/answers.json; add: a brief-mode run passed { id: 'm3.q1', answer } while the survey returns a saved m3.q1 with question and date saves that question and date back. ci/test-workflow-wrappers.mjs: refresh-proposal's review-1 and revise-1 prompts name design/answers.json and, with context_file, the framing file with the binding wording; the lint prompt names neither."
+  },
+  {
+   "n": 5,
+   "group": "answers-durability",
+   "title": "Answers travel as id only; plan-to-merged-pr reuses question ids",
+   "status": "partly_fixed",
+   "priority": "must",
+   "remaining_change": "The six other workflows are unchanged since base. 1. plan-to-merged-pr.js needsInput (451-452): number after the highest answered <kind>.q<N>, as bootstrap-repo.js tagQuestions does (probe: with plan.q1 answered a new planner question is plan.q1 again, likewise fix.q1; the same holds for monitor.q1 across monitor-only re-runs, so an old answer can be read against a new conflict). 2. Relay and args-comment wording in plan-to-merged-pr.js (53, 262-264), bootstrap-repo.js (27, 118-123), refresh-proposal.js (21, 92-94), proposal-build-chain.js (42-43, 63-65), ship-chain.js (27, 75-77) and bug-fix-backlog.js (30, 55-57): \"each question's [lane,] id and question text with the person's answer and the date they gave it\", as brief-to-proposals now says. 3. answersFor (plan-to-merged-pr.js:235-240), answersText (bootstrap-repo.js:85-87) and ANSWERS_TEXT (refresh-proposal.js:59-61) render { id, question, answer, date } instead of { question: a.question || a.id, answer } (probe: the stage still reads {\"question\":\"plan.q1\",\"answer\":\"yes\"}, and a passed id and date are dropped). 4. In all four normalisers an answer with no question text is logged, and the preamble adds: an entry whose question is its id came back without its question; when the answer alone does not say what it settles, return the question again rather than guess. No throw: an older handoff may hold 'question not recorded'. 5. handoff.md: an entry under '## Answers given' (step 3 Answers, template line 83) also names the workflow and its lane or doc, and 'Continuing' step 5 passes a q answer only to the workflow, lane or doc that asked it, each lane answer with its lane; today it says to pass every answer to the workflow, although plan.q1 repeats per lane, revise.q1 per doc, and intake.q1 is both a design answer and bug-fix-backlog's lanes JSON. 6. context-guard.py:528 SUMMARY_INSTRUCTIONS: \"the answers the person gave, each with its id, question and date\". 7. docs/REFERENCE.md: 'Answering questions' (824-826) and the args blocks at 330, 448, 533, 571, 595 show [{ id, question, answer, date }]; 864-868 names every workflow for continued numbering.",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    ".claude/workflows/bootstrap-repo.js",
+    ".claude/workflows/refresh-proposal.js",
+    ".claude/workflows/proposal-build-chain.js",
+    ".claude/workflows/ship-chain.js",
+    ".claude/workflows/bug-fix-backlog.js",
+    ".claude/commands/handoff.md",
+    ".claude/scripts/context-guard.py",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-questions.mjs",
+    "ci/test-workflow-wrappers.mjs",
+    "ci/test_context_guard.py"
+   ],
+   "tests": "ci/test-workflow-questions.mjs: plan-to-merged-pr with answers [{ id: 'plan.q1' }] whose planner asks returns plan.q2, and the same for fix, merge_check and monitor; every RELAY (plan-to-merged-pr, proposal-build-chain, ship-chain, bug-fix-backlog) matches /question text/ and /date/; the test at line 87 asserts the fix-stage prompts contain the id, the question text and the date; an id-only answer puts the 'came back without its question' sentence in the prompt. ci/test-workflow-wrappers.mjs: the same relay and prompt assertions for bootstrap-repo and refresh-proposal. ci/test_context_guard.py: the compaction instructions name the question text."
+  },
+  {
+   "n": 6,
+   "group": "answers-durability",
+   "title": "Builder context had no durable copy or working restore path",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "Docs only, all unchanged since base and now wrong about where the person's framing may be stored: README.md:41-44 (Quickstart step 1 names only the builder question, not the confirmations, the repository question or q6), :259-266 (\"It never holds the brief, the builder context or a secret\"), :355 (command table row) and :641-644 (\"kept out of every commit and off the state branch\"); docs/REFERENCE.md:66-67, :427-428 (\"never committed, never on the state branch\"), :894-896 (names only brief_not_found; add context_not_found and the state-branch restore), :1060-1064 and the table after it (add a context/builder-context.md row: written by /start-product and /handoff, only with the person's consent) and :1148-1153; docs/PROCESS.md G11 (322-330: \"the builder context stay local by design ... copied back from their source, which the handoff records\") and :386-394; pipeline-state.py docstring 9-14. Each says: the brief never leaves the checkout; the framing is local unless the person consented, and then it restores from the state branch. Could: concern mode with context_file still has no existence check (it runs no survey): run the survey's step 6 alone there and stop with context_not_found.",
+   "files": [
+    "README.md",
+    "docs/REFERENCE.md",
+    "docs/PROCESS.md",
+    ".claude/scripts/pipeline-state.py",
+    ".claude/workflows/brief-to-proposals.js",
+    "ci/test-workflow-design.mjs"
+   ],
+   "tests": "None for the doc corrections. If the concern-mode check is added: ci/test-workflow-design.mjs, beside the test at 638: a concern run with context_file whose check reports the file missing and nothing to restore ends failed_at_start (context_not_found) before the intake agent runs."
+  },
+  {
+   "n": 25,
+   "group": "answers-durability",
+   "title": "Design answers do not reach bootstrap or lanes; lanes re-ask",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/bootstrap-repo.js:84: BOOT_ANSWERS takes every answer whose id is not the ship run's own (plan, impl, fix, merge_check, monitor), instead of only bootstrap.*; update the comment at 27-30. Today a design answer or a decision passed to bootstrap-repo (handoff.md's 'Continuing' step 5 says to pass every answer, and gives a decision made in chat the id intake.d<N>) reaches the ship run's merge check and monitor but not the stage that writes the licence, the names and the skeleton (probe: intake.d4 absent from the bootstrap prompt, present in the ship run's answers). brief-to-proposals and plan-to-merged-pr already treat an unknown id as reaching every stage. docs/REFERENCE.md 'Answering questions', bootstrap-repo bullet (854-858): say so. Skip parts (b) and (d): the accepted docs carry the decisions to bootstrap and to every lane, a stacked lane reads the code and plan of the lane below it, and handing each lane the other lanes' answers adds a mechanism that collides with the per-lane routing of finding 37.",
+   "files": [
+    ".claude/workflows/bootstrap-repo.js",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-wrappers.mjs"
+   ],
+   "tests": "ci/test-workflow-wrappers.mjs, beside the test at 126: an answer with id intake.d4 (question, answer, date) reaches the bootstrap prompt and the ship run; a merge_check.q1 answer still reaches the ship run only, so a resume replays the bootstrap stage."
+  },
+  {
+   "n": 28,
+   "group": "answers-durability",
+   "title": "Build-run answers never reach the ship or monitor run",
+   "status": "open",
+   "priority": "must",
+   "remaining_change": ".claude/workflows/plan-to-merged-pr.js, unchanged since base. 1. The text the merge check saves to the state branch (PLAN_TEXT at the SAVE_AS step, lines 598-622) ends with a section '## Decisions from the person' listing each answer the run was given (id, question, answer, date); done() returns the same text as plan when the save failed, so the plan_text fallback carries it too. Ship-only and monitor-only runs already restore that plan by plan_ref, so no new file and no change to the ship plan's args or to ship-chain. 2. RESUME (720-728) carries answers: ANSWERS when there are any, so answers given after the save (a ship-only merge_check answer, a monitor answer) reach the next monitor-only run. 3. RESTORE and MONITOR_CTX (around 183 and 707-711) add: that section holds the person's answers; they bind, are never re-asked, and a review comment or conflict resolution that would change one is declined with that reason or returned as a question. docs/REFERENCE.md: the plans/<branch-slug>.md row of the state-branch table and 'Answering questions' say where a lane's answers live. The id numbering and relay wording this finding also raises are finding 5's change.",
+   "files": [
+    ".claude/workflows/plan-to-merged-pr.js",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-shipping.mjs"
+   ],
+   "tests": "ci/test-workflow-shipping.mjs: a build-only run given [{ id: 'impl.q1', question, answer, date }] has a merge-check prompt whose plan text ends with '## Decisions from the person' holding the question and the answer (beside the test at 71); a full run's resume_monitor carries answers (beside 98); a monitor-only run given those args puts the answers in its action-step prompt; a run with no answers saves the plan unchanged."
+  },
+  {
+   "n": 37,
+   "group": "answers-durability",
+   "title": "Lane-less answer reaches every lane; docs say own lane only",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/proposal-build-chain.js:60-62, ship-chain.js:72-74 and bug-fix-backlog.js:51-54, all unchanged: an answer whose id belongs to a lane run (plan, impl, fix, merge_check or monitor .q<N>) and carries no lane throws before any lane runs when the run has more than one lane (\"answers: <id> names no lane; these ids repeat across lanes: pass the lane its question carried\"); with exactly one lane it is applied. Any other lane-less id (a design answer, or a decision the person made for the whole run such as intake.d<N>) keeps reaching every lane, which is the documented use the code comment describes; bug-fix-backlog's intake.* still reaches none. docs/REFERENCE.md:471-472, :533, :844-845 and :850-851 state exactly that instead of \"to its own lane only\". This depends on finding 5's handoff change (a STATE.md entry records the lane), since handoff.md:83 and :130 today record and pass lane answers without it.",
+   "files": [
+    ".claude/workflows/proposal-build-chain.js",
+    ".claude/workflows/ship-chain.js",
+    ".claude/workflows/bug-fix-backlog.js",
+    "docs/REFERENCE.md",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "ci/test-workflow-questions.mjs, beside the tests at 291 and 378: proposal-build-chain and ship-chain with two lanes reject answers [{ id: 'plan.q1', answer }] with /names no lane/; with one lane the answer is applied; a lane-less { id: 'intake.d1', question, answer } reaches both lanes; bug-fix-backlog rejects a lane-less fix.q1 with two lanes and still passes intake.q1 to none."
+  },
+  {
+   "n": 1,
+   "group": "start-product",
+   "title": "Brief defaults taken as the person's requirements; one builder question asked",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "Docs only; README.md, docs/REFERENCE.md and docs/PROCESS.md have no diff against 0255e07 and now contradict the commands. README.md: Quickstart step 1 says /start-product \"asks who builds and with what time and money\" (it now confirms the brief's choices in one batch and prints them as `answers`); step 2 shows the call without `answers` (say: run the call as printed, answers included); step 3 says \"do and tick the gates Bootstrap waits on (a name, a licence)\" (those are asked now, not gated); the \"Questions before assumptions\" bullet lacks the confirmation class; \"You choose the concern or write the brief\" (a brief an idea tool drafted is confirmed with you first); the /start-product row of the command table; the Safety bullet \"kept out of every commit and off the state branch\" (the framing goes there with consent; answers go to design/answers.json). docs/REFERENCE.md: the install paragraph on /start-product, the brief-to-proposals args comment (context_file \"never on the state branch\"; the answers shape { id, question, answer, date } and intake.d<N>; on_question covering confirmations), \"Answering questions\", \"The state branch\" and \"State outside the repo\". docs/PROCESS.md: G15's status text. No brief_confirmed arg: an answer already switches off each confirmation. Optional (could): /start-product's answers exist only in the printed call until the first run saves them; saving them to design/answers.json with pipeline-state.py would close that window.",
+   "files": [
+    "README.md",
+    "docs/REFERENCE.md",
+    "docs/PROCESS.md",
+    "ci/test-workflow-questions.mjs"
+   ],
+   "tests": "In ci/test-workflow-questions.mjs, in the test \"the Intake sweeps the person-owned choices class by class\", add an assertion that the intake prompt contains the DRAFTED sentence (\"a new-software-idea brief is: its header has **Verdict:** and **Assumed builder:** fields, and that skill never interviews the person\"). No test names it today, so the provenance rule could be dropped silently."
+  },
+  {
+   "n": 9,
+   "group": "start-product",
+   "title": "Nobody asks whether the first experiment or day-one checks ran",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": ".claude/commands/roadmap.md, rule \"Cheapest validation first\": add one sentence for the answer /start-product now collects. When an answer says the experiment already ran, plan neither the experiment nor its go/no-go gate: the roadmap paragraph records the person's result with the answer's id and the first code milestone is the next one; a result that fails a stop criterion the person confirmed is a blocking question. When an answer says to skip the experiment, plan none and no go/no-go, and say so in the paragraph. Today the rule still reads \"The first code milestone ships the source's cheapest experiment\" with no exception, and no command or workflow consumes the \"it already ran\" answer. Optional (could): in start-product.md item 7, show a check the brief dates before building (\"on day one\", \"in week one\") on its own line with \"already done (the result)\" as an option. No Intake question for \"has it run\": the stop-criteria confirmation gives the person that opening.",
+   "files": [
+    ".claude/commands/roadmap.md"
+   ],
+   "tests": ""
+  },
+  {
+   "n": 10,
+   "group": "start-product",
+   "title": "Verdict caveats and open legal questions never put to the person",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": ".claude/commands/roadmap.md, rule \"Human gates\": the last sub-bullet still says a legal or privacy sign-off before a release \"need not hold back the whole code milestone\", with no word on the answers item 8 produces. Add one sentence: a check the person asked for before the milestone it affects is a gate that milestone depends on, never only its release step; a risk the person accepted, or a check they report done, gets no gate and is recorded in `## Risks and open questions` as accepted or done by the person, with the answer's id. Optional (could), in start-product.md: print the header's `**Uniqueness confidence:**` field beside the verdict when it is not High (one real brief's is Low), and name \"drop the feature it covers\" as a fourth option of item 8.",
+   "files": [
+    ".claude/commands/roadmap.md",
+    ".claude/commands/start-product.md"
+   ],
+   "tests": ""
+  },
+  {
+   "n": 35,
+   "group": "start-product",
+   "title": "First design session starts before seeding: no CLAUDE.md, guard or /handoff",
+   "status": "open",
+   "priority": "should",
+   "remaining_change": ".claude/workflows/brief-to-proposals.js: when the seed stage installed anything (seeded.copied > 0 or seeded.claude_md is not 'unchanged'), add one sentence to needsInput's relay and to the final result's next_steps: this run installed the pipeline's CLAUDE.md, commands and context guard in <dir> after this session started, so the session loaded none of them; read CLAUDE.md's \"How work happens here\" now and follow it, and start the next workflow from a new session in <dir>, where the workflows also run by name. .claude/commands/start-product.md \"Next step\": say the same in one sentence. README.md Quickstart, between steps 2 and 4: start a new session in the repository once the first run has seeded it. docs/PROCESS.md G10 \"Still open\": add this hole. Do not have /start-product seed the repository: that breaks its \"nothing under .claude/\" contract and duplicates the Seed phase.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    ".claude/commands/start-product.md",
+    "ci/test-workflow-design.mjs",
+    "README.md",
+    "docs/PROCESS.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs: with the seed fixture's default { copied: 1, claude_md: 'written' }, a needs_input result's relay and a ready result's next_steps carry the new-session sentence; with seed overridden to { copied: 0, claude_md: 'unchanged' }, neither does."
+  },
+  {
+   "n": 40,
+   "group": "start-product",
+   "title": "Verdict, header and ledger checks are untested prose rules",
+   "status": "open",
+   "priority": "could",
+   "remaining_change": ".claude/commands/start-product.md, \"Check the verdict\", two prose edits and no script. Item 1: a verdict that starts with `Passed` is not passed only when it calls this idea itself the runner-up (`as the runner-up`); a mention of another idea as runner-up goes to the ledger check, where a newest row of `selected` decides. Item 3: a `**Copy rule:**` value other than the template's two (`Free for most`, `Copies help`), such as `Copies tolerated (opted in)`, counts as the earlier rules and draws the same warning. Skip the proposed brief-header.py, its test file and the CI step.",
+   "files": [
+    ".claude/commands/start-product.md"
+   ],
+   "tests": ""
+  },
+  {
+   "n": 4,
+   "group": "design-docs",
+   "title": "Design-run assumptions are not shown to the person before acceptance",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "1. .claude/workflows/brief-to-proposals.js, Lint stage prompt (line 1046): run `--decisions` on the roadmap as well as the architecture and each proposal, so the roadmap's `(proposed)` thresholds and windows reach `lint.proposed` and the count in the \"Before a doc is accepted\" step (the lint already answers this for a roadmap: it exits 0 with kind roadmap). 2. Same file, concern-mode `failed_at_propose` return (line 900): add `assumptions: ASSUMED`; docs/REFERENCE.md:716 already promises it and a mock run shows the field missing. 3. Same file, Intake (line 688): when the Intake returns assumptions and no question, log the count and each one instead of only \"Intake: no blocking questions\"; and add \"and this result's assumptions\" to the `blocked_at_architecture_review` relay (line 827). 4. README.md (Quickstart step 3 at 56-60, the \"Questions before assumptions\" bullet at 216-222, the brief-to-proposals Intake step at 385-389), docs/REFERENCE.md (the brief-to-proposals result and \"Answering questions\": `confirm: true`, `lint.unconfirmed`, `lint.proposed`, the correction ids architecture.d<N> and m<N>.d<K>) and docs/PROCESS.md (the `accept` node): say that before setting Status: accepted the person confirms or corrects the result's assumptions, the unconfirmed decisions and the proposed values. Optional: bootstrap-repo.js prepends one next step (\"show the person this result's assumptions before you merge\") when its `assumptions` is non-empty. Not to do: a `## Assumptions` section in the docs, a synthesized intake.assumptions stop, ids on assumption entries. The D-record tag, `(proposed)` and `--decisions` are already the doc-side record, and the confirmations already ask the person-owned ones.",
+   "files": [
+    ".claude/workflows/brief-to-proposals.js",
+    ".claude/workflows/bootstrap-repo.js",
+    "ci/test-workflow-design.mjs",
+    "ci/test-workflow-wrappers.mjs",
+    "README.md",
+    "docs/REFERENCE.md",
+    "docs/PROCESS.md"
+   ],
+   "tests": "ci/test-workflow-design.mjs: in \"the Lint stage lists what no person confirmed\" change the prompt assertion (line 727) to name the roadmap for --decisions and count a roadmap `(proposed)` entry in the next step; in \"results that stop early carry the assumptions\" add a concern-mode run whose /propose stops and assert `assumptions` holds the Intake's entry, and assert the blocked relay names the assumptions. ci/test-workflow-wrappers.mjs only if the bootstrap-repo step is added. The log line needs the test harness to capture `log` (it passes a noop today)."
+  },
+  {
+   "n": 14,
+   "group": "design-docs",
+   "title": "Name and licence baked in by /bootstrap without the person choosing",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "1. README.md:58-59 and docs/PROCESS.md:49 (node bgates) still say \"the gates Bootstrap waits on (a name, a licence)\", which roadmap.md:210 now forbids. Say instead that a gate precedes Bootstrap only for what needs an outside party or an account (a trademark opinion, a domain registration), and that the name and the licence were asked before the docs were written and stand as `(person, ...)` decisions in the architecture. 2. .claude/commands/bootstrap.md, Check the architecture step 1 (line 29): use the same wording in place of \"(a name, a licence, a namespace)\", and replace \"the skeleton follows their outcomes\" with: a ticked gate's Outcome that names a different name, licence or namespace than the architecture's Decisions or Repository layout stops with error=architecture_outdated (run /propose --revise on the architecture, re-accept, re-run), so the architecture is the one source for step 4 and for skeleton steps 1 and 7. Step 4 (line 32): run `$LINT <architecture.md> --decisions`; a baked-in record (name and namespace, licence, org or bundle id) listed as unconfirmed is a confirmation asked before any write, with the record's Choice as the recommended option. 3. .claude/commands/propose.md Revise mode step 3 (line 234): add \"in an architecture, the D-record the Outcome settles and the Components and Repository layout text that names it\", so a gate's Outcome reaches the architecture. 4. .claude/workflows/bootstrap-repo.js ASK_RULE (line 89): add \"or records as unconfirmed (a baked-in decision tagged (assumed) or untagged)\" to what is a blocking question, so it returns as bootstrap.q<N>. 5. docs/PROPOSALS.md:372-376: name architecture_outdated beside bootstrap_gates_pending.",
+   "files": [
+    "README.md",
+    "docs/PROCESS.md",
+    "docs/PROPOSALS.md",
+    ".claude/commands/bootstrap.md",
+    ".claude/commands/propose.md",
+    ".claude/workflows/bootstrap-repo.js",
+    "ci/test-workflow-wrappers.mjs"
+   ],
+   "tests": "ci/test-workflow-wrappers.mjs: assert the bootstrap stage's prompt names an unconfirmed baked-in decision as a blocking question in stop mode and as an assumption with on_question: 'assume'. The command and doc edits have no behavioural test: run ci/lint-doc-examples.py and CI's grep over .claude/ after them."
+  },
+  {
+   "n": 24,
+   "group": "design-docs",
+   "title": "/review-proposal ignores unconfirmed person-owned choices and grades fidelity to the brief",
+   "status": "partly_fixed",
+   "priority": "should",
+   "remaining_change": "1. .claude/commands/review-proposal.md step 9 (line 44): add that a person-owned value (a threshold, window, retention period or price) taken from a source drafted for the person and confirmed by no answer, framing or `(person, ...)` record counts as proposed; unlabelled, it is a `concern` whose fix is the question to ask, in a roadmap gate too, where no D-record carries it. 2. roadmap.md *Proposed values* (line 218), propose.md *Proposed values* (line 134) and the `(proposed)` bullet in docs/PROPOSALS.md (line 116): after \"that neither the source, the framing nor an answer states\" add that a person-owned value from a source drafted for the person counts as stated only once the person confirmed it, so a run on assumptions labels it `(proposed)` and `--decisions` lists it. 3. .claude/workflows/brief-to-proposals.js, judge prompt (lines 723-724): score \"fit to what the person settled (the framing and the answers) and, where they are silent, the source's constraints\" in place of \"fit to the source's constraints (builder, budget, timeline, licence, revenue model)\". 4. docs/PROPOSALS.md:489: the example record tagged `(person, 2026-10-30)` cites \"(framing)\" in its Why, not \"(brief: team constraint)\". Optional: step 4 says that a sketch a drafted brief offers (its Stack sketch), weighed and departed from in a D-record, is no contradiction.",
+   "files": [
+    ".claude/commands/review-proposal.md",
+    ".claude/commands/roadmap.md",
+    ".claude/commands/propose.md",
+    ".claude/workflows/brief-to-proposals.js",
+    "docs/PROPOSALS.md",
+    "ci/test-workflow-design.mjs"
+   ],
+   "tests": "ci/test-workflow-design.mjs: assert the judge prompt scores fit to what the person settled and no longer lists licence and revenue model as the source's constraints (no test covers the criteria today). Run ci/lint-doc-examples.py after the PROPOSALS.md edit."
+  }
+ ]
+}
