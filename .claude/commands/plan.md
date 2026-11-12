@@ -113,7 +113,7 @@ A **blocking question** is one only the person can answer — what they intend, 
 - **Someone can answer** (an interactive session with a question tool, such as AskUserQuestion): ask them all at once, each with 2–4 concrete options and your recommended one first, and wait. The answers bind like explicit constraints.
 - **No one can answer** (the invoking prompt says the run is unattended, or there is no question tool): make no further change; stop with `error=needs_input` and print each question with an id (`q1`, `q2`, …), why it blocks (what changes with the answer), its options and the one you recommend. When the invoking prompt says to proceed on assumptions instead, take the recommended option and list the question with it under *Assumptions*; a question about departing from what the person settled is never taken that way: keep what the person said and list the question as open.
 - **Answers handed in** by the invoking prompt bind the same way; never re-ask one, and never change what one settled: a reason to change it is a blocking question.
-- **Everything else is an assumption:** take the smallest choice consistent with the sources and the surrounding code, and list each under **Assumptions** in the report. None stays silent.
+- **Everything else is an assumption:** take the smallest choice consistent with the sources and the surrounding code, and list each under **Assumptions**: in the plan's `## Assumptions` section (*Plan layout*), so it travels with the plan, and in the report. None stays silent.
 
 ## Scope to one increment
 
@@ -158,6 +158,7 @@ The plan reads as **freshly authored**: it does not quote the request, does not 
 6. **`## Verification`** — concrete end-to-end checks. Default to `$QUALITY_GATES` (and `$QUALITY_GATES_FAST` for iteration), name every new test explicitly, and add a one-line manual repro when the behavior needs a runtime trigger. Under `--proposal`, carry each named step's `Acceptance:` in as a check, with the test or command that demonstrates it.
 7. **`## Rollout`** *(optional)* — required when the increment adds or changes a migration, env var, secret, feature flag, scheduled job, external integration, infrastructure or deploy config: deploy-time prerequisites (secret and env var **names** per environment, never values), apply order, reversibility, post-deploy checks, rollback. Omit it otherwise. `/create-pr` copies it into the PR as deploy notes.
 8. **`## Out of scope`** — forward-looking boundaries ("Reworking the surrounding module is out of scope"), later increments, and constraints the concern ruled out. Under `--proposal`, list the doc's other pending steps by number and title.
+9. **`## Assumptions`** *(optional)* — one bullet per choice the concern (under `--proposal`, the doc) did not settle and the plan rests on, saying what was chosen. A blocking question taken on assumptions is written `<question> -> <option taken>`; one about departing from what the person settled is written `<question> -> open: kept what the person said` (see *Questions before assumptions*). Nothing the person answered goes here: an answer is a constraint, not an assumption. Omit the section when there is none. The list travels with the plan: whoever implements or reviews it builds on these choices instead of making their own, and `/create-pr` shows them in the PR under `## Assumptions to review`, where the person can correct one before merging.
 
 ## Record the plan pointer
 
@@ -180,7 +181,7 @@ Print the resolved output path as the final message:
 
 Add bullet addenda only when they apply:
 
-- **Assumptions** — each choice the concern did not settle and the plan rests on (see *Questions before assumptions*).
+- **Assumptions** — each choice the concern did not settle and the plan rests on (see *Questions before assumptions*): the same list as the plan's `## Assumptions` section.
 - The stated remedy was dropped — which one, which forbidden pattern, and the replacement.
 - The concern collides with a project rule in `CLAUDE.md` — name it.
 - An existing plan was superseded — the path overwritten.

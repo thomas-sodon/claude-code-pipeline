@@ -1,6 +1,6 @@
 Triage a GitHub issue (specified, latest RCA-shaped, or oldest open actionable) against today's tree by its *intent*, then produce exactly one terminal outcome: a fix plan or an issue closure.
 
-The triage answers one question: *does the wrong behavior the issue describes still apply to today's code?* Cited paths, line numbers, and symbols are anchors for the implementer, not gating evidence — line drift, renames, and file moves never by themselves veto a plan or fire a close. If the behavior is still wrong, write a plan at `$PLANS_DIR/fix-<NNN>-<slug>.md` framed around current code locations. If today's code already behaves correctly, or the whole feature surface the issue cited is gone, close the issue with a comment quoting the evidence. **When the verdict is not clear-cut, plan** — a wrong plan costs a file delete; a wrong close is public and notifies subscribers.
+The triage answers one question: *does the wrong behavior the issue describes still apply to today's code?* Cited paths, line numbers, and symbols are anchors for the implementer, not gating evidence — line drift, renames, and file moves never by themselves veto a plan or fire a close. If the behavior is still wrong, write a plan at `$PLANS_DIR/fix-<NNN>-<slug>.md` framed around current code locations. If today's code already behaves correctly, or the whole feature surface the issue cited is gone, close the issue with a comment quoting the evidence. **When the verdict is not clear-cut, plan** — a wrong plan costs a file delete; a wrong close is public and notifies subscribers. A fix that needs a choice only the person can make is asked before the plan is written (see *Questions before assumptions*).
 
 ## Arguments
 
@@ -8,7 +8,7 @@ The triage answers one question: *does the wrong behavior the issue describes st
 
 - A positive integer, with or without a leading `#` — the issue to triage (**targeted path**).
 - `--rca` — auto-pick the **latest** (most recently created) open RCA-shaped issue (title starts with `[rca]` or label `rca`). Mutually exclusive with an integer.
-- `--dry-run` — print the picked issue, the verdict, and the plan body or close comment; write no plan, post no comment, close nothing, write no claim, change no git state. Composes with every mode.
+- `--dry-run` — print the picked issue, the verdict, and the plan body or close comment; write no plan, post no comment, close nothing, write no claim, change no git state, and ask the person nothing (a question the plan raises is printed, not asked). Composes with every mode.
 - *(no integer, no `--rca`)* — pick the oldest open actionable issue.
 
 Reject anything else (`abc`, `1.2`, `0`, negatives, integer + `--rca`) with `error=invalid_argument` and the accepted forms: `/bug-fix 1234`, `/bug-fix --rca`, `/bug-fix`, each optionally with `--dry-run`.
@@ -22,6 +22,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `GH_WRAPPER` — when set, prefix every `gh`, `git fetch`, and `git push` command with it (e.g. a script that loads a token from `.env`). When unset, use ambient `gh auth`. When the access named is `gh` and the first `gh` call fails on authentication, stop and tell the user to authenticate or configure `GH_WRAPPER`.
 - `GITHUB_ACCESS` — `gh` or `connector` (unset: gh when it is authenticated, else the GitHub MCP tools). Do GitHub reads and writes through the access in use (see .claude/scripts/github-access.md): gh, or with GITHUB_ACCESS: connector the GitHub MCP tools. Resolve it before the first GitHub call; when no access is usable, stop with `error=github_unavailable`. `git fetch` stays plain git either way.
 - `QUALITY_GATES`, `TEST_GUIDELINES` — referenced in the plan's verification and test steps only; this command never runs gates. If `QUALITY_GATES` is missing, still write the plan but note in its Verification section and in the addendum that the project must add `QUALITY_GATES` to its pipeline config.
+- `PROPOSALS_DIR` — optional design docs (default: none; skip the decisions check in *Triage against today's tree*).
 
 Examples below write `$GH_WRAPPER gh ...`; drop the prefix when unset. In connector mode, make the connector call named beside each instead. Local reads (`git log`, `git show`, file checks) need no auth.
 
@@ -185,6 +186,7 @@ This is a critique pass over the issue as a snapshot in time. Mechanical checks 
 4. **Suspect SHAs still in tree?** `git show <SHA> --stat`. Missing is drift, not a verdict.
 5. **Adjacent tests.** Find the tests nearest the cited code. Note where a regression test fits. A test that already asserts the corrected behavior is strong close evidence.
 6. **Project rules.** Check the candidate fix shape against the invariants and rules in the project's `CLAUDE.md`. If the only implementable fix would break one the issue does not address, that is an invariant collision — plan, and name the rule in the addendum.
+7. **The person's decisions.** When `PROPOSALS_DIR` is set, grep the `## Decisions` of the design docs there for the behaviour the issue contests. A decision whose heading ends in `(person, …)` is the person's own choice: when the issue asks for a departure from it, or the only fix needs one, neither plan that departure nor close the issue on the decision's word; it is a blocking question (see *Questions before assumptions*).
 
 Sort findings into:
 
@@ -212,6 +214,20 @@ First match wins:
 
 1. **Intent-killing evidence converges → close.** Keep the evidence verbatim for the comment.
 2. **Otherwise → plan.** Drift, missing anchors, invariant collisions, forbidden-only suggestions, and weak evidence all default to plan.
+
+## Questions before assumptions
+
+Only on the plan path: once the verdict is plan, and before the re-checks and the plan write. A verdict that is not clear-cut is never a question: it is a plan (*Decide*).
+
+A **blocking question** is one only the person can answer, and whose plausible answers lead to a materially different fix. A fix plan can meet two kinds. The first is a conflict between what the person said (an answer or framing the invoking prompt carries, a decision a design doc tags `(person, …)`) and what the issue asks for or the root-cause fix needs: pick no side, and ask, naming both. The second is a **person-owned choice** that the fix cannot avoid and that no doc or answer settles: money or an account in the person's name; a new third-party service or dependency that receives data; a change to what the product promises its users or to its public interface; a licence; a name (product, package, domain, organization or bundle id). Settle yourself anything the issue, the tree, `CLAUDE.md`, the design docs or desk research can settle; never ask about it. A question, its options and the recommendation name decisions and steps by title; a number may follow the title, but a number alone is never enough, because numbers move between revisions.
+
+- **One pass, before writing.** Collect every blocking question before the plan is written. Never guess the answer to one.
+- **Someone can answer** (an interactive session with a question tool, such as AskUserQuestion): ask them all at once, each with 2–4 concrete options and your recommended one first, and wait. The answers bind the plan like explicit constraints.
+- **No one can answer** (the invoking prompt says the run is unattended, or there is no question tool): write no plan and close nothing; release the claim and stop with `error=needs_input`, printing each question with an id (`q1`, `q2`, …), why it blocks (what changes with the answer), its options and the one you recommend. When the invoking prompt says to proceed on assumptions instead, take the recommended option and list the question with it under **Assumptions**; a question about departing from what the person settled is never taken that way: keep what the person said and list the question as open.
+- **Under `--dry-run`**, whoever could answer, nobody is asked and nothing stops, so no `error=needs_input` is printed: print each question (its id, why it blocks, its options and the one you recommend) under the verdict, then the plan body as it would be written on assumptions (the bullet above), so the caller sees both. When keeping what the person said leaves nothing to fix, print `no plan: waits for the person's answer` in place of the body.
+- **Answers handed in** by the invoking prompt bind the same way; never re-ask one, and never change what one settled: a reason to change it is a blocking question.
+- **An answer that leaves nothing to fix** (the person keeps their decision, so the behaviour the issue contests stays): write no plan and close nothing. Release the claim and report the answer; the issue is the person's to close or relabel.
+- **Everything else is an assumption:** take the smallest choice consistent with the issue and the surrounding code, and list each under **Assumptions**: in the plan's `## Assumptions` section (*Plan layout*) and in the addendum. None stays silent.
 
 ## Re-checks before mutating
 
@@ -280,6 +296,7 @@ Do not change labels, assignees, or lock state. Do not write a plan.
    - **an open PR already closes this issue** (URL);
    - a `wontfix`/`question`/`discussion`/`epic` label;
    - the suggested fix was a forbidden remedy and was replaced;
+   - **Assumptions** — each choice the issue and the code did not settle and the plan rests on: the same list as the plan's `## Assumptions` section;
    - `QUALITY_GATES` is missing from the pipeline config.
 6. Do not comment on, label, or link the issue. The eventual PR's `Fixes #<NNN>` closes it on merge.
 
@@ -302,6 +319,7 @@ The plan reads as freshly authored — no "the issue said", no drift section, no
 7. `## Verification` — run `$QUALITY_GATES` (name the configured command) plus the new test by name; add a manual repro step when the original failure needed a runtime trigger. End with: `When opening the PR, include "Fixes #<NNN>" in the body so the issue auto-closes on merge.`
 8. `## Rollout` *(optional)* — required when the fix adds or changes a migration, env var, secret, feature flag, scheduled job, external integration, infrastructure or deploy config: deploy-time prerequisites (secret and env var **names** per environment, never values), apply order, reversibility, post-deploy checks, rollback. Omit it otherwise.
 9. `## Out of scope` — forward-looking boundaries (surrounding refactors, adjacent hardening, other call sites).
+10. `## Assumptions` *(optional)* — one bullet per choice the issue and the code did not settle and the plan rests on, saying what was chosen. A blocking question taken on assumptions is written `<question> -> <option taken>`; one about departing from what the person settled is written `<question> -> open: kept what the person said` (see *Questions before assumptions*). Nothing the person answered goes here: an answer is a constraint, not an assumption. Omit the section when there is none. `/create-pr` shows the list in the PR under `## Assumptions to review`, where the person can correct one before merging.
 
 ### Record the plan pointer
 
@@ -325,6 +343,7 @@ All errors print as `error=<code>` with the issue or PR URL where relevant. Race
 | `issue_claimed_by_other_folder` | sibling claim within 24h (targeted) |
 | `no_actionable_issue`, `no_open_rca_issues`, `no_actionable_rca_issue` | auto-pick exhausted (print skip table) |
 | `picking_thrash` | more than 3 post-pick invalidations |
+| `needs_input` | a blocking question no one can answer in this run (print the questions; *Questions before assumptions*) |
 | `issue_already_closed_race`, `issue_locked_race`, `duplicate_race`, `linked_pr_appeared`, `progress_claim_lost` | re-checks before mutating |
 
 ## Scope limits
