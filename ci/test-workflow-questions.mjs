@@ -254,12 +254,13 @@ await test('brief-to-proposals: one milestone asking lets the others finish and 
   assert.match(result.next_steps[0], /answer the 1 question/)
 })
 
-await test('brief-to-proposals: a milestone answer reaches only that milestone and Consistency', async () => {
+// brief-to-proposals.js now hands every answer to every stage in brief mode (the same choice can arise in another doc); the
+// routing by stage that this test pinned is concern mode's alone, and ci/test-workflow-design.mjs covers both.
+await test('brief-to-proposals: in brief mode a milestone answer reaches every author, reviewer and pair', async () => {
   const answers = [{ id: 'm2.q1', answer: 'ANSWER-M2' }]
   const { result, prompt } = await run('brief-to-proposals', { ...BRIEF, answers }, btp())
   assert.equal(result.status, 'ready')
-  for (const l of ['intake', 'roadmap', 'review:architecture-1', 'propose:m3', 'review:m3-1']) assert.doesNotMatch(prompt(l), /ANSWER-M2/, l)
-  for (const l of ['propose:m2', 'review:m2-1', 'consistency:arch-m2', 'consistency:arch-m3']) assert.match(prompt(l), /ANSWER-M2/, l)
+  for (const l of ['roadmap', 'review:architecture-1', 'propose:m2', 'review:m2-1', 'propose:m3', 'review:m3-1', 'consistency:arch-m2', 'consistency:arch-m3']) assert.match(prompt(l), /ANSWER-M2/, l)
 })
 
 await test('brief-to-proposals: next steps say to re-review each later proposal before accepting it', async () => {
