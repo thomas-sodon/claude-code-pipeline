@@ -1,6 +1,6 @@
 # Pipeline handoff: claude-code-pipeline
 
-<!-- Written by /handoff at 2026-11-13T15:04:48Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
+<!-- Written by /handoff at 2026-11-13T15:50:38Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
 
 ## Goal
 
@@ -10,8 +10,8 @@ This is work on the pipeline itself, not a product run. The person asked for a c
 
 - Roadmap: none (the pipeline's own repository has no design docs). Stage: the change is complete and pushed, and pull request #11 is open for the person's review.
 - Done: the review (eight reviewers plus a pass over a real product run in a private repository, each finding checked by a skeptic); the implementation in the commands, the workflows, the lint and the tests; the docs; a review of the whole diff by six fresh reviewers (62 findings, fixed); a regression check of those fixes (17 findings, fixed).
-- Branch: `claude/gallant-pascal-w9y8ez`, pushed at `3e76a3f`, 14 commits ahead of `origin/main` (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`). Pull request #11 (https://github.com/thomas-sodon/claude-code-pipeline/pull/11), opened on the person's word.
-- CI: every step of `.github/workflows/ci.yml` passes locally at `3e76a3f`, shellcheck and the gate-slot smoke test included. GitHub runs it on PR #11: read the checks there.
+- Branch: `claude/gallant-pascal-w9y8ez`, pushed at `6938b42`, 18 commits ahead of `origin/main` (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`). Pull request #11 (https://github.com/thomas-sodon/claude-code-pipeline/pull/11), opened on the person's word.
+- CI: every step of `.github/workflows/ci.yml` passes locally at `6938b42`, shellcheck and the gate-slot smoke test included. On PR #11 every check is green at `6938b42` (the CI job, the AI review, the reply check); the AI review's five findings on the PR were fixed and answered. The PR waits for the person's review and merge.
 - Also unmerged on origin and not part of this work: `feat/idea-to-inception`, and the branch of PR #10.
 - Open PRs: #11 "Ask the person their choices, keep their answers, and show what was assumed" (`claude/gallant-pascal-w9y8ez`, this work; checks and review: see the PR); #10 "ci: configure Mergify merge queue" (not this work).
 - Uncommitted work: none.
