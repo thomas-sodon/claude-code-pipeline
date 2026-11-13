@@ -1,8 +1,8 @@
 // Behavioural tests for the wrapper workflows: bootstrap-repo (/bootstrap, then plan-to-merged-pr ship-only) and
 // refresh-proposal (/review-proposal and /propose --revise until clean, then the lint). Both return a compact result to the
 // session that runs them; these tests check what they hand back, which stages saw which answers, and what they never do.
-// Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every prompt is
-// recorded. The nested plan-to-merged-pr run is a mock workflow() that records its args.
+// Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every prompt and
+// every log line is recorded. The nested plan-to-merged-pr run is a mock workflow() that records its args.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -24,7 +24,7 @@ async function run(name, args, respond, { workflow } = {}) {
   const src = readFileSync(join(dir, `${name}.js`), 'utf8').replace(/^export const meta = /m, 'const meta = ')
   const calls = []
   const agent = async (prompt, opts = {}) => {
-    calls.push({ label: opts.label, prompt, effort: opts.effort })
+    calls.push({ label: opts.label, prompt, effort: opts.effort, schema: opts.schema })
     const r = respond(opts.label || '', prompt)
     if (r === null) return null
     return opts.schema ? { ...blank(opts.schema), ...(r || {}) } : (r || '')
@@ -35,13 +35,14 @@ async function run(name, args, respond, { workflow } = {}) {
     try { for (const st of stages) v = await st(v, it, i) } catch { return null }
     return v
   }))
-  const noop = () => {}
+  const logs = []
   const result = await new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'workflow', 'phase', 'log', src)(
-    args, agent, parallel, pipeline, workflow || (async () => { throw new Error('no nested workflow in this test') }), noop, noop)
-  return { result, calls, prompt: label => (calls.find(c => c.label === label) || {}).prompt || '' }
+    args, agent, parallel, pipeline, workflow || (async () => { throw new Error('no nested workflow in this test') }), () => {}, m => logs.push(String(m)))
+  return { result, calls, logs, prompt: label => (calls.find(c => c.label === label) || {}).prompt || '' }
 }
 
 const Q = { question: 'Which name goes in the LICENSE copyright line?', why: 'the product name or the person changes the licence text', options: ['the person', 'the product'], recommended: 'the person' }
+const NO_TEXT_LOG = id => `Answer(s) passed without their question text: ${id} (pass each answer with its question, so every stage can tell what it settles)`
 let failed = 0
 async function test(name, fn) {
   try { await fn(); console.log(`ok   ${name}`) } catch (err) { failed++; console.error(`FAIL ${name}\n${err.stack}`) }
@@ -49,7 +50,9 @@ async function test(name, fn) {
 
 // ---- bootstrap-repo
 const BRANCH = 'bootstrap/20261110'
-const AFTER = ['Protect main: require the checks gates and docs.', 'Add each secret by NAME: gh secret set API_KEY.', 'Tick the roadmap\'s Bootstrap gate (milestone 2).']
+// The next steps /bootstrap's report prints: the workflow hands each on verbatim, whatever it says.
+const AFTER = ['Protect main: require the checks gates and docs.', 'Add each secret by NAME: gh secret set API_KEY.',
+  'Tick the roadmap\'s Bootstrap gate (milestone 2).']
 const BOOT_OK = { outcome: 'committed', root_mode: false, branch: BRANCH, commit: 'abc1234', summary: 'one node package, gates PASS in 1 fix round, CI gates + docs, MIT', left_out: ['brief.md'], next_steps: AFTER }
 const boot = (over = {}) => (label, prompt) => {
   if (over[label] !== undefined) return typeof over[label] === 'function' ? over[label](prompt) : over[label]
@@ -91,6 +94,12 @@ await test('bootstrap-repo: the ship path calls plan-to-merged-pr ship-only with
   assert.match(result.next_steps[0], /ship\.resume_monitor/)
   assert.match(result.next_steps[1], /left brief\.md out of its commit on purpose/)
   assert.deepEqual(result.next_steps.slice(2), AFTER)
+  assert.match(prompt('bootstrap'), /In next_steps, put every next step its report prints, each verbatim with the values it filled in, except reviewing the commit and shipping it/)
+  // One of the steps the command prints sends a baked-in Decision the person answered back into the architecture: its wording
+  // is the command's, checked there (the workflow passes any step through).
+  const bootstrapCmd = readFileSync(join(dir, '..', 'commands', 'bootstrap.md'), 'utf8')
+  assert.match(bootstrapCmd, /^3\. Print this step only when \*\*Answers\*\* names a baked-in Decision the person confirmed or corrected, .* A Decision confirmed as it stands needs no re-run: its heading tag becomes `\(person, <today's date>, edit\)`; .* A Decision the person corrected: run the `refresh-proposal` workflow on `<architecture path>` with that answer as `architecture\.d<N>` /m)
+  assert.match(bootstrapCmd, /^- \*\*Answers\*\* — each question this run asked or was handed the answer to /m)
   assert.deepEqual(result.assumptions, [{ stage: 'ship.merge_check', assumption: 'kept the lockfile /bootstrap wrote' }])
   // The bootstrap stage: the skill and its doc, the access in use, the gate wrapper and the trailers; it never ships itself.
   const p = prompt('bootstrap')
@@ -134,15 +143,114 @@ await test('bootstrap-repo: a bootstrap question stops before shipping; on a re-
   assert.match(first.prompt('bootstrap'), /QUESTIONS: this stage runs unattended/)
   assert.match(first.prompt('bootstrap'), /return every such question/)
   assert.match(first.prompt('bootstrap'), /An error= stop the command defines is a stop to report, not a question/)
+  // The stage asks before its first write, so a question stop leaves no branch and no file, and the result says so.
+  assert.match(first.prompt('bootstrap'), /stop before the first write \(create no branch, write no file\)/)
+  assert.doesNotMatch(first.prompt('bootstrap'), /what the command already wrote stays/)
+  assert.match(first.result.next_steps[0], /nothing was written: \/bootstrap asked before its first write, so it created no branch and no file/)
+  assert.match(first.result.relay, /It asked before its first write, so nothing was written: no branch, no file\./)
+  // The relay: one batch through the question tool, the assumptions shown too, each answer back with its question and date.
+  assert.match(first.result.relay, /^Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit \(a numbered list when it has none\), each with its why/)
+  assert.match(first.result.relay, /never re-run with on_question: 'assume' unless the person says to proceed on assumptions/)
+  assert.match(first.result.relay, /Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too \(id bootstrap\.d<N>, N the next number not yet in use, with the assumption or the decision as its question\)\./)
+  assert.match(first.result.relay, /each question's id and question text with the person's answer and the date they gave it/)
+  // The confirmations come as one list, and a session with no run record is told how to re-run.
+  assert.match(first.result.relay, /Show the confirmations \(the questions with confirm: true\) as one list the person can accept whole or correct line by line\. Also show the person/)
+  assert.match(first.result.relay, /no branch, no file\. A new session has no run record: re-run the same way without resumeFromRunId\.$/)
+  // An answer replaces the architecture's value on the point it addresses: that difference is no conflict to ask about again.
+  assert.ok(first.prompt('bootstrap').includes('What the person said in an answer outranks the architecture. On the point it addresses, it replaces what the architecture says: follow it, and never ask it again. That difference is not a conflict. ' +
+    'The conflict that is a blocking question is the other one: another part of the architecture, the tree or your research makes what the person said impossible to follow. Then pick no side and ask, naming both. '))
+  assert.match(first.prompt('bootstrap'), /A confirmation \(a baked-in decision the architecture records as unconfirmed\) has confirm: true and its Choice as the recommended option\./)
+  // The stage reads the design run's saved answers itself, so a choice the person made there is not asked a second time.
+  assert.match(first.prompt('bootstrap'), /read them with python3 \.claude\/scripts\/pipeline-state\.py get design\/answers\.json \(this read of the state branch is allowed and changes nothing in \/abs\/p; exit 3 or 2: none are saved, go on without them\)\. Each of its answers is the person's: binding, and never re-asked\./)
+  assert.match(first.prompt('bootstrap'), /A choice the skeleton bakes in that one of them settles \(the licence, also between the architecture's and an existing LICENSE file's; the copyright holder; a name\) is settled: follow the answer, and ask nothing about it\./)
+  assert.doesNotMatch(first.prompt('bootstrap'), /the one listed above is the newer/, 'no answers were passed')
+  // What the stage is told about the person's choices: a conflict is asked, a person-owned choice is never assumed, nothing settled is changed.
+  assert.match(first.prompt('bootstrap'), /a conflict between what the person said \(an answer, the framing, a decision the architecture tags \(person, \.\.\.\)\) and what you find/)
+  assert.match(first.prompt('bootstrap'), /In two cases a person-owned choice the skeleton bakes in is asked as a blocking question, never assumed: when no decision of the architecture and no answer settles it, and when the architecture records it as unconfirmed \(a baked-in decision tagged \(assumed\) or untagged, which no answer confirms: a confirmation, with its Choice as the recommended option\)\./)
+  assert.match(first.prompt('bootstrap'), /\(the copyright holder, an existing LICENSE of another licence, no licence decision, a published name, a baked-in decision nobody confirmed\)/)
+  assert.match(first.prompt('bootstrap'), /Never change what the person settled/)
+  assert.match(first.prompt('bootstrap'), /name decisions and milestones by title/)
   const seen = []
-  const answers = [{ id: 'bootstrap.q1', question: Q.question, answer: 'ANSWER-BOOT' }]
+  const answers = [{ id: 'bootstrap.q1', question: Q.question, answer: 'ANSWER-BOOT', date: '2026-11-12' }]
   const again = await run('bootstrap-repo', { ...BARGS, answers }, boot(), { workflow: async (n, a) => { seen.push(a); return P2MP_OPEN } })
   assert.equal(again.result.status, 'pr_open')
   assert.match(again.prompt('bootstrap'), /ANSWER-BOOT/)
+  assert.ok(again.prompt('bootstrap').includes(JSON.stringify([{ id: 'bootstrap.q1', question: Q.question, answer: 'ANSWER-BOOT', date: '2026-11-12' }])), 'the prompt shows the id, the question text and the date')
+  assert.match(again.prompt('bootstrap'), /Where an answer listed above and a saved one settle the same point differently, the one listed above is the newer and holds\./)
   assert.deepEqual(seen[0].answers, answers, 'an answer reaches every later stage')
   // A new question on a later run never reuses the answered id.
   const third = await run('bootstrap-repo', { ...BARGS, answers }, boot({ bootstrap: { outcome: 'stopped', questions: [Q] } }), { workflow: noShip })
   assert.equal(third.result.questions[0].id, 'bootstrap.q2')
+  // A decision the person made outside the questions (bootstrap.d<N>) reaches the bootstrap stage and takes no part in the numbering.
+  const decided = [...answers, { id: 'bootstrap.d1', question: 'copyright holder', answer: 'DECISION-D1' }]
+  const fourth = await run('bootstrap-repo', { ...BARGS, answers: decided }, boot({ bootstrap: { outcome: 'stopped', questions: [Q] } }), { workflow: noShip })
+  assert.match(fourth.prompt('bootstrap'), /DECISION-D1/)
+  assert.equal(fourth.result.questions[0].id, 'bootstrap.q2')
+  // A confirmation keeps its mark, and a question's own id or stage never replaces the workflow's.
+  const C = { question: 'The architecture names the package acme-app (assumed): publish under it?', why: 'a published name is hard to change', options: ['acme-app', 'another name'], recommended: 'acme-app', confirm: true, id: 'q1', stage: 'x' }
+  const fifth = await run('bootstrap-repo', BARGS, boot({ bootstrap: { outcome: 'stopped', questions: [Q, C] } }), { workflow: noShip })
+  assert.deepEqual(fifth.result.questions.map(q => [q.id, q.stage, q.confirm]), [['bootstrap.q1', 'bootstrap', undefined], ['bootstrap.q2', 'bootstrap', true]])
+  // The stage can return the mark only when its schema declares it (the mock returns any field).
+  assert.equal(fifth.calls.find(c => c.label === 'bootstrap').schema.properties.questions.items.properties.confirm.type, 'boolean')
+})
+
+await test('bootstrap-repo: a design answer reaches the bootstrap stage and the ship run; an answer passed without its question says so', async () => {
+  const seen = []
+  const design = { id: 'intake.d4', question: 'Which licence does the product ship under?', answer: 'DESIGN-D4: MIT', date: '2026-11-12' }
+  const answers = [design, { id: 'merge_check.q1', answer: 'ANSWER-SHIP' }, { id: 'monitor.d1', question: 'a monitor assumption', answer: 'ANSWER-MON' }]
+  const { result, prompt } = await run('bootstrap-repo', { ...BARGS, answers }, boot(), { workflow: async (n, a) => { seen.push(a); return P2MP_OPEN } })
+  assert.equal(result.status, 'pr_open')
+  // The stage that writes the licence, the names and the skeleton sees the design answer, with its question and date.
+  assert.ok(prompt('bootstrap').includes(JSON.stringify([design])), 'the bootstrap stage gets the design answer and no ship answer')
+  assert.doesNotMatch(prompt('bootstrap'), /ANSWER-SHIP|ANSWER-MON/)
+  assert.doesNotMatch(prompt('bootstrap'), /passed without its question text/, 'every answer it got has its question')
+  assert.deepEqual(seen[0].answers, answers, 'the ship run gets every answer')
+  // An id-only answer still binds, but the stage is told never to guess what it settled.
+  const bare = await run('bootstrap-repo', { ...BARGS, answers: { 'bootstrap.q1': 'yes' } }, boot(), { workflow: async () => P2MP_OPEN })
+  assert.ok(bare.prompt('bootstrap').includes('[{"id":"bootstrap.q1","question":"bootstrap.q1","answer":"yes"}]\nAn entry above whose question equals its id was passed without its question text. When its answer alone does not say what it settles, it settles nothing: never guess what it meant. '))
+  assert.ok(bare.logs.includes(NO_TEXT_LOG('bootstrap.q1')), 'the run says so in its log')
+  assert.ok(!(await run('bootstrap-repo', { ...BARGS, answers: [design] }, boot(), { workflow: async () => P2MP_OPEN })).logs.some(l => l.includes('without their question text')))
+})
+
+await test('bootstrap-repo: a question that surfaces after the first write names the unfinished branch the re-run resumes on', async () => {
+  const { result } = await run('bootstrap-repo', BARGS, boot({ bootstrap: { outcome: 'stopped', branch: BRANCH, questions: [Q] } }), { workflow: noShip })
+  assert.equal(result.status, 'needs_input')
+  assert.equal(result.bootstrap.branch, BRANCH)
+  assert.match(result.next_steps[0], new RegExp(`nothing is committed, and the uncommitted files /bootstrap wrote stay on ${BRANCH}, where the re-run resumes`))
+  assert.doesNotMatch(result.next_steps[0], /nothing was written/)
+  assert.match(result.relay, new RegExp(`the files it wrote stay on ${BRANCH}, and the re-run resumes there\\. A new session has no run record: re-run the same way without resumeFromRunId \\(/bootstrap resumes on ${BRANCH} while that checkout exists\\)\\.$`))
+  assert.doesNotMatch(result.relay, /nothing was written/)
+})
+
+await test('bootstrap-repo: the bootstrap stage\'s assumptions reach the PR body and the first next step', async () => {
+  const seen = []
+  const assumed = { ...BOOT_OK, assumptions: ['SPDX-only LICENSE: replace with the canonical text', 'Decision "Licence" is tagged (assumed)'] }
+  const { result, prompt } = await run('bootstrap-repo', BARGS, boot({ bootstrap: assumed }), { workflow: async (n, a) => { seen.push(a); return P2MP_OPEN } })
+  assert.equal(result.status, 'pr_open')
+  assert.match(prompt('bootstrap'), /with every line the command's report lists under Assumptions/)
+  assert.deepEqual(result.assumptions, [
+    { stage: 'bootstrap', assumption: 'SPDX-only LICENSE: replace with the canonical text' },
+    { stage: 'bootstrap', assumption: 'Decision "Licence" is tagged (assumed)' },
+    { stage: 'ship.merge_check', assumption: 'kept the lockfile /bootstrap wrote' },
+  ])
+  // The ship run gets them as assumptions: it lists them in the PR body, and its monitor knows each as a choice nobody confirmed.
+  assert.deepEqual(seen[0].assumptions, [{ stage: 'bootstrap', assumption: 'SPDX-only LICENSE: replace with the canonical text' }, { stage: 'bootstrap', assumption: 'Decision "Licence" is tagged (assumed)' }])
+  assert.equal(seen[0].pr_note, undefined)
+  // The ship run's result lists them back beside its own: they are not counted a second time.
+  const echo = await run('bootstrap-repo', BARGS, boot({ bootstrap: assumed }), { workflow: async (n, a) => ({ ...P2MP_OPEN, assumptions: [...a.assumptions, ...P2MP_OPEN.assumptions] }) })
+  assert.deepEqual(echo.result.assumptions, result.assumptions)
+  // The commit exists, so a line the person corrects is a review comment on the PR, never an answer nothing would apply.
+  assert.match(result.next_steps[0], /Before the merge, show the person this result's assumptions \(3\): a line they correct is no answer to a re-run \(nothing would apply it\): they leave it as a review comment on the PR, and a monitor run's comment step applies it\./)
+  assert.match(result.next_steps[0], /The PR body was given \/bootstrap's under "Assumptions to review"/)
+  // ship: false hands the same note to the later ship run; root mode says to show them before the push.
+  const later = await run('bootstrap-repo', { ...BARGS, ship: false }, boot({ bootstrap: assumed }), { workflow: noShip })
+  assert.match(later.result.next_steps[0], /"assumptions":\[\{"stage":"bootstrap","assumption":"SPDX-only LICENSE: replace with the canonical text"\},/)
+  assert.match(later.result.next_steps[0], /Before the merge, show the person this result's assumptions \(2\): a line they correct is no answer to a re-run \(nothing would apply it\): they leave it as a review comment on the PR, once it is open, and a monitor run's comment step applies it\./)
+  const root = await run('bootstrap-repo', BARGS, boot({ bootstrap: { ...assumed, root_mode: true, branch: 'main' } }), { workflow: noShip })
+  assert.match(root.result.next_steps[0], /Before the push, show the person this result's assumptions \(2\): a line they correct is a change to commit on main first\./)
+  // No assumption: no note, and no step about them.
+  const none = await run('bootstrap-repo', { ...BARGS, ship: false }, boot(), { workflow: noShip })
+  assert.doesNotMatch(none.result.next_steps[0], /pr_note|assumptions|Assumptions to review/)
 })
 
 await test('bootstrap-repo: a ship question is relayed; its answer reaches the ship run only, so a resume replays the bootstrap stage', async () => {
@@ -155,6 +263,11 @@ await test('bootstrap-repo: a ship question is relayed; its answer reaches the s
   assert.equal(first.result.ship.status, 'needs_input')
   assert.equal(first.result.ship.stage, 'merge_check')
   assert.match(first.result.next_steps[0], new RegExp(`the commit is on ${BRANCH}`))
+  assert.match(first.result.relay, /the commit \/bootstrap made is kept \(a stage whose prompt is unchanged replays from the record\), and the ship run starts again with the answers\. A new session has no run record: re-run the same way without resumeFromRunId \(\/bootstrap finds its commit and changes nothing\)\.$/)
+  assert.doesNotMatch(first.result.relay, /nothing was written/)
+  // The commit exists: a corrected assumption is a review comment on the PR, never an answer no stage would apply.
+  assert.match(first.result.relay, /Also show the person this result's assumptions\. A line they correct is no answer: the bootstrap commit exists, so no stage of the re-run would apply it\. The person leaves the correction as a review comment on the bootstrap PR, once it is open, and a monitor run's comment step applies it\. Only the answers to these questions go into answers\. Then re-run this workflow/)
+  assert.doesNotMatch(first.result.relay, /is passed as an answer too|confirm: true/)
   const seen = []
   const answers = { 'merge_check.q1': 'ANSWER-SHIP' }
   const again = await run('bootstrap-repo', { ...BARGS, answers }, boot(), { workflow: async (n, a) => { seen.push(a); return P2MP_OPEN } })
@@ -169,6 +282,10 @@ await test('bootstrap-repo: a monitor question relays the monitor-only re-run on
   assert.equal(result.status, 'needs_input')
   assert.match(result.relay, /ship\.resume_monitor as args plus answers/)
   assert.match(result.relay, /never answer them on their behalf/)
+  assert.match(result.relay, /^Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit \(a numbered list when it has none\), each with its why/)
+  assert.match(result.relay, /Also show the person this result's assumptions\. A line they correct is no answer: the bootstrap commit exists, so no stage of the re-run would apply it\. The person leaves the correction as a review comment on the bootstrap PR, and a monitor run's comment step applies it\. Only the answers to these questions go into answers\. The bootstrap PR is already open/)
+  assert.doesNotMatch(result.relay, /is passed as an answer too/)
+  assert.match(result.relay, /the date they gave it/)
   assert.deepEqual(result.ship.resume_monitor, asking.resume_monitor)
   assert.match(result.next_steps[0], /PR #5 \(u\) is open/)
 })
@@ -180,6 +297,13 @@ await test('bootstrap-repo: ship: false commits only and gives the ship-only arg
   assert.match(result.next_steps[0], new RegExp(`git -C /abs/p show --stat ${BRANCH}`))
   assert.ok(result.next_steps[0].includes(JSON.stringify({ ship_only: true, branch: BRANCH, title: 'Bootstrap acme', dir: '/abs/p', github_access: 'gh' })))
   assert.match(result.next_steps[1], /brief\.md/)
+  // The args to ship with later carry what the person answered, so that run's merge check and monitor know what is settled.
+  const answers = [{ id: 'bootstrap.q1', question: Q.question, answer: 'the person', date: '2026-11-12' }, { id: 'intake.d2', question: 'Which licence?', answer: 'MIT' }]
+  const answered = await run('bootstrap-repo', { ...BARGS, ship: false, answers }, boot(), { workflow: noShip })
+  assert.ok(answered.result.next_steps[0].includes(JSON.stringify({ ship_only: true, branch: BRANCH, title: 'Bootstrap repository', dir: '/abs/p', answers })))
+  // So do the args a stopped ship prints.
+  const stopped = await run('bootstrap-repo', { ...BARGS, answers }, boot(), { workflow: async () => ({ status: 'blocked_at_pr', pr_stage: { blocked: true, blocked_reason: 'error=github_unavailable' }, assumptions: [] }) })
+  assert.ok(stopped.result.next_steps[0].includes(`or run plan-to-merged-pr with ${JSON.stringify({ ship_only: true, branch: BRANCH, title: 'Bootstrap repository', dir: '/abs/p', answers })}.`))
 })
 
 await test('bootstrap-repo: an error= stop fails at bootstrap with its next action; only a bootstrap branch is ever shipped', async () => {
@@ -209,6 +333,15 @@ await test('bootstrap-repo: an already-merged bootstrap ships nothing; a branch 
   assert.equal(seen[0].branch, BRANCH)
   assert.match(waiting.result.next_steps[0], /PR #5 .* has merged/)
   assert.deepEqual(waiting.result.next_steps.slice(1), AFTER)
+  // A branch with no bootstrap commit is an unfinished run: it is never shipped, whatever the stage calls it.
+  for (const commit of ['', '  ']) {
+    const unfinished = await run('bootstrap-repo', BARGS, boot({ bootstrap: { ...BOOT_OK, outcome: 'already_bootstrapped', merged: false, commit } }), { workflow: noShip })
+    assert.equal(unfinished.result.status, 'failed_at_bootstrap')
+    assert.match(unfinished.result.stop_reason, new RegExp(`an earlier bootstrap on ${BRANCH} but no bootstrap commit; nothing was shipped`))
+    assert.match(unfinished.result.next_steps[0], /the branch is an unfinished run, so re-run this workflow with the same args and \/bootstrap resumes on it/)
+    assert.deepEqual(unfinished.result.next_steps.slice(1), AFTER)
+  }
+  assert.match(waiting.prompt('bootstrap'), /never for a bootstrap\/\* branch that holds no bootstrap commit, which is an unfinished run the command resumes/)
 })
 
 await test('bootstrap-repo: a ship run that stops, closes or throws says why and how to ship again', async () => {
@@ -231,6 +364,10 @@ await test('bootstrap-repo: on_question assume proceeds on recommendations and c
   const { result, prompt } = await run('bootstrap-repo', { ...BARGS, on_question: 'assume', ship: false }, boot({ bootstrap: { ...BOOT_OK, assumptions: ['copyright holder -> the person'] } }), { workflow: noShip })
   assert.equal(result.status, 'committed')
   assert.match(prompt('bootstrap'), /proceed on assumptions/)
+  assert.match(prompt('bootstrap'), /for a conflict with what the person said, what the person said; for a baked-in decision nobody confirmed, its Choice as the architecture states it; an existing LICENSE is never replaced/)
+  // On assumptions an unconfirmed baked-in decision is a blocking question taken on its recommendation, never "asked".
+  assert.match(prompt('bootstrap'), /In two cases a person-owned choice the skeleton bakes in is a blocking question: when no decision of the architecture and no answer settles it, and when the architecture records it as unconfirmed/)
+  assert.doesNotMatch(prompt('bootstrap'), /never assumed/)
   assert.doesNotMatch(prompt('bootstrap'), /return every such question/)
   assert.deepEqual(result.assumptions, [{ stage: 'bootstrap', assumption: 'copyright holder -> the person' }])
 })
@@ -273,6 +410,10 @@ await test('refresh-proposal: a clean first review stops there, then lints the d
   assert.match(prompt('lint'), /proposal-lint\.py docs\/design\/03-export\.md --lanes --allow-draft/)
   assert.match(prompt('lint'), /do not fetch/)
   assert.ok(!result.next_steps.some(s => /re-accept/.test(s)), 'nothing was revised')
+  assert.ok(!result.next_steps.some(s => /show the person/.test(s)), 'nothing unconfirmed, nothing to show')
+  assert.match(prompt('lint'), /proposal-lint\.py docs\/design\/03-export\.md --decisions \(any kind\)/)
+  assert.match(prompt('review-1'), /A doc that departs from the person's framing, an answer from the person, or a decision tagged \(person, \.\.\.\), with no newer answer from the person, is a bug whose fix is the question to ask/)
+  assert.doesNotMatch(prompt('review-1'), /An answer in the list above/, 'no answers were given')
   assert.match(result.next_steps[0], /No revision was needed\. docs\/design\/03-export\.md is a draft: set Status: accepted/)
   assert.ok(result.next_steps.some(s => /proposal-build-chain \{ proposal: 'docs\/design\/03-export\.md'/.test(s) && /2 lane\(s\)/.test(s)))
   assert.equal(result.other_docs, undefined)
@@ -339,20 +480,116 @@ await test('refresh-proposal: a reviser question stops with needs_input; on a re
   assert.deepEqual(first.result.questions.map(q => [q.id, q.stage]), [['revise.q1', 'revise']])
   assert.match(first.result.relay, /never answer them on their behalf/)
   assert.match(first.result.relay, /same args plus answers/)
+  assert.match(first.result.relay, /^Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit \(a numbered list when it has none\), each with its why/)
+  assert.match(first.result.relay, /never re-run with on_question: 'assume' unless the person says to proceed on assumptions/)
+  assert.match(first.result.relay, /Show the confirmations \(the questions with confirm: true\) as one list the person can accept whole or correct line by line/)
+  assert.match(first.result.relay, /Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too, with its question, under the id a correction to this doc takes \(architecture\.d<N> for the architecture or the roadmap, m<N>\.d<K> for milestone N's proposal, proposal\.d<N> for a concern's proposal; revise\.d<N> only for a doc no design run wrote\), its number the next one not yet in use, an id in a \(person, <date>, <id>\) tag of the docs included\. Then re-run this workflow/)
+  assert.match(first.result.relay, /each question's id and question text with the person's answer and the date they gave it/)
   assert.ok(!first.calls.some(c => c.label === 'lint'), 'nothing is linted while a question is open')
   assert.equal(first.result.lint, null)
   assert.match(first.result.next_steps[0], /^First answer the 1 question\(s\)/)
+  // While a question is open the assumptions are shown with it (the relay), never in a step about accepting the doc.
+  const both = await run('refresh-proposal', RARGS, rp({ 'review-1': concern, 'revise-1': { questions: [Q], assumptions: ['retention -> 30 days'] } }))
+  assert.deepEqual(both.result.assumptions, [{ stage: 'revise', assumption: 'retention -> 30 days' }])
+  assert.ok(!both.result.next_steps.some(s => /show the person|is accepted/.test(s)))
   assert.match(first.prompt('revise-1'), /QUESTIONS: this stage runs unattended/)
   assert.match(first.prompt('revise-1'), /return every such question/)
   assert.match(first.prompt('revise-1'), /never decline it or pick a side/)
   assert.doesNotMatch(first.prompt('review-1'), /QUESTIONS:/, 'the review is read-only and asks nothing')
-  const answers = [{ id: 'revise.q1', question: Q.question, answer: 'ANSWER-R' }]
+  // The reviser's rule follows the design run's: a conflict with what the person said is asked, a confirmation is a question,
+  // and nothing the person settled is changed.
+  assert.match(first.prompt('revise-1'), /a conflict between what the person said \(the framing, an answer, a decision a doc records as theirs\) and the doc's sources, the tree or your research/)
+  assert.match(first.prompt('revise-1'), /A confirmation is a question about a person-owned choice that already has a value nobody confirmed with the person/)
+  assert.match(first.prompt('revise-1'), /return every such question and every confirmation \(all of them, in one pass\)/)
+  assert.match(first.prompt('revise-1'), /Never change what the person settled/)
+  assert.match(first.prompt('revise-1'), /a finding whose fix would change what the person settled \(an answer, the framing, a decision tagged \(person, \.\.\.\)\): never apply it and never decline it/)
+  assert.match(first.prompt('revise-1'), /name milestones, steps and decisions by title/)
+  const answers = [{ id: 'revise.q1', question: Q.question, answer: 'ANSWER-R', date: '2026-11-12' }]
   const again = await run('refresh-proposal', { ...RARGS, answers }, rp({ 'review-1': concern }))
   assert.equal(again.result.status, 'clean')
   for (const l of ['review-1', 'revise-1', 'review-2']) assert.match(again.prompt(l), /ANSWER-R/, l)
   assert.match(again.prompt('review-1'), /a choice that follows one is not a defect/)
+  // Each answer travels with its id, question text and date; an answer the doc does not yet reflect is found by the review and
+  // applied by the revise, which tags the decision it settles.
+  for (const l of ['review-1', 'revise-1']) assert.ok(again.prompt(l).includes(JSON.stringify([{ id: 'revise.q1', question: Q.question, answer: 'ANSWER-R', date: '2026-11-12' }])), l)
+  assert.match(again.prompt('review-1'), /An answer in the list above \(one passed to this run\) that the doc does not yet reflect .* is a bug too: report it, naming the answer's id, so the reviser applies it/)
+  assert.match(again.prompt('revise-1'), /Apply every answer in the list above \(the ones passed to this run\) that the doc does not yet reflect, and tag each decision an answer settles \(person, <the answer's date, or today's when it has none>, <the answer's id>\)/)
+  assert.doesNotMatch(first.prompt('revise-1'), /Apply every answer in the list above/, 'no answers were given')
   const third = await run('refresh-proposal', { ...RARGS, answers }, rp({ 'review-1': concern, 'revise-1': { questions: [Q] } }))
   assert.equal(third.result.questions[0].id, 'revise.q2', 'a new question never reuses an answered id')
+  // A confirmation keeps its mark, and a decision's id (a .d<N> id) takes no part in the numbering.
+  const decided = [...answers, { id: 'revise.d7', question: 'Decision "Retention"', answer: '30 days' }]
+  const fourth = await run('refresh-proposal', { ...RARGS, answers: decided }, rp({ 'review-1': concern, 'revise-1': { questions: [{ ...Q, confirm: true }] } }))
+  assert.deepEqual(fourth.result.questions.map(q => [q.id, q.confirm]), [['revise.q2', true]])
+})
+
+await test('refresh-proposal: every review and revise reads the saved design answers and the person\'s framing; a missing framing file stops the run', async () => {
+  const concern = { findings: [F('concern', 'the retention period departs from the brief')], completed: true, doc_status: 'draft' }
+  const plain = await run('refresh-proposal', RARGS, rp({ 'review-1': concern }))
+  // The answers the design run saved bind a refresh too, with or without answers of its own.
+  for (const l of ['review-1', 'revise-1', 'review-2']) {
+    assert.match(plain.prompt(l), /read them with python3 \.claude\/scripts\/pipeline-state\.py get design\/answers\.json \(this read of the state branch is allowed and changes nothing in \/abs\/p; exit 3 or 2: none are saved, go on without them\)/, l)
+    assert.match(plain.prompt(l), /Each is the person's: binding, never re-asked, and a choice that follows one is not a defect\./, l)
+    assert.match(plain.prompt(l), /an answer asked elsewhere binds this doc wherever the same choice arises, and one plainly about another doc's detail does not/, l)
+    assert.doesNotMatch(plain.prompt(l), /Framing from the person|builder-context|the one listed above is the newer/, l)
+  }
+  assert.doesNotMatch(plain.prompt('lint'), /design\/answers\.json/)
+  const answers = [{ id: 'revise.d1', question: 'Decision "Retention"', answer: '30 days', date: '2026-11-12' }]
+  const framed = await run('refresh-proposal', { ...RARGS, answers, context: 'FRAMING-TEXT: solo builder', context_file: 'docs/builder-context.md' }, rp({ 'review-1': concern }))
+  assert.equal(framed.result.status, 'clean')
+  // The reviser gets the framing as binding, in the design run's words; the reviewer is told a choice that follows it is no defect.
+  const rev = framed.prompt('revise-1')
+  assert.ok(rev.includes('Framing from the person, binding. On the point it addresses it replaces what the source says (the brief\'s Assumed builder, a field the person corrected): follow it, say so in what you write, and never ask it again. Where another part of the source, the tree or research makes it impossible to follow, pick no side: return a blocking question naming both. The framing: FRAMING-TEXT: solo builder\n'))
+  assert.match(rev, /Before anything else, read docs\/builder-context\.md \(relative to \/abs\/p\) in full: its text is framing from the person, binding\./)
+  assert.match(rev, /When that file has a line starting "- Not confirmed by me yet", \/start-product assumed the framing/)
+  for (const l of ['review-1', 'review-2']) {
+    assert.match(framed.prompt(l), /The authors were told to follow this framing from the person as binding; a choice that follows it or an answer from the person is not a defect: FRAMING-TEXT: solo builder/, l)
+    assert.match(framed.prompt(l), /The authors were also told to treat the text of docs\/builder-context\.md \(read it\) as binding framing from the person/, l)
+    assert.match(framed.prompt(l), /Where an answer listed above and a saved one settle the same point differently, the one listed above is the newer and holds\./, l)
+  }
+  assert.doesNotMatch(framed.prompt('lint'), /builder-context|FRAMING-TEXT|design\/answers\.json/, 'the lint stage reads neither')
+  // A missing framing file is restored from the state branch by the first review, or the run fails before any revise.
+  assert.match(framed.prompt('review-1'), /If docs\/builder-context\.md \(relative to \/abs\/p\) does not exist, restore it before the review: python3 \.claude\/scripts\/pipeline-state\.py get context\/builder-context\.md --to docs\/builder-context\.md/)
+  const missing = await run('refresh-proposal', { ...RARGS, context_file: 'docs/builder-context.md' }, rp({ 'review-1': { findings: [], completed: false, doc_status: '', stop_reason: 'context_not_found: docs/builder-context.md does not exist and the state branch holds no context/builder-context.md' } }))
+  assert.equal(missing.result.status, 'failed')
+  assert.match(missing.result.stop_reason, /^context_not_found: docs\/builder-context\.md/)
+  assert.deepEqual(missing.calls.map(c => c.label), ['review-1'], 'no revise and no lint without the person\'s framing')
+  // An answer passed without its question text is named as such to the stages.
+  const bare = await run('refresh-proposal', { ...RARGS, answers: { 'revise.q1': 'yes' } }, rp({ 'review-1': concern }))
+  for (const l of ['review-1', 'revise-1']) assert.match(bare.prompt(l), /An entry above whose question equals its id was passed without its question text\. When its answer alone does not say what it settles, it settles nothing: never guess what it meant\./, l)
+  assert.ok(bare.logs.includes(NO_TEXT_LOG('revise.q1')), 'the run says so in its log')
+  assert.ok(!framed.logs.some(l => l.includes('without their question text')))
+  assert.doesNotMatch(framed.prompt('revise-1'), /passed without its question text/)
+})
+
+await test('refresh-proposal: what no person confirmed comes back with the lint, and the next steps say to show it before the doc is accepted', async () => {
+  const lint = { ...LINT_OK, unconfirmed: [{ id: 'D3', title: 'Data store', by: 'assumed' }, { id: 'D5', title: 'Queue', by: '' }], proposed: [{ line: 41, text: '   - Retention: 30 days (proposed)' }] }
+  const over = { 'review-1': { findings: [F('concern', 'c')], completed: true, doc_status: 'accepted' }, 'revise-1': { summary: 's', declined: [], lint_clean: true, assumptions: ['retention -> 30 days'] }, lint }
+  const { result } = await run('refresh-proposal', RARGS, rp(over))
+  assert.equal(result.status, 'clean')
+  assert.deepEqual(result.lint.unconfirmed, ['D3 "Data store" (assumed)', 'D5 "Queue" (untagged)'])
+  assert.deepEqual(result.lint.proposed, ['41: - Retention: 30 days (proposed)'])
+  const show = result.next_steps.findIndex(s => /show the person/.test(s))
+  const accept = result.next_steps.findIndex(s => /re-accept/.test(s))
+  assert.ok(show >= 0 && show < accept, 'shown before the step that says to re-accept')
+  assert.match(result.next_steps[show], /^Before docs\/design\/03-export\.md is accepted again, show the person this result's assumptions \(1\), lint\.unconfirmed \(2 decision\(s\) no person confirmed: D3 "Data store" \(assumed\); D5 "Queue" \(untagged\)\) and lint\.proposed \(1 value\(s\) an author proposed\)/)
+  // A decision confirmed as it stands is retagged by hand, with no re-run; one the person changes comes back as an answer.
+  assert.ok(result.next_steps[show].endsWith(', and ask them to confirm or correct each. A decision they confirm as it stands needs no re-run: its heading tag becomes (person, <today>, edit); ' +
+    'the person changes it while accepting the doc, or you make that one-line edit when the person says so (the tag only, never the Choice or any other text). ' +
+    "A (proposed) value they confirm as it stands has no tag to edit: it goes back as an answer like a change (the revise writes it as the person's and drops the label). " +
+    'A decision or a value they change goes back as an answer to a re-run of this workflow, its question naming the decision by title, with the date, ' +
+    "under the id a correction to this doc takes (architecture.d<N> for the architecture or the roadmap, m<N>.d<K> for milestone N's proposal, proposal.d<N> for a concern's proposal; revise.d<N> only for a doc no design run wrote), " +
+    'its number the next one not yet in use, an id in a (person, <date>, <id>) tag of the docs included. ' +
+    'The review reports what the doc does not yet reflect, and the revise applies it and tags the decision (person, <date>, <id>). A confirmation may be passed the same way when a re-run happens anyway.'))
+  // No revision and nothing assumed: the unconfirmed decisions alone are still shown, before a draft is accepted.
+  const only = await run('refresh-proposal', RARGS, rp({ lint: { ...LINT_OK, unconfirmed: lint.unconfirmed } }))
+  assert.match(only.result.next_steps[0], /^Before docs\/design\/03-export\.md is accepted, show the person this result's assumptions \(0\), lint\.unconfirmed \(2 decision/)
+  assert.equal(only.result.lint.proposed, undefined)
+  // A long list comes back capped, and says where the rest is.
+  const many = await run('refresh-proposal', RARGS, rp({ lint: { ...LINT_OK, proposed: Array.from({ length: 30 }, (_, i) => ({ line: i + 1, text: `value ${i} (proposed) ${'z'.repeat(500)}` })) } }))
+  assert.equal(many.result.lint.proposed.length, 21)
+  assert.ok(many.result.lint.proposed.every(l => l.length <= 200))
+  assert.match(many.result.lint.proposed.at(-1), /^… 10 more: python3 \.claude\/scripts\/proposal-lint\.py docs\/design\/03-export\.md --decisions lists them all$/)
 })
 
 await test('refresh-proposal: --roadmap reaches the review; findings about other docs are reported, never revised', async () => {
@@ -387,6 +624,15 @@ await test('refresh-proposal: lint errors after a clean review leave findings_re
   const noLint = await run('refresh-proposal', RARGS, rp({ lint: null }))
   assert.equal(noLint.result.status, 'failed')
   assert.match(noLint.result.stop_reason, /lint stage failed to report/)
+  // A run that failed after a revise assumed something never ran the lint: the step says where the lists are, and blames no lint failure.
+  const assumed = { 'review-1': { findings: [F('concern', 'c')], completed: true, doc_status: 'draft' }, 'revise-1': { summary: 's', declined: [], lint_clean: true, assumptions: ['retention -> 30 days'] }, 'review-2': null }
+  const cut = await run('refresh-proposal', { ...RARGS, on_question: 'assume' }, rp(assumed))
+  assert.equal(cut.result.status, 'failed')
+  assert.equal(cut.result.lint, null)
+  assert.ok(!cut.calls.some(c => c.label === 'lint'))
+  const step = cut.result.next_steps.find(s => /show the person/.test(s))
+  assert.match(step, /^Before docs\/design\/03-export\.md is accepted, show the person this result's assumptions \(1\) and what python3 \.claude\/scripts\/proposal-lint\.py docs\/design\/03-export\.md --decisions lists as unconfirmed and proposed \(this run has no lint result, so it holds neither list\), and ask them to confirm or correct each\./)
+  assert.doesNotMatch(step, /the lint failed|not read/)
 })
 
 await test('refresh-proposal: an architecture\'s CLAUDE.md drift and a stale checkout reach the next steps', async () => {
@@ -407,8 +653,15 @@ await test('refresh-proposal: on_question assume tells the reviser to proceed an
   const { result, prompt } = await run('refresh-proposal', { ...RARGS, on_question: 'assume' }, rp(over))
   assert.equal(result.status, 'clean')
   assert.match(prompt('revise-1'), /proceed on assumptions/)
+  assert.match(prompt('revise-1'), /for a confirmation the unconfirmed value; for a conflict with what the person said, what the person said/)
+  assert.match(prompt('revise-1'), /tag a decision so taken \(assumed\) in the doc/)
   assert.doesNotMatch(prompt('revise-1'), /return every such question/)
+  // The reviewer is told the same, so a decision the reviser tags (assumed) does not come back as a concern every round.
+  assert.match(prompt('review-1'), /The person chose to proceed on assumptions, so a decision tagged \(assumed\) is not a defect\./)
+  const stop = await run('refresh-proposal', RARGS, rp(over))
+  assert.match(stop.prompt('review-1'), /A person-owned decision tagged \(assumed\), or \(source\) when the source was drafted for the person \(.*\), is a concern whose fix is the question to ask\. The person-owned choices: who the product is for/)
   assert.deepEqual(result.assumptions, [{ stage: 'revise', assumption: 'retention -> 30 days' }])
+  assert.ok(result.next_steps.some(s => /show the person this result's assumptions \(1\)/.test(s)), 'an assumption is shown before the doc is accepted')
   await assert.rejects(run('refresh-proposal', { dir: '/abs/p' }, rp()), /args\.doc/)
   await assert.rejects(run('refresh-proposal', { doc: DOC }, rp()), /args\.dir/)
   await assert.rejects(run('refresh-proposal', { ...RARGS, doc: `${DOC} --roadmap` }, rp()), /no spaces or flags/)

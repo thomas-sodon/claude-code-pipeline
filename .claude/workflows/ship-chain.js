@@ -5,16 +5,19 @@ export const meta = {
   phases: [
     { title: 'Lookup', detail: 'per lane: any PR already open or merged for its branch; fill a placeholder title from its steps' },
     { title: 'Ship', detail: 'plan-to-merged-pr ship-only (or monitor-only for a PR already open), predecessor_prs filled with the merged PRs above' },
-    { title: 'Wait', detail: 'poll the PR until it reads MERGED (a person merges it); stop on CLOSED or at the wait cap' },
+    { title: 'Wait', detail: 'poll the PR until it reads MERGED (a person merges it); re-run its monitor when the PR needs action (at most 3 times per lane); stop on CLOSED or at the wait cap' },
     { title: 'Close-out', detail: 'once the last lane merged, with a proposal: one plan-to-merged-pr monitor-only round reports the close-out edits (read-only)' },
   ],
 }
 
 // args: { chain: { chain, order: [{ lane, branch, steps?, args }] }, title_prefix?, max_wait_rounds?, answers?, ...shared ship settings }
 //   chain           — one entry of proposal-build-chain's derive-mode ship_plan (its ship_chain_args.chain), lanes in merge order;
-//                     each lane's args are plan-to-merged-pr ship-only args ({ ship_only: true, branch, dir, title, proposal, plan_text?, predecessor_prs? })
+//                     each lane's args are plan-to-merged-pr ship-only args ({ ship_only: true, branch, dir, title, proposal, plan_ref? | plan_text?, repo?, predecessor_prs? })
 //   title_prefix    — prepended to every lane's PR title (e.g. '[status page] '), unless the title already starts with it
-//   max_wait_rounds — default 48: wait rounds per lane, each polling the PR for up to ~30 minutes, before the run stops with not_merged
+//   max_wait_rounds — default 48: wait rounds per lane, each polling the PR for up to ~30 minutes, before the run stops with not_merged.
+//                     A round that ends with the PR still open and needing action (a person's comment with no reply after it,
+//                     requested changes, a conflict with its base, a red check) re-runs the lane's monitor
+//                     (plan-to-merged-pr monitor-only), at most 3 times per lane; past that the wait only reports, in wait_notes
 //   main_branch, ai_review_check, required_checks, gate, commit_trailers, max_monitor_rounds, efforts, on_question
 //                   — shared ship settings; each one given here overrides the lane's own args
 //   github_access   — 'gh' | 'connector' | '' (default: each lane's own, as the ship plan gives it, else ''): how the agents reach
@@ -24,7 +27,13 @@ export const meta = {
 //                     lane's plan-to-merged-pr run; given here, it overrides the lanes' own
 //   repo            — the repository's GitHub owner/name (default: each lane's own, as the ship plan gives it): what a missing
 //                     lane checkout is cloned from when no checkout of the repository is at hand; given here, it overrides
-//   answers         — [{ lane, id, answer }]: answers to the questions a needs_input result returned; each lane gets only its own
+//   answers         — [{ lane, id, answer, question?, date? }]: answers to the questions a needs_input result returned; each lane gets only its own.
+//                     One with no lane reaches every lane: that is for a decision the person made for the whole chain, under an id
+//                     no lane issues (intake.d<N>). The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor,
+//                     .q<N> or .d<N>) repeat across lanes, so one of those with no lane is refused when the chain has more than one lane.
+//                     So is an answer whose lane is no lane of the chain (it would reach nobody), and an { id: answer } map, which
+//                     cannot name a lane (an empty map means no answers). A chain builds nothing, so an assumption the person
+//                     corrects is no answer: they leave it as a review comment on that lane's PR, and the lane's monitor applies it
 // A lane's placeholder title (empty, or '<...>' as the ship plan writes it) is written from its proposal steps (steps, or the
 // numbers in the placeholder), else from the branch's own commits. predecessor_prs placeholders are replaced by the PR numbers
 // of the lanes above, as merged; numbers already given are kept.
@@ -35,9 +44,12 @@ export const meta = {
 // enables auto-merge: a person merges each PR.
 // A lane checkout (args.dir) that does not exist, e.g. in a new container, is recreated on the lane's branch from origin by
 // the first agent that works in it: here the lookup, and in a lane's own run its first stage.
-// Each lane record keeps a slim child result, { status, pr, final_state, handoff, closeout, assumptions, left_uncommitted },
-// final_state being a summary of the PR's last observed state: never the whole plan-to-merged-pr result (monitor actions,
-// observations, plan).
+// Each lane record keeps a slim child result, { status, stage, pr, final_state, handoff, closeout, reason, review_findings,
+// assumptions, left_uncommitted }, each only when the lane's run has it: final_state is a summary of the PR's last observed
+// state, reason one line saying what stopped the run, review_findings the blocking ones (bug and concern), one line each.
+// Never the whole plan-to-merged-pr result (monitor actions, observations, plan). When the wait re-ran the monitor, the record
+// is that of the latest run, with the assumptions and left_uncommitted of the runs before it kept, and the lane also carries
+// re_monitored (how many times). A stopped chain's stopped_at.reason carries the lane's reason.
 const A = args || {}
 const C = A.chain
 if (!C || !Array.isArray(C.order) || !C.order.length) throw new Error('ship-chain: pass args.chain, one entry of proposal-build-chain\'s ship_plan ({ chain, order: [{ lane, branch, args }] })')
@@ -62,6 +74,8 @@ const CHAIN = C.chain || keys[0]
 const mainOf = e => A.main_branch || (e.args && e.args.main_branch) || 'main'
 const PREFIX = A.title_prefix || ''
 const MAX_WAIT = A.max_wait_rounds ?? 48
+// How many times one lane's wait re-runs its monitor on a PR that needs action.
+const MAX_REMONITOR = 3
 const SHARED = {}
 for (const k of ['main_branch', 'ai_review_check', 'required_checks', 'gate', 'commit_trailers', 'max_monitor_rounds', 'efforts', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
 // An empty github_access is no override: each lane keeps its own (from the ship plan), else the Pipeline config decides.
@@ -69,11 +83,24 @@ if (TOP_ACCESS) SHARED.github_access = TOP_ACCESS
 if (TOP_REPO) SHARED.repo = TOP_REPO
 const accessOf = e => TOP_ACCESS || normAccess(e.args.github_access)
 const repoOf = e => TOP_REPO || (e.args.repo ? String(e.args.repo).trim() : '')
-// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
+// Answers to a lane's questions go to that lane only. An answer with no lane goes to every lane, which is for a decision the
+// person made for the whole chain; an id a lane's own run issues repeats across lanes, so with no lane it could be read against
+// another lane's question: refused once the chain has more than one lane.
+// A map cannot name a lane, and an answer for a lane the chain does not have would reach nobody: both are refused before anything
+// runs, since dropped without a word the question would be asked again. An empty map holds no answer and is read as none.
+if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers) && (typeof A.answers !== 'object' || Object.keys(A.answers).length)) throw new Error('ship-chain: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
-const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
-  `Then re-run ship-chain with the same args plus answers: each question's lane and id with the person's answer. ` +
+const LANE_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']
+const LOOSE = ANSWERS.filter(a => !a.lane && LANE_SCOPES.includes(String(a.id || '').split('.')[0])).map(a => a.id)
+if (keys.length > 1 && LOOSE.length) throw new Error(`ship-chain: answers: ${LOOSE.join(', ')} ${LOOSE.length > 1 ? 'name' : 'names'} no lane; these ids repeat across lanes: pass the lane its question carried`)
+const STRAY = ANSWERS.filter(a => a.lane && !keys.includes(a.lane))
+if (STRAY.length) throw new Error(`ship-chain: answers: ${STRAY.map(a => `${a.id} (lane ${a.lane})`).join(', ')} ${STRAY.length > 1 ? 'name' : 'names'} no lane of this chain (lanes: ${keys.join(', ')}): fix the lane key, or leave the answer out`)
+const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
+  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
+  `Also show the person the assumptions of the lane that asked (lanes[].result.assumptions; its PR body lists the ones its build made). A line they correct is no answer: this chain builds nothing, so no stage would apply it. ` +
+  `The person leaves the correction as a review comment on that lane's PR, once it is open, and the lane's monitor applies it (its comment step). Only the answers to these questions go into answers. ` +
+  `Then re-run ship-chain with the same args plus answers: each question's lane, id and question text with the person's answer and the date they gave it, added to any answers given before. ` +
   `Lanes whose PR already merged are skipped; the lane that asked ships again with its answers (monitored, if its PR is already open).`
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route ` +
@@ -104,21 +131,41 @@ const recreate = (dir, branch, repo) =>
   `Never recreate it on any other branch. `
 // The error code an agent reported for a step it could not run at all ('' when none: an empty or "none" error is no error).
 const errorOf = r => { const m = r && typeof r.error === 'string' ? r.error.match(/\b(github_unavailable|gh_unauthenticated|gh_auth_failed|checkout_missing)\b/) : null; return m ? `error=${m[1]}` : '' }
-// A lane's plan-to-merged-pr result, slimmed for this result: its status, PR, a summary of the PR's last observed state, the
-// hand-off line, the close-out and any assumptions (so none is silent). Monitor actions, observations and plans stay out.
+const oneLine = t => String(t || '').replace(/\s+/g, ' ').trim()
+// A lane's plan-to-merged-pr result, slimmed for this result: its status, the stage that stopped it, its PR, a summary of the
+// PR's last observed state, the hand-off line, the close-out, what stopped it (one line, and the blocking review findings) and
+// any assumptions (so none is silent). Monitor actions, observations and plans stay out.
 const slim = r => {
   if (!r) return null
   const f = r.final_state
+  // What stopped the run: a blocked merge check or PR stage, a stage's stop reason, or the text of a merge check that was not green.
+  const why = (r.merge_check && r.merge_check.blocked_reason) || (r.pr_stage && r.pr_stage.blocked_reason) || r.stop_reason ||
+    (r.status === 'blocked_at_merge_check' && r.merge_check && r.merge_check.merge_check)
+  const defects = (Array.isArray(r.review_findings) ? r.review_findings : []).filter(d => d && (d.severity === 'bug' || d.severity === 'concern'))
   return {
     status: r.status,
+    ...(r.stage ? { stage: r.stage } : {}),
     ...(r.pr ? { pr: r.pr } : {}),
     ...(f ? { final_state: { pr_state: f.pr_state, head_sha: f.head_sha, ci_state: f.ci_state, ai_review_done_on_head: f.ai_review_done_on_head, actionable_comments: f.actionable_comments, has_conflicts: f.has_conflicts, behind_main: f.behind_main } } : {}),
     ...(r.handoff ? { handoff: r.handoff } : {}),
     ...(r.closeout ? { closeout: r.closeout } : {}),
+    ...(why ? { reason: oneLine(why) } : {}),
+    ...(defects.length ? { review_findings: defects.map(d => oneLine(`${d.severity}: ${d.file ? `${d.file}: ` : ''}${d.description}`)) } : {}),
     ...(Array.isArray(r.assumptions) && r.assumptions.length ? { assumptions: r.assumptions } : {}),
     // Files the lane's commits kept out on purpose (the brief, the builder context): a person decides what becomes of them.
     ...(Array.isArray(r.left_uncommitted) && r.left_uncommitted.length ? { left_uncommitted: r.left_uncommitted } : {}),
   }
+}
+// The record of a monitor the wait ran again replaces the lane's earlier one, keeping what the earlier runs assumed and left uncommitted.
+// That monitor was passed the earlier assumptions and lists them back: each line is kept once.
+const carry = (prev, next) => {
+  if (!prev) return next
+  const assumptions = []
+  for (const a of [...(prev.assumptions || []), ...(next.assumptions || [])]) {
+    if (a && !assumptions.some(x => x.stage === a.stage && String(x.assumption) === String(a.assumption))) assumptions.push(a)
+  }
+  const left = [...new Set([...(prev.left_uncommitted || []), ...(next.left_uncommitted || [])])]
+  return { ...next, ...(assumptions.length ? { assumptions } : {}), ...(left.length ? { left_uncommitted: left } : {}) }
 }
 const isPlaceholder = t => !t || /^\s*<[^>]*>\s*$/.test(String(t))
 const stepsOf = e => (Array.isArray(e.steps) && e.steps.length ? e.steps : (String(e.args.title || '').match(/\d+/g) || [])).map(Number).filter(n => Number.isInteger(n) && n > 0)
@@ -142,6 +189,7 @@ const WAIT_SCHEMA = {
   properties: {
     state: { type: 'string', enum: ['OPEN', 'MERGED', 'CLOSED'] },
     notes: { type: 'string', description: 'anything a person should know while it stays open: conflicts, red CI, unanswered review comments, requested changes' },
+    needs_monitor: { type: 'boolean', description: 'true only if the PR is still OPEN at the end of the round and needs action from the pipeline: a person\'s review thread or top-level comment with no reply after it, requested changes, a conflict with its base, or a red check. false when it only waits for a person to merge it, and for a draft' },
     error: { type: 'string', description: 'only when the PR could not be read at all: the error, e.g. error=github_unavailable or error=checkout_missing (state is then ignored); omit it otherwise' },
   },
   required: ['state'],
@@ -186,12 +234,17 @@ async function waitRound(e, n, r) {
       `Poll gh pr view ${n} --json state,mergedAt every ~60 seconds with the Monitor tool's until-loop ` +
       `(never a foreground sleep), for at most ~30 minutes, and stop polling as soon as state reads MERGED or CLOSED. ` +
       `If it is still OPEN at the end, report OPEN and, in notes, anything holding it: merge conflicts (gh pr view ${n} --json mergeable,mergeStateStatus), ` +
-      `red checks (gh pr checks ${n}), unresolved review threads, requested changes, or that it is a draft.`,
+      `red checks (gh pr checks ${n}), unresolved review threads (GraphQL reviewThreads: isResolved, comments with author.login), top-level comments and requested changes (gh pr view ${n} --json comments,reviews,reviewDecision), or that it is a draft.`,
       `Poll it with GitHub MCP reads and timed waits: read the PR (pull_request_read method get: its state, and merged), and while it is open make a timed wait of about 3 minutes with the Monitor tool, ` +
       `never a foreground sleep: an until-loop on the clock (end=$(( $(date +%s) + 180 )); until [ "$(date +%s)" -ge "$end" ]; do sleep 15; done; echo waited), then read again. ` +
       `Keep this up for at most ~30 minutes, and stop as soon as it reads merged (MERGED) or closed unmerged (CLOSED). ` +
       `If it is still open at the end, report OPEN and, in notes, anything holding it, read the same way: merge conflicts (mergeable_state dirty), red checks (pull_request_read get_check_runs and get_status), ` +
-      `unresolved review threads (get_review_comments), requested changes (get_reviews), or that it is a draft.`) +
+      `unresolved review threads (get_review_comments), top-level comments (get_comments), requested changes (get_reviews), or that it is a draft.`) +
+    `\nSet needs_monitor=true only when the PR is still OPEN at the end of the round and at least one of these holds: ` +
+    `an unresolved review thread whose latest comment is a person's: written by a real user, not a bot, and not one of this pipeline's own replies (those start with Fixed locally, Could not prove this defect, Declined with, Answered with, Tracked in # or Surfaced for human review); ` +
+    `a top-level comment from a real user that asks for a change or asks a question and whose id is on no line of the PR's <!-- pipeline:human-ack --> comment (the pipeline's own roll-up comments, which carry <!-- pipeline:human-ack --> or <!-- pipeline:overflow-ack -->, never count); ` +
+    `a review that requested changes and was neither dismissed nor followed by that reviewer's approval; the PR conflicts with its base; a check is red. ` +
+    `Otherwise set it false: a PR that only waits for a person to merge it, a check still pending, and a draft need no action from the pipeline. You still change nothing and post nothing: on needs_monitor the workflow runs the lane's monitor again.` +
     `\nIf the PR cannot be read at all (the access in use is unavailable, or the checkout is missing and could not be recreated), report the error code in error.`,
     { label: `wait-${e.lane}-${r}`, phase: 'Wait', effort: 'low', schema: WAIT_SCHEMA },
   )
@@ -261,19 +314,45 @@ for (let i = 0; i < C.order.length && !stop; i++) {
   if (status === 'MERGED' && pr) { merged.push(pr.pr_number); continue }
   if (status === 'CLOSED') { stop = { lane: e.lane, status: 'closed', reason: `PR #${pr ? pr.pr_number : '?'} was closed without merging` }; break }
   if (status !== 'OPEN' || !pr || !pr.pr_number) {
-    stop = { lane: e.lane, status: 'lane_failed', reason: `plan-to-merged-pr ended with ${status}${r && r.merge_check && r.merge_check.blocked_reason ? `: ${r.merge_check.blocked_reason}` : ''}` }
+    // Why the lane's run stopped, as its slim record has it: the reason, and how many blocking findings (listed in result.review_findings).
+    const why = (entry.result && entry.result.reason) || ''
+    const nDefects = ((entry.result && entry.result.review_findings) || []).length
+    stop = { lane: e.lane, status: 'lane_failed', reason: `plan-to-merged-pr ended with ${status}${why ? `: ${why}` : ''}` +
+      (nDefects ? `${why ? ';' : ':'} ${nDefects} blocking review finding(s), listed in this lane's result.review_findings` : '') }
     break
   }
 
   // ---- Wait: the next lane's PR must not exist until this one has merged.
+  // A round that leaves the PR open and needing action (a person's comment, requested changes, a conflict, a red check) re-runs
+  // the lane's monitor, at most MAX_REMONITOR times per lane; past that the wait only reports, and ends not_merged at its cap.
   phase('Wait')
-  let state = 'OPEN', notes = '', waitError = ''
-  for (let w = 1; w <= MAX_WAIT && state === 'OPEN'; w++) {
+  let state = 'OPEN', notes = '', waitError = '', remonitors = 0
+  for (let w = 1; w <= MAX_WAIT && state === 'OPEN' && !stop; w++) {
     const o = await waitRound(e, pr.pr_number, w)
     waitError = errorOf(o)
     if (waitError) break
-    if (o) { state = o.state; notes = o.notes || notes }
+    if (!o) continue
+    state = o.state
+    notes = o.notes || notes
+    if (state !== 'OPEN' || o.needs_monitor !== true || remonitors >= MAX_REMONITOR) continue
+    remonitors++
+    entry.re_monitored = remonitors
+    log(`Lane ${e.lane}: PR #${pr.pr_number} is open and needs action${o.notes ? ` (${oneLine(o.notes)})` : ''} — monitoring it again (${remonitors} of ${MAX_REMONITOR})`)
+    phase('Ship')
+    let m = null
+    // What the lane's runs so far assumed goes with it, so the monitor's steps keep each choice and its result lists them.
+    const assumed = (entry.result && entry.result.assumptions) || []
+    try { m = await workflow('plan-to-merged-pr', { ...common, pr: pr.pr_number, ...(assumed.length ? { assumptions: assumed } : {}) }) } catch (err) { log(`Lane ${e.lane}: ${err && err.message ? err.message : err}`) }
+    phase('Wait')
+    if (!m) continue
+    entry.result = carry(entry.result, slim(m))
+    if (m.status === 'needs_input') {
+      entry.status = 'needs_input'
+      entry.questions = (m.questions || []).map(q => ({ lane: e.lane, ...q }))
+      stop = { lane: e.lane, status: 'needs_input', reason: `stage ${m.stage || '?'} asked questions only the person can answer` }
+    } else if (m.status === 'MERGED' || m.status === 'CLOSED') state = m.status
   }
+  if (stop) break
   if (waitError) {
     log(`Lane ${e.lane}: PR #${pr.pr_number} could not be read while waiting (${waitError})`)
     stop = { lane: e.lane, status: 'lane_failed', reason: `PR #${pr.pr_number} could not be read while waiting for its merge (${waitError}); restore the access, then re-run ship-chain with the same args` }
@@ -285,7 +364,7 @@ for (let i = 0; i < C.order.length && !stop; i++) {
   if (state === 'MERGED') { merged.push(pr.pr_number); continue }
   stop = state === 'CLOSED'
     ? { lane: e.lane, status: 'closed', reason: `PR #${pr.pr_number} was closed without merging` }
-    : { lane: e.lane, status: 'not_merged', reason: `PR #${pr.pr_number} is still open after ${MAX_WAIT} wait round(s)${notes ? `: ${notes}` : ''}; merge it, then re-run ship-chain with the same args` }
+    : { lane: e.lane, status: 'not_merged', reason: `PR #${pr.pr_number} is still open after ${MAX_WAIT} wait round(s)${remonitors ? ` and ${remonitors} more monitor run(s)` : ''}${notes ? `: ${notes}` : ''}; merge it, then re-run ship-chain with the same args` }
 }
 
 // ---- Close-out: the chain's last PR merged. Report whether the proposal is now complete on main and the edits a person makes.

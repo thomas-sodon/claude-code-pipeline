@@ -10,12 +10,15 @@ The state branch (default pipeline/state; --branch or env PIPELINE_STATE_BRANCH
 overrides) holds what the pipeline must not lose with a container: the
 orchestrator's handoff (STATE.md), lane plans (plans/<branch-slug>.md), review
 ledgers (reviews/<branch-slug>.json, reviews/proposal-<doc-slug>.json), the design
-panel's synthesis (design/panel-synthesis.md) and run records
-(runs/<YYYYMMDDTHHMMSSZ>-<workflow>.json). It is never main and never
-force-pushed. It is written without a checkout, with git plumbing and a temporary
-index (GIT_INDEX_FILE), so any worktree of the repository can save to it while its
-own branch stays checked out, and nothing in the working tree or the real index
-changes.
+panel's synthesis (design/panel-synthesis.md), the answers the person gave a
+design run (design/answers.json; a concern-mode run's go to
+design/answers-concern.json, which no run restores), run records
+(runs/<YYYYMMDDTHHMMSSZ>-<workflow>.json) and, only when the person consented to
+keep it there, the builder context (context/builder-context.md). It is never main
+and never force-pushed. It is written without a checkout, with git plumbing and a
+temporary index (GIT_INDEX_FILE), so any worktree of the repository can save to it
+while its own branch stays checked out, and nothing in the working tree or the real
+index changes.
 
 save SRC     store the file SRC at PATH (--as; default SRC's basename; SRC "-"
              reads stdin and then needs --as). It fetches origin's tip, builds a

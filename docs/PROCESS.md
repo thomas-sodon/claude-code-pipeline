@@ -10,7 +10,12 @@ described in the [README](../README.md#the-workflows); args and statuses are in
 Rounded boxes are steps a workflow or command runs; hexagons are steps only a
 person does; dashed red boxes are the gaps listed below the diagram that are still
 open, amber ones are partly fixed, and green ones are fixed (each gap's *Status:*
-line says what was done).
+line says what was done). A `needs_input` edge is a stage that stops to ask:
+the run returns its questions, the person answers them, and the re-run goes on as
+the result's relay says. `refresh-proposal` stops the same way, and
+`proposal-build-chain`, `ship-chain` and `bug-fix-backlog` carry a lane's questions
+up in their own results. Where and how often the person is asked is listed in the
+[README](../README.md#when-you-are-asked).
 
 ```mermaid
 flowchart TD
@@ -22,34 +27,40 @@ flowchart TD
 
   subgraph INSTALL["Install / update (any repo)"]
     clone{{"Clone a repo with origin<br/>(new product: a first commit on main)"}}:::human
-    start("/start-product brief repo<br/>verdict check, brief + builder context,<br/>setup checklist")
+    start("/start-product brief repo<br/>verdict and repo checks, its one batch of questions;<br/>then brief + builder context, setup checklist,<br/>the design call with answers")
+    sask{{"Answer its one batch: builder framing,<br/>the brief's choices, the repository,<br/>what the state branch keeps"}}:::human
     seed("/seed or pipeline-sync.py<br/>.claude files + manifest,<br/>base CLAUDE.md")
     upd("pipeline-sync.py --update<br/>or pipeline-update.yml PR")
     clone -- "new product" --> start
+    start -- "asks, before any write" --> sask
     clone -- "existing repo" --> seed
     seed -. "later" .-> upd
   end
 
   subgraph DESIGN["Design: brief-to-proposals, checkpointed on design/date"]
-    intake("Intake: blocking questions?")
-    ask{{"Answer questions<br/>re-run with answers and from"}}:::human
+    intake("Intake: the person's choices, class by class:<br/>blocking questions and confirmations?")
+    ask{{"Answer the batch, review the assumptions;<br/>re-run with every answer and from"}}:::human
     panel("Architecture panel<br/>3 sketches, judge, synthesis")
     roadmap("/roadmap<br/>architecture.md, roadmap.md")
     rrev("/review-proposal + /propose --revise<br/>until no bug/concern")
     props("/propose --milestone=N<br/>per code milestone, reviewed")
-    cons("Consistency, two docs at a time;<br/>lint, lane preview")
-    intake -- "needs_input" --> ask --> intake
+    cons("Consistency, two docs at a time;<br/>lint, lane preview, unconfirmed<br/>decisions and proposed values")
+    intake -- "needs_input" --> ask
+    ask -- "starts again at resume_from" --> intake
+    panel & roadmap & rrev & props & cons -. "needs_input" .-> ask
     intake --> panel --> roadmap --> rrev --> props --> cons
   end
 
-  accept{{"Read, edit, set Status: accepted"}}:::human
+  accept{{"Confirm or correct what nobody confirmed<br/>(assumptions, unconfirmed decisions,<br/>proposed values); read, edit,<br/>set Status: accepted"}}:::human
   landdesign{{"Land the design branch<br/>on main via PR"}}:::human
 
   subgraph BOOT["Bootstrap (greenfield only)"]
-    bgates{{"Do the gates Bootstrap waits on<br/>(name, licence: tick + Outcome)"}}:::human
-    boot("bootstrap-repo<br/>/bootstrap: skeleton, CI, gates green,<br/>1 commit on bootstrap/date;<br/>then plan-to-merged-pr ship_only")
-    bmerge{{"Merge, protect main,<br/>add secrets, tick Bootstrap gate<br/>via docs PR"}}:::human
+    bgates{{"Do the gates Bootstrap depends on, if any<br/>(an outside party or an account:<br/>tick + Outcome)"}}:::human
+    boot("bootstrap-repo<br/>/bootstrap: its questions first, then skeleton,<br/>CI, gates green, 1 commit on bootstrap/date;<br/>then plan-to-merged-pr ship_only")
+    bask{{"Answer /bootstrap's questions<br/>(copyright holder, licence conflict,<br/>a published name, an unconfirmed name<br/>or licence); re-run with answers"}}:::human
+    bmerge{{"Check the PR's Assumptions to review<br/>(correct one with a review comment);<br/>merge, protect main,<br/>add secrets, tick Bootstrap gate<br/>via docs PR"}}:::human
     bgates --> boot --> bmerge
+    boot -. "needs_input" .-> bask --> boot
   end
 
   landdocs{{"Existing repo: land .claude,<br/>CLAUDE.md and docs via PR"}}:::human
@@ -66,32 +77,36 @@ flowchart TD
   end
 
   subgraph LANE["Lane engine: plan-to-merged-pr"]
-    plan("/plan  grounded plan")
+    plan("/plan  grounded plan,<br/>saved to the state branch")
     impl("/impl  tests first")
     review("/review-changes + fixer<br/>until no bug/concern")
     polish("/polish until clean")
-    mcheck("merge origin/main, gates,<br/>tick proposal steps, push")
-    pr("/create-pr")
+    mcheck("merge origin/main, gates,<br/>tick proposal steps, push;<br/>plan saved with its assumptions")
+    pr("/create-pr<br/>body: Assumptions to review")
     mon("Monitor: CI, AI review,<br/>conflicts, comments")
+    lask{{"Answer the stage's questions,<br/>review its assumptions;<br/>re-run with answers"}}:::human
     plan --> impl --> review --> polish --> mcheck
     mcheck -- "build-only" --> pushed["pushed, no PR"]:::stop
     mcheck -- "full / ship-only" --> pr --> mon
     mon -- "merge-main / process-comments / fix-ci" --> mon
+    plan & impl & review & polish & mcheck & mon -. "needs_input" .-> lask
+    lask -. "continues from the saved plan" .-> plan
+    lask -. "a monitor question: monitor-only" .-> mon
   end
 
   shiplane("ship-chain: after each PR below merges,<br/>run ship_only with predecessor_prs")
-  merge{{"Review and merge the PR"}}:::human
-  closeout{{"Apply the reported closeout:<br/>Status: done, tick roadmap milestone"}}:::human
+  merge{{"Read its Assumptions to review<br/>(correct one with a review comment);<br/>review and merge the PR"}}:::human
+  closeout{{"Check the milestone's Acceptance;<br/>apply the reported closeout:<br/>Status: done, tick roadmap milestone"}}:::human
 
   subgraph ORCH["The orchestrating session, at any step"]
     guard("Context guard: at 40% of the window,<br/>no new work; auto-compaction blocked")
-    handoff("/handoff<br/>STATE.md on pipeline/state")
-    newsess{{"New session in the repo:<br/>Continue from the pipeline handoff"}}:::human
+    handoff("/handoff<br/>STATE.md on pipeline/state: answers,<br/>standing rules, assumptions to review")
+    newsess{{"New session in the repo:<br/>Continue from the pipeline handoff;<br/>answer its open questions, confirm<br/>or correct its assumptions"}}:::human
     guard --> handoff --> newsess
   end
 
   subgraph BUGS["Bugs: bug-fix-backlog"]
-    lanes{{"Confirm the lanes the Intake<br/>proposes (key, issues)"}}:::human
+    lanes{{"Confirm the lanes the Intake<br/>proposes (key, issues), and that issues<br/>found fixed may be closed in public"}}:::human
     triage("/bug-fix --dry-run triage")
     verify("Verify: reproducer + skeptic,<br/>or two refuters")
     close("Close confirmed-fixed issues")
@@ -101,7 +116,7 @@ flowchart TD
     verify --> nh
   end
 
-  start --> intake
+  sask -- "run the printed call" --> intake
   seed --> intake
   cons -- "docs, all draft" --> accept
   accept -- "greenfield" --> landdesign --> bgates
@@ -126,11 +141,12 @@ flowchart TD
   G8["G8 partly fixed: Intake proposes<br/>lanes from issues, no production intake"]:::partial
   G9["G9 fixed: sync reports the<br/>CLAUDE.md section diff"]:::fixed
   G10["G10 partly fixed: guard + /handoff;<br/>no hooks in multi-repo cloud sessions"]:::partial
-  G11["G11 partly fixed: state branch;<br/>brief and builder context stay local"]:::partial
+  G11["G11 partly fixed: state branch;<br/>brief local, builder context by consent"]:::partial
   G12["G12 fixed: re-runs start from<br/>from, plan_ref, recreated checkouts"]:::fixed
   G13["G13 partly fixed: size budgets;<br/>older docs fail them"]:::partial
   G14["G14 partly fixed: gh or connector;<br/>connector in workflow runs unverified"]:::partial
   G15["G15 partly fixed: /start-product;<br/>repo and first commit by hand"]:::partial
+  G16["G16 partly fixed: choices asked, answers kept;<br/>lanes have no up-front question pass"]:::partial
   G1 -.- shiplane
   G2 -.- merge
   G3 -.- closeout
@@ -146,6 +162,7 @@ flowchart TD
   G13 -.- cons
   G14 -.- pr
   G15 -.- start
+  G16 -.- ask
 ```
 
 ## Gaps in the flow
@@ -162,13 +179,17 @@ several chains of three or four lanes, that is a lot of manual sequencing and th
 most likely place for a lane to be forgotten.
 *Fix:* a `ship-chain` mode (or workflow) that takes one `ship_plan` chain, ships the
 first lane, monitors it until it reads `MERGED`, then fills `predecessor_prs` and
+ships the next, stopping on anything other than `MERGED`.
 *Status:* fixed. The `ship-chain` workflow takes one chain's `ship_chain_args` from
 `proposal-build-chain`'s `ship_plan`, ships each lane in ship-only mode with
 `predecessor_prs` filled in from the merged PRs below it, waits until the PR reads
 `MERGED`, and stops on `needs_input`, `closed`, `not_merged` or `lane_failed`; a
-re-run skips merged lanes and picks up an open PR. While it waits it does not act
-on new comments, conflicts or red CI (it reports them in `wait_notes` and stops
-`not_merged` at the wait cap; a re-run monitors that PR again).
+re-run skips merged lanes and picks up an open PR. While it waits, a round that
+finds the PR open and needing action (a person's comment with no reply after it,
+requested changes, a conflict, a red check) runs the lane's monitor again, at most
+three times per lane, and a question that run returns stops the chain with
+`needs_input`. Past that the wait only reports (`wait_notes`) and stops
+`not_merged` at the wait cap; a re-run monitors that PR again.
 
 **G2. No watch after the monitor hands off.** The monitor stops after two quiet
 rounds with green CI, or after `max_monitor_rounds` (default 10), and leaves the PR
@@ -274,8 +295,10 @@ and proposes the `lanes` for the person to confirm.
 runs a read-only Intake: it lists open issues with `labels`, groups those that share
 a code site into lanes, sets aside ones an open PR already closes, reports red CI
 on `main`, and stops with the proposed lanes for the person to confirm (even with
-`on_question: 'assume'`). Still open: red CI is only reported, nothing files issues
-from incidents or user reports, and there is no post-release step.
+`on_question: 'assume'`). Its question says what confirming them also allows: an
+issue found already fixed is closed in public, unless the re-run passes
+`close: false`, which only reports it. Still open: red CI is only reported, nothing
+files issues from incidents or user reports, and there is no post-release step.
 
 **G9. `CLAUDE.md`'s base sections never update.** Pipeline updates (below) change
 the commands, but `## How work happens here`, written once by `/seed`, is never
@@ -314,7 +337,12 @@ line or, without one, from the transcript's token counts, a format Claude Code d
 not document; whether the status line runs in cloud sessions is not verified; and
 the guard and `/handoff` act on the repository the session runs in, so an
 orchestrator in the pipeline checkout (where `/start-product` runs) hands off to the
-wrong repository.
+wrong repository; and the first design run of a new product seeds the repository
+after its session started, so that session loaded no `CLAUDE.md`, command or guard:
+the run's relay and next steps tell it to read `CLAUDE.md`'s
+`## How work happens here`, to start every other workflow from a new session, and
+to hand off first by reading and following `.claude/commands/handoff.md` (it
+cannot invoke the command by name), and nothing enforces any of the three.
 
 **G11. State lived outside the repo.** Plans, review ledgers and the design panel's
 synthesis lived in `~/.claude/` or only in a run, so a cloud container took them
@@ -323,11 +351,17 @@ with it, and a new session had only the repository to go on.
 *Status:* partly fixed. `.claude/scripts/pipeline-state.py` saves files to
 `pipeline/state` on origin without a checkout: `STATE.md`, each lane's plan
 (`plans/<branch-slug>.md`), the review ledgers (restored when the local copy is
-missing) and the panel synthesis
+missing), the panel synthesis, and the answers a design run was given with what
+its Intake took as given (`design/answers.json`, restored by a later run; the
+person can keep them off the branch, `save_answers: false`)
 ([REFERENCE.md](REFERENCE.md#the-state-branch)). Saves are best effort, and a
-branch rule that blocks new branches blocks them too. The brief and the builder
-context stay local by design, since the branch is as visible as the repository: a
-new container needs both copied back from their source, which the handoff records.
+branch rule that blocks new branches blocks them too. The brief stays local by
+design, since the branch is as visible as the repository: a new container needs it
+copied back from its source, which the handoff records. The builder context is
+kept on the branch (`context/builder-context.md`) only when the person consented,
+and a design run or `refresh-proposal` then restores it, listing it in the
+checkout's local exclude file again; without that consent it is local too, and
+the person rewrites it or copies it back.
 
 **G12. Re-running in a new session started over.** `resumeFromRunId` replays a run
 only in the session that ran it. A design re-run after the docs existed repeated
@@ -339,11 +373,17 @@ is.
 *Status:* fixed for the design and shipping workflows. `brief-to-proposals` starts
 at `from`, inferred from the answers and the docs on disk, and a `needs_input`
 result names `resume_from`; with `branch` it checkpoints the docs on a design
-branch, so a fresh clone continues them. Lanes save their plans (`plan_ref`),
-ship-only and monitor-only runs restore them and recreate a missing checkout from
-origin, and `proposal-build-chain` and `ship-chain` results carry references, not
-plans ([REFERENCE.md](REFERENCE.md#resuming-in-this-session-or-a-new-one)).
-`bug-fix-backlog` is unchanged.
+branch, so a fresh clone continues them. A lane saves its plan (`plan_ref`) when
+planning ends and again at the merge check, so a lane that stopped on a later
+stage's question continues from that plan instead of planning again without the
+answer (`replan` plans again). Ship-only and monitor-only runs restore the plan
+and recreate a missing checkout from origin, and `proposal-build-chain` and
+`ship-chain` results carry references, not plans
+([REFERENCE.md](REFERENCE.md#resuming-in-this-session-or-a-new-one)). A
+`bug-fix-backlog` lane that stopped continues through `plan-to-merged-pr`, with the
+`resume_args` or `resume_monitor` its result carries, never through the backlog's
+triage. Work a lane has not committed and pushed lives only in its checkout: a
+new container builds it again from the saved plan, with the answers.
 
 **G13. Design docs outgrew an agent's context.** Architectures reached 155-204 KB
 and proposals up to 198 KB, so an agent building one milestone read 50k tokens or
@@ -385,15 +425,66 @@ with what time and money) reached the design authors only when the person passed
 `context`.
 *Fix:* a starter command.
 *Status:* partly fixed. `/start-product <brief> <repo>` checks the brief's verdict
-(and the idea ledger's newest row) and that the repository is new and clean, copies
-the brief to `docs/brief.md`, settles the builder framing in
-`docs/builder-context.md`, keeps both out of every commit, detects the GitHub
-access, and prints a setup checklist and the `brief-to-proposals` call. Still the
-person's: creating the repository and, when it is empty, pushing a first commit to
-`main` (else the design branch becomes the default branch and `/bootstrap` stops
-with `no_main`); and `GITHUB_ACCESS` is not written to `CLAUDE.md`, so it is passed
-to each workflow as `github_access`, or added to the Pipeline config once `/seed`
-has written it.
+(and the idea ledger's newest row) and that the repository is new and clean, and
+detects the GitHub access. Before it writes anything it asks the person, in one
+batch, what the brief chose for them: the builder framing, a confirmation for each
+product choice the idea skill made (the working name, the personal data collected
+and the accounts the brief implies among them), the repository's owner and
+visibility, and what the state branch keeps (the framing, and their answers).
+Only then does it copy the brief to `docs/brief.md` and write the framing to
+`docs/builder-context.md`; with no one to answer it writes nothing and stops
+with `error=needs_input`. It keeps both files out of every commit, and prints a
+setup checklist and the `brief-to-proposals` call, with each choice the person
+confirmed as an entry of its `answers` (`intake.d<N>`, with the question and the
+date), and with `save_answers: false` when the person keeps their answers off the
+state branch. Still the person's: creating the repository and, when it
+is empty, pushing a first commit to `main` (else the design branch becomes the
+default branch and `/bootstrap` stops with `no_main`); and `GITHUB_ACCESS` is not
+written to `CLAUDE.md`, so it is passed to each workflow as `github_access`, or
+added to the Pipeline config once `/seed` has written it.
+
+**G16. The pipeline chose for the person, and their answers did not last.** In a
+real product run the design Intake asked one question and took nine assumptions,
+most of them choices that were the person's to make. The brief had been drafted by
+a tool that never asked the person, and its defaults (a price, a licence, the
+platforms) were written into the docs as facts. Two choices the person had made
+binding were overturned, because the source won every conflict. Open decisions
+were parked in the Bootstrap gate, to be settled at acceptance. The person's
+decisions lived in one local file, rewritten by hand in every new container, and
+questions arrived one per design pass.
+*Fix:* ask the choices that are the person's, in batches and before writing; keep
+the answers; never overrule what the person said; show what was assumed.
+*Status:* partly fixed. The commands and workflows name the person-owned choices
+and ask each one that has no value, or a value nobody confirmed (a confirmation),
+in one batch: `/start-product` for what the brief chose or implies, the Intake
+class by class for what is left,
+the panel's judge, every author and reviser, `/bootstrap` before its first write,
+and each lane stage and monitor step when it meets one. What the person said
+replaces the brief on the same point and changes only on a newer answer from them;
+a reviewer reports a departure as a `bug` whose fix is the question. A choice the
+person can make now is never a gate. Every D-record says who decided it, and
+`proposal-lint.py --decisions` lists the ones no person confirmed and the
+`(proposed)` values ([PROPOSALS.md](PROPOSALS.md#who-decided)); a design result
+returns them (`lint.unconfirmed`, `lint.proposed`) with its assumptions, to show
+the person before a doc is accepted: a decision they confirm as it stands takes
+the tag `(person, <date>, edit)`; one they change, and a `(proposed)` value they
+confirm or change, goes back as an answer. A PR
+body lists its lane's under `## Assumptions to review`, and the person corrects
+one with a review comment on the PR, which the monitor applies. Answers carry
+their question and date, and an id is never reused for another question; a design
+run saves them to the state branch, with what its Intake took as given, and
+restores both (unless the person chose `save_answers: false`), and `/handoff`
+records them with the person's standing rules. Still open: the roadmap's
+20-milestone budget counts human gates like code milestones; a build lane has no
+up-front question pass, so a lane's questions still arrive one stage at a time;
+only the design run,
+`refresh-proposal`, `/bootstrap` and a `/start-product` re-run read the saved
+answers by themselves (a lane records its own in
+its saved plan and its PR body, which its ship-only and monitor-only runs read, and
+`resume_monitor` carries them; every other re-run takes them from its args, which
+the session carries through the handoff); and CI tests the workflows' prompts and
+the lint, and that each command a workflow tells how to ask defines the
+`needs_input` stop, but nothing tests the rules the commands state in prose.
 
 ### Still open
 

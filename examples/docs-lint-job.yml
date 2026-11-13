@@ -10,6 +10,9 @@
 #   Pipeline config marker: the ## Invariants and ## Testing bodies /bootstrap copied must still match the
 #   architecture's (E claude_md_drift). A CLAUDE.md /bootstrap never wrote is not checked.
 # Every docs PR (accepting a doc, ticking a gate, writing an `Outcome:`) is then linted before it merges.
+# Only errors fail the job. A doc written before every D-record heading said who decided it (a closing
+# `(person, <date>)`, `(source)` or `(assumed)` tag) draws the warning decision_untagged and still passes;
+# /propose --revise adds the tags, asking the person about the choices that are theirs.
 #
 # Setup:
 # - Set PROPOSALS_DIR to the value in your CLAUDE.md's Pipeline config.

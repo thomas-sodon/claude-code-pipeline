@@ -1,7 +1,7 @@
 export const meta = {
   name: 'bug-fix-backlog',
   description: 'Triage open bug issues with /bug-fix, adversarially verify each verdict (reproduce + refute), close the confirmed-fixed ones, and take each confirmed bug through plan-to-merged-pr',
-  whenToUse: 'Walking the open bug backlog: one lane per issue (or per group of issues that share a code site), each triaged, verified and shipped as its own PR. Without lanes, an Intake proposes them from the open bug issues and stops for the person to confirm them. See the pipeline README. A needs_input result carries questions only the person can answer: ask the person (never answer them yourself), then re-run with answers, as its relay says.',
+  whenToUse: 'Walking the open bug backlog: one lane per issue (or per group of issues that share a code site), each triaged, verified and shipped as its own PR. Without lanes, an Intake proposes them from the open bug issues and stops for the person to confirm them. See the pipeline README. A needs_input result (the Intake\'s, or one lane\'s) carries questions only the person can answer: ask the person (never answer them yourself), then re-run as its relay says: this workflow for the Intake\'s question, plan-to-merged-pr for a lane\'s.',
   phases: [
     { title: 'Intake', detail: 'without lanes: list open bug issues and red CI on main, propose lanes, stop for the person to confirm them' },
     { title: 'Triage', detail: '/bug-fix <n> --dry-run per issue, in the lane worktree' },
@@ -11,7 +11,7 @@ export const meta = {
   ],
 }
 
-// args: { lanes?: [Lane], intake?, labels?, dir?, root?, date?, gate?, main_branch?, ai_review_check?, github_access?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, ship?, close? }
+// args: { lanes?: [Lane], intake?, labels?, dir?, root?, date?, gate?, main_branch?, ai_review_check?, github_access?, commit_trailers?, max_review_rounds?, max_polish?, max_monitor_rounds?, efforts?, on_question?, ship?, close?, answers? }
 //   intake  — run the Intake (read-only) instead of taking lanes: it lists the open issues carrying any of labels and the red
 //             CI runs on the latest commits of main (report only), groups issues that share a code site, and the run stops
 //             with status needs_input (stage intake): one question whose recommended answer is the proposed lanes.
@@ -21,20 +21,44 @@ export const meta = {
 //   root    — directory for lane worktrees (required unless every lane gives its own dir; with the Intake, always)
 //   date    — suffix of the default lane branch names, e.g. '20261016' (default 'undated')
 //   ship    — default true; false = build only (push, no PR)
-//   close   — default true; false = report confirmed-fixed issues instead of closing them
+//   close   — default true: an issue that triage and two independent refuters find already fixed on main is closed in public,
+//             with a comment quoting the evidence (the Intake's question says so). false = close nothing: each lane result
+//             lists those issues in confirmed_fixed_unclosed and their prepared closes in prepared_closes
+//             ([{ number, close_reason, close_comment }]), for the person to post
 //   efforts — { intake, triage, verify, close } for this workflow's stages; the whole object is also passed to plan-to-merged-pr
 //   github_access — 'gh' or 'connector': how every agent reaches GitHub (.claude/scripts/github-access.md). Default '':
 //             the GITHUB_ACCESS line of the Pipeline config, else gh when it is authenticated, else the GitHub MCP tools
 //   gate, main_branch, ai_review_check, github_access, commit_trailers, max_review_rounds, max_polish, max_monitor_rounds,
 //             efforts, on_question and ship: false are passed through to plan-to-merged-pr; no other key is
-//   answers — [{ lane, id, answer }]: answers to the questions a lane's needs_input result returned; each lane gets only its own.
-//             The Intake's question is answered with [{ id: 'intake.q1', answer }] and no lane: the confirmed lanes as JSON
+//   answers — the Intake's question is answered with [{ id: 'intake.q1', answer }] and no lane: the confirmed lanes as JSON
 //             (an array of Lane: the recommended answer or the person's edit of it; '[]' runs nothing), or the accept
 //             option ('accept <fingerprint> …'), which runs the re-run's proposal only when it fingerprints the same as
-//             the one the person saw (a resumeFromRunId replay does); otherwise the run stops again with the new proposal
+//             the one the person saw (a resumeFromRunId replay does); otherwise the run stops again with the new proposal.
+//             A lane's own questions are not answered here (see below). An answer given here with a lane
+//             ([{ lane, id, answer, question?, date? }]) is still passed to that lane's plan-to-merged-pr run, and one with
+//             no lane to every lane's: that is for a decision the person made for the whole run, under an id no lane issues.
+//             The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor, .q<N> or .d<N>) repeat across
+//             lanes, so one of those with no lane is refused when the run has more than one lane. An intake id reaches no lane.
+//             An answer whose lane is no lane of the run would reach nobody, so it is refused too, and so is an
+//             { id: answer } map, which cannot name a lane (an empty map means no answers)
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
+// Each lane's result: { lane, branch, dir, status, closed, not_closed, confirmed_fixed_unclosed, prepared_closes?, needs_human,
+//   skipped, bugs, assumptions }, plus, from the lane's plan-to-merged-pr run: spared_tests, pr, review_clean, polish_clean,
+//   final_state and, when that run has them, stage, reason (one line: what stopped it), review_findings (the blocking ones, one
+//   line each), declined, polish_unfixed, plan_ref, handoff, resume_monitor and left_uncommitted.
+//   assumptions — [{ stage, assumption }]: every choice the lane's triage ('triage') and its plan-to-merged-pr stages made that
+//             the inputs did not settle. They also travel in the lane's plan, so its PR body lists them.
+//   A lane's plan-to-merged-pr run that stopped is never continued by re-running this workflow: its triage would judge the kept
+//   worktree, which now holds the fix, or skip the issue once the lane's own PR, which closes it, is open. Instead:
+//   resume_monitor — once the lane's PR is open: the args of a plan-to-merged-pr monitor-only run on it.
+//   resume_args — a lane whose plan-to-merged-pr run ended before its PR was open (any status other than pushed, OPEN, MERGED
+//             or CLOSED, with no resume_monitor): the args that run was given (the verified plan as plan_text), plus, as
+//             assumptions, what its stages assumed (the run that goes on finds their work in place and would not list them
+//             again), to run plan-to-merged-pr with again once what stopped it is settled.
+//   A lane with status needs_input also carries questions (each tagged with the lane) and relay: ask the person, then
+//   re-run plan-to-merged-pr with resume_args (or resume_monitor) plus the answers, as the relay says.
 const A = args || {}
 const ROOT = A.root
 const DATE = A.date || 'undated'
@@ -48,16 +72,41 @@ const SHARED = {}
 for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
 if (ACCESS) SHARED.github_access = ACCESS
 if (A.ship === false) SHARED.ship = false
-// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane); the Intake's goes to none.
+// Answers to a lane's questions go to that lane only; the Intake's goes to none. An answer with no lane goes to every lane, which
+// is for a decision the person made for the whole run; an id a lane's own run issues repeats across lanes, so with no lane it
+// could be read against another lane's question: refused once the run has more than one lane (checked when the lanes are known).
+// A map cannot name a lane and is refused; an empty one holds no answer and is read as none.
+if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers) && (typeof A.answers !== 'object' || Object.keys(A.answers).length)) throw new Error('bug-fix-backlog: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const isIntakeAnswer = a => String(a.id || '').split('.')[0] === 'intake'
 const laneAnswers = key => ANSWERS.filter(a => !isIntakeAnswer(a) && (!a.lane || a.lane === key)).map(({ lane, ...a }) => a)
-const RELAY = `Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
-  `Then re-run bug-fix-backlog with the same args (the same date) plus answers: each question's lane and id with the person's answer. ` +
-  `Issues already closed or shipped are re-checked and skipped; the lane that asked runs again in its kept worktree with its answers.`
-const INTAKE_RELAY = `Ask the person this question yourself: show the proposed lanes (the recommended answer, also in proposed_lanes), the issues left out (unlaned) and the red CI runs (ci_red); ` +
+// A lane's questions come from its plan-to-merged-pr run and are answered through that workflow, never by re-running this one:
+// this workflow's triage would judge the kept worktree, which now holds the fix, or skip the issue once the lane's own PR is open.
+const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
+  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. `
+// A lane that still builds applies a corrected assumption like any answer. Once its PR is open the re-run only monitors, so no
+// stage would apply one: the correction is a change to the branch, which the person asks for on the PR.
+const SHOW_ASSUMED = `Also show the person this lane's assumptions: a line they correct is passed as an answer too (id <its stage>.d<N>, N the next number not yet in use, with the assumption as its question). `
+const SHOW_ASSUMED_ON_PR = `Also show the person this lane's assumptions. A line they correct is no answer: the re-run only monitors the PR, so no stage would apply it. ` +
+  `The person leaves the correction as a review comment on the lane's PR, and the monitor's comment step applies it. Only the answers to these questions go into answers. `
+const WITH_ANSWERS = `answers (each question's id and question text with the person's answer and the date they gave it, without the lane key, added to any answers those args already hold)`
+const NOT_THIS_WORKFLOW = `Never send this lane back through bug-fix-backlog: its triage would judge the kept worktree, which now holds the fix, or skip the issue once the lane's own PR is open. The other lanes' results stand as they are.`
+// The lane stopped before its PR was open: the same plan-to-merged-pr run again, with the answers.
+const BUILD_RELAY = RELAY + SHOW_ASSUMED + `Then re-run plan-to-merged-pr with this lane's resume_args as args plus ${WITH_ANSWERS}, without resumeFromRunId (this run's record is bug-fix-backlog's): ` +
+  `the lane builds on in its kept worktree, from the same verified plan. ` + NOT_THIS_WORKFLOW
+// The lane's monitor asked: its PR is open, so only the monitor runs again.
+const MONITOR_RELAY = RELAY + SHOW_ASSUMED_ON_PR + `This lane's PR is already open: re-run plan-to-merged-pr with this lane's resume_monitor as args plus ${WITH_ANSWERS}, in monitor-only mode and without resumeFromRunId, ` +
+  `so the PR is observed afresh. ` + NOT_THIS_WORKFLOW
+// What accepting the lanes also allows, unless close: false: said in the Intake's question, so the person can decline it there.
+const CLOSES = A.close !== false
+const CLOSE_NOTE = `an issue of these lanes that triage and two independent refuters find already fixed on ${MAIN} is closed in public, with a comment quoting the evidence`
+const INTAKE_RELAY = `Ask the person this question yourself: show the proposed lanes (the recommended answer, also in proposed_lanes), each issue by its number and title (issues), the issues left out (unlaned) and the red CI runs (ci_red); ` +
   `never confirm or edit the lanes on their behalf, and file no issue for a red run yourself: whether one becomes an issue is the person's call. ` +
-  `Then re-run bug-fix-backlog with the same args (the same date, still without lanes) plus answers: [{ id: 'intake.q1', answer: <the lanes JSON the person confirmed or edited> }] ` +
+  (CLOSES
+    ? `Tell the person what confirming the lanes also allows: ${CLOSE_NOTE}. When the person wants those issues only reported, the re-run takes close: false: ` +
+      `each lane result then lists them in confirmed_fixed_unclosed, with the prepared close (reason and comment) in prepared_closes, and the run closes nothing. `
+    : `This run closes no issue (close: false): an issue found already fixed is only reported, in confirmed_fixed_unclosed with its prepared close in prepared_closes. `) +
+  `Then re-run bug-fix-backlog with the same args (the same date, still without lanes${CLOSES ? `; with close: false added when the person wants no issue closed` : ''}) plus answers: [{ id: 'intake.q1', answer: <the lanes JSON the person confirmed or edited> }] ` +
   `('[]' runs nothing; the accept option, passed back exactly as offered with its fingerprint, runs the proposal only if the re-run's Intake proposes the very same lanes — set resumeFromRunId to this run's id so it replays; a changed proposal stops for confirmation again).`
 
 const GUARD = `If a permission check or classifier denies any action, do NOT retry it through another tool or route (Bash, python, sed, heredocs, a different file path); report it as blocked. `
@@ -78,6 +127,7 @@ const GATES = (GATE
   `Use the project's test runner as CLAUDE.md describes. Background long runs and wait for them to exit. `
 const where = l => `Work ONLY in the git checkout ${l.dir} (cd there / use absolute paths); other agents are using other checkouts, including the main checkout, which you must not touch. `
 const nums = l => l.issues.map(n => '#' + n).join(', ')
+const oneLine = t => String(t || '').replace(/\s+/g, ' ').trim()
 
 const TRIAGE_SCHEMA = {
   type: 'object',
@@ -104,6 +154,7 @@ const TRIAGE_SCHEMA = {
       },
     },
     plan: { type: 'string', description: 'ONE combined fix plan covering every plan-verdict issue (empty when none): intent, current code locations, ordered per-file edits, the failing regression tests to add first, gate commands, and a "Fixes #N" line per issue' },
+    assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice the plan makes that the issues and the code do not settle, one line each (empty when none)' },
   },
   required: ['branch', 'ahead_of_main', 'behind_main', 'baseline_dirty', 'issues', 'plan'],
 }
@@ -315,7 +366,8 @@ if (INTAKE) {
       const question = {
         id: 'intake.q1', stage: 'intake',
         question: `Run these ${proposed.length} bug lane(s)? Confirm the grouping, or edit it (regroup issues, drop or add some).`,
-        why: 'each lane becomes one branch and one PR fixing its issues together; issues that share a code site belong in one lane, unrelated ones in separate lanes',
+        why: 'each lane becomes one branch and one PR fixing its issues together; issues that share a code site belong in one lane, unrelated ones in separate lanes' +
+          (CLOSES ? `. Confirming the lanes also allows this: ${CLOSE_NOTE} (to have such issues only reported, the re-run takes close: false)` : ''),
         options: [`accept ${fp} (the proposed lanes as listed)`, 'the edited lanes, as a JSON array of { key, issues }', 'none: [] (run nothing)'],
         recommended: JSON.stringify(lanesOnly),
       }
@@ -336,6 +388,11 @@ for (const field of ['key', 'dir', 'branch']) {
   const seen = {}
   for (const l of lanes) { if (seen[l[field]]) throw new Error(`bug-fix-backlog: lanes ${seen[l[field]]} and ${l.key} share ${field} ${l[field]}`); seen[l[field]] = l.key }
 }
+const LOOSE = ANSWERS.filter(a => !a.lane && ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor'].includes(String(a.id || '').split('.')[0])).map(a => a.id)
+if (lanes.length > 1 && LOOSE.length) throw new Error(`bug-fix-backlog: answers: ${LOOSE.join(', ')} ${LOOSE.length > 1 ? 'name' : 'names'} no lane; these ids repeat across lanes: pass the lane its question carried`)
+// An answer for a lane the run does not have would reach nobody and its question would be asked again (an intake id reaches no lane anyway).
+const STRAY = ANSWERS.filter(a => a.lane && !isIntakeAnswer(a) && !lanes.some(l => l.key === a.lane))
+if (STRAY.length) throw new Error(`bug-fix-backlog: answers: ${STRAY.map(a => `${a.id} (lane ${a.lane})`).join(', ')} ${STRAY.length > 1 ? 'name' : 'names'} no lane of this run (lanes: ${lanes.map(l => l.key).join(', ')}): fix the lane key, or leave the answer out`)
 const owner = {}
 for (const l of lanes) for (const n of l.issues) { if (owner[n]) throw new Error(`bug-fix-backlog: issue #${n} is in lanes ${owner[n]} and ${l.key}`); owner[n] = l.key }
 
@@ -351,6 +408,11 @@ const results = await pipeline(
     `If the skill's open-PR precheck warns that an open PR already closes the issue, record that PR's URL as linked_open_pr (it proceeds anyway; this workflow does not).\n` +
     `Then write ONE combined plan for every plan-verdict issue, at today's code locations, in the skill's plan layout: the failing regression test(s) to add first (following the project's testing rules in CLAUDE.md), the ordered per-file edits, the acceptance criteria, and the gate commands; end it with a "Fixes #N" line per plan-verdict issue. ` +
     (l.issues.length > 1 ? `These issues share a code site: design one fix that resolves all of them rather than stacking patches. ` : '') +
+    `List in assumptions every choice the plan makes that the issues and the code do not settle (which of two readings of an issue it fixes, a behaviour it picks where the issue names none), one line each; empty when there is none. ` +
+    `A choice that is the person's to make (what the product promises its users, a public interface, money, a new service or dependency that receives data) is never settled in the plan: write it there as open, naming the options, so the implementer's stage asks the person. ` +
+    `The skill's dry run asks nobody: it prints each question for the person under the verdict, then a plan body written on its recommended option, or "no plan: waits for the person's answer". Carry every such question into the combined plan as an open choice in that same way ` +
+    `(the question, why it blocks, its options, the recommended one), and never build the plan on the option that printed body took; an issue that waits for the person's answer keeps the verdict plan, and its part of the plan holds the open choice and no edit that depends on it. ` +
+    `A bullet of that body's "## Assumptions" section that is not one of those questions goes into assumptions. ` +
     `Do NOT edit any repo file in this step.`,
     { label: `triage:${l.key}`, phase: 'Triage', effort: EFF.triage, schema: TRIAGE_SCHEMA },
   ),
@@ -476,12 +538,17 @@ const results = await pipeline(
   async v => {
     if (!v.tri) return { lane: v.lane.key, status: v.status || 'failed_at_triage' }
     const l = v.lane
+    // What triage chose for the plan without the issues or the code settling it: listed in the lane result and, below, in the plan.
+    const triageAssumed = (Array.isArray(v.tri.assumptions) ? v.tri.assumptions : []).filter(Boolean).map(a => ({ stage: 'triage', assumption: oneLine(a) }))
     const summary = {
       lane: l.key, branch: l.branch, dir: l.dir,
       closed: v.closed.closed, not_closed: v.closed.not_closed,
       confirmed_fixed_unclosed: A.close === false ? v.confirmedFixed.map(i => i.number) : [],
+      // close: false: the close each of those issues would have got, so the person can post it without a second triage.
+      ...(A.close === false ? { prepared_closes: v.confirmedFixed.map(i => ({ number: i.number, close_reason: i.close_reason || '', close_comment: i.close_comment })) } : {}),
       needs_human: v.needsHuman, skipped: v.skipped.map(i => ({ number: i.number, reason: i.skip_reason })),
       bugs: v.confirmedBugs.map(i => ({ number: i.number, tests: i.tests, note: i.note })),
+      assumptions: triageAssumed,
     }
     const humanTests = v.needsHuman.flatMap(h => h.tests || [])
     // Triage edits nothing and the other checks are read-only, so a test file dirty now but not at setup is the reproducer's;
@@ -525,27 +592,51 @@ const results = await pipeline(
       (tests.length ? `\n\n## Regression tests already written (uncommitted in the worktree, failing on today's code — keep them; they must pass after the fix)\n${tests.map(t => '- ' + t).join('\n')}\n` : '') +
       (unreproduced.length ? `\n\nDELETE these tests the reproducer wrote but could not make fail for the issue's reason (uncommitted in the worktree; write the plan's regression tests afresh): ${unreproduced.join(', ')}.${deleteSparing}\n` : '') +
       (unreported.length ? `\n\nThe reproducer for ${unreported.map(n => '#' + n).join(', ')} may have left uncommitted tests it never reported: delete any uncommitted change to a test file outside ${keptFiles.length ? `the files holding the tests listed above as already written (${keptFiles.join(', ')}); inside those files remove only test functions not listed, keeping every fixture, helper and import the listed tests use, and never remove a conftest or helper change a listed test depends on` : 'nothing already written (no tests were listed)'}. Then write the plan's regression tests afresh.${deleteSparing}\n` : '') +
-      (dropped.length ? `\n\nOUT OF SCOPE: drop the plan sections for ${dropped.map(n => '#' + n).join(', ')} (not confirmed), delete any regression test written for them (${humanTests.join(', ') || 'none recorded; the reproducer may have failed before reporting, so check the test files for uncommitted ones written for them'}), and do not claim to fix them.${deleteSparing}\n` : '')
-    let r = null
+      (dropped.length ? `\n\nOUT OF SCOPE: drop the plan sections for ${dropped.map(n => '#' + n).join(', ')} (not confirmed), delete any regression test written for them (${humanTests.join(', ') || 'none recorded; the reproducer may have failed before reporting, so check the test files for uncommitted ones written for them'}), and do not claim to fix them.${deleteSparing}\n` : '') +
+      // The plan's last section, in the form plan-to-merged-pr keeps and adds to: it saves the plan with it and /create-pr copies it into the PR body.
+      (triageAssumed.length ? `\n\n## Assumptions to review\n\n${triageAssumed.map(a => `- assumed (triage): ${a.assumption}`).join('\n')}\n` : '')
+    // The PR body says which issues the PR fixes, and which of them no failing test reproduced before the fix. Each such line
+    // starts with the issue number, so it never reads as a closing keyword.
+    const unproven = v.confirmedBugs.filter(i => i.note).map(i => i.number)
+    const pr_note = [...kept.map(n => `Fixes #${n}`), ...unproven.map(n => `#${n} was not reproduced by a failing test before the fix.`)].join('\n')
+    // The lane's plan-to-merged-pr args, kept so a lane that stops can go on through that workflow (resume_args), never through this one's triage.
+    const laneArgs = { ...SHARED, concern, plan_text: planText, dir: l.dir, branch: l.branch, pr_note }
+    const answers = laneAnswers(l.key)
+    const callArgs = answers.length ? { ...laneArgs, answers } : laneArgs
+    let r = null, threw = ''
     try {
-      const answers = laneAnswers(l.key)
-      r = await workflow('plan-to-merged-pr', {
-        ...SHARED,
-        ...(answers.length ? { answers } : {}),
-        concern,
-        plan_text: planText,
-        dir: l.dir,
-        branch: l.branch,
-        pr_note: kept.map(n => `Fixes #${n}`).join('\n'),
-      })
+      r = await workflow('plan-to-merged-pr', callArgs)
     } catch (err) {
-      log(`${l.key}: ${err && err.message ? err.message : err}`)
+      threw = String(err && err.message ? err.message : err)
+      log(`${l.key}: ${threw}`)
     }
     const status = (r && r.status) || 'failed'
     log(`${l.key}: ${status}${r && r.pr ? ` (${r.pr.url})` : ''}`)
-    const questions = status === 'needs_input' ? ((r && r.questions) || []).map(q => ({ lane: l.key, ...q })) : []
+    const child = r || {}
+    const questions = status === 'needs_input' ? (child.questions || []).map(q => ({ lane: l.key, ...q })) : []
+    // What stopped the lane, in one line, and the blocking review findings it stopped on.
+    const why = child.stop_reason || (child.merge_check && child.merge_check.blocked_reason) || (child.pr_stage && child.pr_stage.blocked_reason) ||
+      (status === 'blocked_at_merge_check' && child.merge_check && child.merge_check.merge_check) || threw
+    const defects = (Array.isArray(child.review_findings) ? child.review_findings : []).filter(f => f && (f.severity === 'bug' || f.severity === 'concern'))
+    const leftOut = Array.isArray(child.left_uncommitted) ? child.left_uncommitted.filter(Boolean) : []
+    // Once the PR is open the lane goes on as a monitor-only run (resume_monitor); a lane that stopped before that goes on with the same args.
+    const unfinished = !child.resume_monitor && !['pushed', 'OPEN', 'MERGED', 'CLOSED'].includes(status)
+    // The run that goes on finds this run's work in place, so its stages report no assumption a second time: resume_args carries
+    // what they assumed, and that run lists it again (triage's own are in the plan already).
+    const childAssumed = (Array.isArray(child.assumptions) ? child.assumptions : []).filter(a => a && a.assumption)
     return { ...summary, status, spared_tests: spared, pr: r && r.pr, review_clean: r && r.review_clean, polish_clean: r && r.polish_clean, final_state: r && r.final_state,
-      ...(questions.length ? { questions, relay: RELAY } : {}) }
+      assumptions: [...triageAssumed, ...(Array.isArray(child.assumptions) ? child.assumptions : [])],
+      ...(child.stage ? { stage: child.stage } : {}),
+      ...(why ? { reason: oneLine(why) } : {}),
+      ...(defects.length ? { review_findings: defects.map(f => oneLine(`${f.severity}: ${f.file ? `${f.file}: ` : ''}${f.description}`)) } : {}),
+      ...(Array.isArray(child.declined) && child.declined.length ? { declined: child.declined } : {}),
+      ...(Array.isArray(child.polish_unfixed) && child.polish_unfixed.length ? { polish_unfixed: child.polish_unfixed } : {}),
+      ...(child.plan_ref ? { plan_ref: child.plan_ref } : {}),
+      ...(child.handoff ? { handoff: child.handoff } : {}),
+      ...(child.resume_monitor ? { resume_monitor: child.resume_monitor } : {}),
+      ...(leftOut.length ? { left_uncommitted: leftOut } : {}),
+      ...(unfinished ? { resume_args: childAssumed.length ? { ...callArgs, assumptions: childAssumed } : callArgs } : {}),
+      ...(questions.length ? { questions, relay: child.stage === 'monitor' && child.resume_monitor ? MONITOR_RELAY : BUILD_RELAY } : {}) }
   },
 )
 

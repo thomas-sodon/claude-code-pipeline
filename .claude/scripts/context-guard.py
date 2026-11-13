@@ -44,7 +44,8 @@ SessionStart, at any usage and whether or not the session orchestrates (outside 
 STATE.md (a git fetch of at most 10 s; env PIPELINE_STATE_OFFLINE=1 skips it and reads the local refs, and so does
 a fetch that fails, except that when git ls-remote finds origin without the branch, the stale tracking ref is
 deleted, as pipeline-state.py does, and only the local branch is read), additionalContext says when the handoff
-was written, to read it before acting, and quotes its ## Next section (at most 2,000 characters).
+was written, to read it before acting, to put its open questions and its assumptions to review to the person
+before its Next, and quotes its ## Next section (at most 2,000 characters).
 
 Environment:
   PIPELINE_HANDOFF_PCT     handoff threshold, percent of the context window (default 40)
@@ -525,8 +526,9 @@ MSG_PRECOMPACT_BLOCK = ('Context guard: this auto-compaction was blocked once, b
 SUMMARY_INSTRUCTIONS = (
     'Keep the pipeline state in this summary, exact where it is exact: the goal; each workflow run in flight or '
     'stopped, with its exact args; branches and open pull requests; open questions with their ids, options and '
-    'the recommendation; the answers the person gave, by question id; assumptions not yet reviewed; environment '
-    'notes; and the exact next action.')
+    'the recommendation; the answers the person gave, each with its id, what asked it (the workflow, and its lane '
+    'or doc), the question\'s text, the answer in their words and its date; the standing rules the person set; '
+    'assumptions not yet reviewed; environment notes; and the exact next action.')
 
 # Added only over the threshold, where the guard did ask for a handoff. Under it the guard asked for none: an early
 # auto-compaction keeps the state, and the session goes on with the budget it has left.
@@ -607,6 +609,9 @@ def handoff_context(cwd):
         msg = ('This repository has a pipeline handoff: STATE.md on %s %s%s. Read it before acting: '
                'python3 .claude/scripts/pipeline-state.py get STATE.md%s' % (
                    where, branch, when, '' if ref == track_ref else ' --local'))
+        msg += ('\nBefore you do its Next: follow its "Standing rules from the person", and put its "Waiting on the '
+                'person" questions and its "Assumptions to review" to the person in one batch ("Continuing from a '
+                'handoff" in .claude/commands/handoff.md). Never answer or confirm one for them.')
         return msg + ('\n\nIts ## Next section:\n\n' + nxt if nxt else '\n\nIt has no ## Next section.')
     return None
 
