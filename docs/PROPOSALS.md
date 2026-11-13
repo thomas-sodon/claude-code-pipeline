@@ -74,8 +74,12 @@ milestones change that tree before the later ones build, so accept them one at a
 time: before accepting each after the first, once the milestones before it have
 merged, re-run `/review-proposal <doc>` (a `Files:` path or interface that no
 longer matches the tree is a `concern`) and `/propose --revise <doc>` on its
-findings. For a long roadmap, propose only the next milestone (`max_milestones: 1`)
-and the rest with `/propose --milestone=N` as each comes up.
+findings; the `refresh-proposal` workflow runs the two until clean, and reads the
+answers the design run saved. For a long roadmap, propose only the next milestone
+(`max_milestones: 1`) and the rest as each comes up, with a re-run of
+`brief-to-proposals` (`from: 'proposals'`, `milestones: [N]`): it hands the author
+the answers the person gave the design run, which `/propose --milestone=N` run by
+hand does not get.
 
 ### Who decided
 
@@ -84,7 +88,7 @@ ends with one tag that says who made the choice:
 
 | Tag | Means |
 |---|---|
-| `(person, YYYY-MM-DD)`, `(person, YYYY-MM-DD, <ref>)` | the person chose it, on the date they said it. `<ref>` is where, as one word: an answer id (`intake.q2`, `intake.d3`), `framing`, a gate (`roadmap.md#4`) or `edit`. |
+| `(person, YYYY-MM-DD)`, `(person, YYYY-MM-DD, <ref>)` | the person chose it. The date is the day they said it: the answer's date, the date the framing records for a choice the framing makes, else the day the record is written. `<ref>` is where they said it, as one token with no space, comma or parenthesis: an answer's id as it was handed in (`intake.q2`, `intake.d3`, `m3.q1`; `q<N>` for a question the author's own run asked), `framing`, a gate whose `Outcome:` records it (`roadmap.md#4`), or `edit` when the person wrote it into the doc themselves. |
 | `(source)` | the source states it, and either the source is the person's own writing or the choice is not person-owned |
 | `(assumed)` | the author chose |
 
@@ -104,20 +108,30 @@ and dates; and a stack, provider or environment the person must run or pay for
 themselves.
 
 - A person-owned choice taken from a source that was drafted for the person (a
-  `new-software-idea` brief is one) is never `(source)`: the author asks the person
-  to confirm it, and it becomes `(person, …)` once they do.
+  `new-software-idea` brief is one;
+  [how one is recognised](REFERENCE.md#answering-questions)) is never `(source)`:
+  the author asks the person to confirm it, and it becomes `(person, …)` once they
+  do.
 - `(assumed)` on a person-owned choice is allowed only when the run proceeds on
   assumptions (the invoking prompt says so; workflows: `on_question: 'assume'`).
   Otherwise the choice is asked first.
-- **A `person` record is binding.** Only a newer answer from the person changes it.
-  A reason to change it (the source, the tree or research contradicts it) is a
-  question for the person, never an edit; a reviewer reports such a change as a
-  `bug` whose fix is the question to ask, with its options.
+- **A `person` record is binding.** Only a newer answer from the person changes it;
+  a ticked gate's recorded `Outcome:` is one. A reason to change it (the source,
+  the tree or research contradicts it) is a question for the person, never an edit;
+  a reviewer reports such a change as a `bug` whose fix is the question to ask,
+  with its options. `/roadmap --force` carries every such record over unchanged.
+- **Accepting a doc confirms no record.** A person-owned choice still tagged
+  `(assumed)`, or tagged `(source)` when the source was drafted for the person, is
+  a `concern` in `/review-proposal` whose fix is the question to ask (not in a run
+  that proceeds on assumptions), and `/bootstrap` asks each one its skeleton bakes
+  in, tagged `(assumed)` or untagged, before it writes anything.
 - **`(proposed)` marks a value, not a record.** A threshold, a retention period or a
   price the author proposes is labelled `(proposed)` and says where the person fixes
   it: a confirmation asked now when it is a promise they own and can answer from
-  what they know, else the gate whose `Acceptance:` records it. Authors write no
-  other provenance mark.
+  what they know, else the gate whose `Acceptance:` records it. A person-owned value
+  from a source drafted for the person counts as stated only once the person
+  confirmed it: until then it is a proposed value. Authors write no other
+  provenance mark (`(brief)`, `(judge)` and `(confirmed)` are not tags).
 
 A record with no tag is W `decision_untagged`: one warning per doc, at its first
 untagged record, naming each, so a doc written before the tag keeps passing. A
@@ -134,7 +148,11 @@ person?". It prints `{doc, kind, decisions, unconfirmed, proposed}`: `unconfirme
 holds the records tagged `(assumed)` or not tagged, and `proposed` every line
 outside a code fence that contains `(proposed`, as `{line, text}`. It only reads
 and never lints: it exits 0 on any doc it can read, lint errors or not, a roadmap
-included (no decisions; its `(proposed)` lines are listed).
+included (no decisions; its `(proposed)` lines are listed). `brief-to-proposals`
+and `refresh-proposal` return both lists as `lint.unconfirmed` and `lint.proposed`,
+and `/roadmap` and `/propose` report them as **Unconfirmed decisions**: the person
+confirms or corrects each before accepting the doc
+([REFERENCE.md](REFERENCE.md#answering-questions)).
 
 ## Steps and milestones
 
@@ -239,7 +257,11 @@ needs (a legal sign-off, the `ops` milestone that provisions the accounts) as
 
 When the person ticks a gate they add `- Outcome: <what was found or decided>`.
 A ticked `research` or `decision` gate without one is W `gate_without_outcome`; an
-`Outcome:` on a code step is W `outcome_on_code_step`.
+`Outcome:` on a code step is W `outcome_on_code_step`. A recorded `Outcome:` is the
+person's own word: `/propose --revise` writes it into the D-record it settles, in
+the proposal and in the architecture, tagged `(person, <date>, <file>.md#N)`, and
+`/roadmap --force` carries each one over, word for word, into the roadmap it
+rewrites.
 
 There is no conditional syntax. When later steps depend on what a gate finds:
 
@@ -364,16 +386,23 @@ a short paragraph on the ordering, then `## Milestones` (E `missing_section` /
 
 - A **code milestone** names `Proposal: <file>.md` (E `missing_proposal`), relative to
   the roadmap, and has `Acceptance:` (its exit criteria). A pending one whose file
-  does not exist yet is W `proposal_not_written` (`/propose --milestone=N` writes it).
+  does not exist yet is W `proposal_not_written` (`/propose --milestone=N` writes
+  it; a `brief-to-proposals` re-run does so with the person's saved answers,
+  [above](#status-lifecycle)).
 - A **gated milestone** has `Human gate:` and no `Proposal:` (E `gate_with_proposal`).
 - No `Files:` (E `files_in_roadmap`) and no `Lane:` (the lint does not reject one on a
   milestone): those belong to proposal steps.
 - Order: on a greenfield repo the Bootstrap `ops` gate comes before any code
-  milestone. Only the `decision` or `research` gates whose outcome the skeleton bakes
-  in (a name, namespace or licence that waits on a legal opinion, a paid search or an
-  outside party; one the person can choose now is a question, not a gate) precede it,
-  and it depends on them; `/bootstrap` stops (`bootstrap_gates_pending`) until each
-  is ticked with an `Outcome:`. Then the source's cheapest validation, a `decision`
+  milestone. What the skeleton bakes in (the product, package or app name and
+  namespace, the licence and the name its copyright notice carries, an org or
+  bundle id) is asked before the docs are written and recorded in a D-record, never
+  gated. A gate precedes Bootstrap only for what needs an outside party or an
+  account (a trademark opinion, a domain registration), and Bootstrap depends on
+  it; `/bootstrap` stops (`bootstrap_gates_pending`) until each such gate is ticked
+  with an `Outcome:`, and (`architecture_outdated`) while a ticked one's `Outcome:`
+  names another name, licence, namespace or id than the architecture records,
+  until `/propose --revise <architecture>` has carried it in. Then the source's
+  cheapest validation, a `decision`
   gate applying its stop criteria (not its success criteria; a threshold the source
   does not give is labelled `(proposed)`),
   and everything that result could cancel after it. Every legal check, account or secret, release
@@ -486,7 +515,7 @@ team member ──(session)──> api
 
 - Options: managed Postgres (backups included); SQLite on the app host (free, backups are ours).
 - Choice: managed Postgres.
-- Why: one part-time builder must not run backups (brief: team constraint).
+- Why: the person chose it when asked; one part-time builder must not run backups (framing).
 - Consequences: a `DATABASE_URL` secret per environment.
 - Revisit if: hosting cost exceeds the brief's margin target.
 
