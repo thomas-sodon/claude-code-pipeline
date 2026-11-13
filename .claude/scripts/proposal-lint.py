@@ -59,7 +59,10 @@ DECISION_RE = re.compile(r'^### D(\d+):\s*(.*?)\s*$', re.ASCII)
 DECISION_LIKE_RE = re.compile(r'^\s{0,3}#{3,4}\s*((?:D|Decision)\s*(\d+)\b.*?)\s*$', re.I)
 PAREN_RE = re.compile(r'^(.*?)\s*\(([^()]*)\)$')      # a heading's trailing parenthetical
 PERSON_TAG_RE = re.compile(r'^person\s*,\s*(\d{4}-\d{2}-\d{2})(?:\s*,\s*([^\s,()]+))?$', re.ASCII)
-TAG_WORD_RE = re.compile(r'^(person|source|assumed)\b', re.I)
+# A trailing parenthetical that reads as an attempt at a provenance tag without being one: one of the three words alone
+# (in another case), or followed by a comma, a colon, a date, 's or "by". A title that merely ends in a phrase starting
+# with one of them, "(source-available)" or "(person-hours budget)", is an ordinary parenthetical: the record is untagged.
+TAG_WORD_RE = re.compile(r"^(person|source|assumed)(?=\s*(?:$|[,:])|['\u2019]s\b|\s+\d|\s+by\b)", re.I)
 
 GATE_KINDS = ('research', 'decision', 'ops', 'release')
 KEYS = {'files': 'files', 'depends on': 'depends', 'acceptance': 'acceptance',
@@ -264,8 +267,8 @@ def valid_date(text):
 def decision(line, n, text):
     """One D-record from its heading text (what follows "### D<N>:"). The trailing parenthetical is its
     provenance tag when it is one of the closed forms (TAG_FORMS); the title is the text without it. Any other
-    trailing parenthetical stays in the title and the record is untagged; one that starts like a tag without
-    being one is also kept in '_bad_tag', for bad_decision_tag."""
+    trailing parenthetical stays in the title and the record is untagged; one that reads as an attempt at a tag
+    without being one (TAG_WORD_RE) is also kept in '_bad_tag', for bad_decision_tag."""
     d = {'id': 'D%d' % n, 'n': n, 'title': text, 'line': line, 'by': '', 'date': '', 'ref': ''}
     m = PAREN_RE.match(text)
     if not m:

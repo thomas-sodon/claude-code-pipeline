@@ -598,10 +598,10 @@ class TestArchitectureLint(Base):
 
 DECISION_KEYS = ['id', 'n', 'title', 'line', 'by', 'date', 'ref']
 DECISION_CODES = ('decision_untagged', 'bad_decision_tag', 'bad_decision_heading', 'duplicate_decision')
-# Trailing parentheticals that start like a tag and are not one of the closed forms.
+# Trailing parentheticals that read as an attempt at a tag and are not one of the closed forms.
 BAD_TAGS = ('person', "person's decision, 2026-11-05", 'person 2026-11-05', 'person, 2026-02-30',
             'person, 05-11-2026', 'person, 2026-11-05, two words', 'person, 2026-11-05, intake.q2, edit',
-            'Person, 2026-11-05', 'source: the brief', 'source of truth', 'assumed by the author', 'Assumed',
+            'Person, 2026-11-05', 'source: the brief', 'SOURCE', 'assumed by the author', 'Assumed',
             'person, \uff12\uff10\uff12\uff16-\uff11\uff11-\uff10\uff15')    # the last: a date in full-width digits
 # Headings under ## Decisions that number a decision without being "### D<N>: <title>": (its number, the heading).
 BAD_HEADINGS = ((1, '### D1 \u2014 Licence (assumed)'), (2, '### D2. Price'), (3, '### Decision 3: Hosting (assumed)'),
@@ -670,6 +670,20 @@ class TestDecisions(Base):
                           ('D5', 'Store (web)', 'person', '2026-11-05', '')])
         # untagged records, not bad tags
         self.assertEqual(codes(self.found(out)), ['decision_untagged'])
+
+    def test_a_title_ending_in_a_phrase_that_starts_with_a_tag_word_is_untagged_not_a_bad_tag(self):
+        # "(source-available)" on a licence decision is a title, not a misspelled tag: the doc's real problem is the
+        # missing tag, and decision_untagged must name the record.
+        phrases = ('source-available', 'Source code', 'source of truth', 'Person-hours budget', 'personal data',
+                   'assumed risk', 'person in the loop')
+        text = with_decisions(proposal(step(1)), *[record(n, 'Choice %d' % n, p) for n, p in enumerate(phrases, 1)])
+        out = self.assertClean(text)
+        self.assertEqual(brief(out['decisions']),
+                         [('D%d' % n, 'Choice %d (%s)' % (n, p), '', '', '') for n, p in enumerate(phrases, 1)])
+        found = self.found(out)
+        self.assertEqual(codes(found), ['decision_untagged'])
+        self.assertTrue(found[0]['message'].startswith('D1, D2, D3, D4, D5, D6, D7 have no provenance tag'),
+                        found[0]['message'])
 
     def test_records_are_read_under_decisions_and_outside_fences_only(self):
         text = with_decisions(proposal(step(1)),

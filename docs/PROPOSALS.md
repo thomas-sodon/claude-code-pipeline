@@ -149,11 +149,13 @@ themselves.
 
 A record with no tag is W `decision_untagged`: one warning per doc, at its first
 untagged record, naming each, so a doc written before the tag keeps passing. A
-trailing parenthetical that starts with the word `person`, `source` or `assumed`,
-in upper or lower case, and is not one of the forms above, such as `(person)` with
-no date or `(assumed by the author)`, is W `bad_decision_tag`, and its record
-counts as untagged. Any other trailing parenthetical (`### D5: Client (web)`) is
-part of the title. `--json` lists the records as
+trailing parenthetical that reads as an attempt at a tag and is not one of the
+forms above is W `bad_decision_tag`, and its record counts as untagged: the word
+`person`, `source` or `assumed`, in upper or lower case, standing alone or followed
+by a comma, a colon, a date, `'s` or `by`, such as `(person)` with no date,
+`(Assumed)` or `(assumed by the author)`. Any other trailing parenthetical is part
+of the title (`### D5: Client (web)`, `### D6: Licence (source-available)`), and
+the record is untagged. `--json` lists the records as
 `decisions: [{id, n, title, line, by, date, ref}]`, where `by` is `person`,
 `source`, `assumed` or `''`.
 
