@@ -181,6 +181,10 @@ const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers
   .filter(answered).map(withStage)
 // The answers this run was passed; the ones restored from the state branch are added after the survey.
 const GIVEN = ANSWERS.length
+// An answer that came back without its question text (an id-only map, an older handoff) is shown with its id as the question:
+// it still binds, and no stage may guess what it settled. Logged once the saved copy had its chance to supply the question.
+const NO_TEXT = `An entry above whose question equals its id was passed without its question text. When its answer alone does not say what it settles, it settles nothing: never guess what it meant. `
+const logNoText = () => { if (ANSWERS.some(a => !a.question)) log(`Answer(s) without their question text: ${ANSWERS.filter(a => !a.question).map(a => a.id).join(', ')} (pass each answer with its question, so every stage can tell what it settles)`) }
 const answersFor = scope => {
   const mine = BRIEF_MODE ? ANSWERS : ANSWERS.filter(a => {
     const o = scopeOrder(a.stage)
@@ -191,7 +195,8 @@ const answersFor = scope => {
     ? `Answers from the person to blocking questions (binding, like the person's framing: each replaces what the source says on the point it addresses; never re-ask them, and a choice that follows one is not a defect; ` +
       `a decision one settles carries the tag (person, <its date, or today's when it has none>, <its id>) in the doc, or (assumed) when the answer says it was assumed` +
       (BRIEF_MODE ? `; the first part of each id names the stage that asked (intake, architecture, m<N> for milestone N's proposal, consistency): an answer asked elsewhere binds here wherever the same choice arises, and one plainly about another doc's detail does not` : '') +
-      `): ${JSON.stringify(mine.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n`
+      `): ${JSON.stringify(mine.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n` +
+      (mine.some(a => !a.question) ? NO_TEXT + '\n' : '')
     : ''
 }
 // The person-owned choices, in the one order every stage and doc lists them.
@@ -200,7 +205,9 @@ const OWNED = `who the product is for and what its first release leaves out; pla
   `stop and go criteria, thresholds and dates; and a stack, provider or environment the person must run or pay for themselves`
 const DRAFTED = `a new-software-idea brief is: its header has **Verdict:** and **Assumed builder:** fields, and that skill never interviews the person`
 const BLOCKING_DEF = `A blocking question is one only the person can answer: what they intend, a requirement or constraint the source leaves out or states two incompatible ways, a trade-off that is theirs to make, ` +
-  `a conflict between what the person said (the framing, an answer, a decision a doc records as theirs) and the source or your research, or a blocker whose way forward is their call; and whose plausible answers lead to a different design, promise, cost or legal exposure. ` +
+  `a conflict between what the person said (the framing, an answer, a decision a doc records as theirs) and the source, the tree or your research, or a blocker whose way forward is their call; and whose plausible answers lead to a different design, promise, cost or legal exposure. ` +
+  `What the person said outranks the source. On the point it addresses, it replaces what the source says: follow it, say so in what you write, and never ask it again. That difference is not a conflict. ` +
+  `The conflict that is a blocking question is the other one: another part of the source, the tree or your research makes what the person said impossible to follow. Then pick no side and ask, naming both. ` +
   `A confirmation is a question about a person-owned choice that already has a value nobody confirmed with the person: the source's value when the source was drafted for the person (${DRAFTED}), ` +
   `an item the framing or a panel synthesis lists as open, recommended or not yet decided, or the default you would otherwise take. ` +
   `The person-owned choices: ${OWNED}. ` +
@@ -273,7 +280,8 @@ const relay = (from, ms = [], failedMs = []) => {
   const all = [...new Set(ms.concat(failedMs))].sort((a, b) => a - b)
   const who = !failedMs.length ? 'the milestones that asked'
     : `${ms.length ? 'the milestones that asked and ' : ''}the ones whose /propose failed (${failedMs.join(', ')}: no proposal exists, so nothing is overwritten)`
-  return (`Ask the person these questions yourself, all at once, each with its options and the recommended one first; never answer them on their behalf. ` +
+  return (`Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
+    `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
     `Show the confirmations (the questions with confirm: true) as one list the person can accept whole or correct line by line. ` +
     `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id intake.d<N>, with its question). ` +
     // From the Proposals stage on, no stage applies an answer to the architecture or the roadmap: such a correction names them.
@@ -288,7 +296,7 @@ const relay = (from, ms = [], failedMs = []) => {
         (ms.length ? `Pass exactly those milestones (and the milestone of a proposal the person corrected): answers alone re-propose no written proposal, so a reviser's answer would go unused, and any other milestone listed is proposed again, its doc rewritten as a draft. ` : '') +
         `Always pass that from with the answers: left out, the run infers its start from all the answers passed (the Intake's aside), so an answer an earlier run already used can restart an earlier stage, whose revisions may reset an accepted doc to draft. ` +
         `In this session, resumeFromRunId set to this run's id also replays the unchanged stages before it from the record. `
-      : `Then re-run this workflow with the same args plus answers (each question's id and question text with the person's answer and the date they gave it) and resumeFromRunId set to this run's id: ` +
+      : `Then re-run this workflow with the same args plus answers (each question's id and question text with the person's answer and the date they gave it, added to any answers given before) and resumeFromRunId set to this run's id: ` +
         `the stages before the ones that asked replay from the record, and docs already written are kept. `) +
     forceNote() + seedNote()).trim()
 }
@@ -612,7 +620,9 @@ const startFailed = reason => {
 }
 // The context file is checked (and restored from the state branch) before any design agent is told to read it.
 const CTX_CHECK = `context_exists: whether ${CTX_FILE} exists (relative to ${DIR}, or absolute). Never read it, and never copy any of its text. When it does not exist, run, in ${DIR}: ${STATE} get context/builder-context.md --to ${CTX_FILE} ` +
-  `(the one write this stage may make; exit 0 means the person chose to keep their framing on the state branch): on exit 0 return context_exists true and context_restored true; otherwise both false (exit 3: none saved; exit 2: say why in notes). `
+  `(this restore is the one change this stage may make: the file, and its line in the local exclude file; exit 0 means the person chose to keep their framing on the state branch): on exit 0 return context_exists true and context_restored true; otherwise both false (exit 3: none saved; exit 2: say why in notes). ` +
+  `After a restore, when the file lies inside ${DIR}, append its path from the root of ${DIR}, with a leading /, to the checkout's local exclude file unless a line there already names it ` +
+  `(the file git rev-parse --git-path info/exclude prints, created when missing; it is never committed or pushed), so no later stage commits the restored framing by accident. `
 const CTX_NOT_FOUND = `context_not_found: ${CTX_FILE} does not exist in ${DIR}, and the state branch holds no context/builder-context.md to restore it from. Copy it back into this checkout or rewrite it with the person, then re-run: a design run without the person's framing would choose for them`
 const surveyArch = () => ({ out_dir: survey.out_dir, architecture: survey.architecture, roadmap: survey.roadmap, milestones: survey.milestones || [], lint_clean: true, stopped: false, questions: [], assumptions: [] })
 if (BRIEF_MODE) {
@@ -681,6 +691,7 @@ if (BRIEF_MODE) {
     restored.push(a.id)
   }
   if (restored.length) log(`Restored ${restored.length} answer(s) saved on the state branch (design/answers.json): ${restored.join(', ')}`)
+  logNoText()
   FROM = FROM_ARG || (A.force ? 'intake' : DOCS_EXIST ? (counted.length ? earliestStage(counted.map(a => a.stage)) : 'proposals') : 'intake')
   if (at(FROM) >= at('proposals') && !DOCS_EXIST) {
     FROM = null
@@ -689,6 +700,7 @@ if (BRIEF_MODE) {
   log(`Starting at ${FROM}${FROM_ARG ? '' : ' (inferred)'}: ${DOCS_EXIST ? `${survey.architecture} and ${survey.roadmap} exist${A.force ? ' and are regenerated (force)' : ''}` : 'no design docs yet'}`)
 } else {
   FROM = 'intake'
+  logNoText()
   // Concern mode runs no survey: the context file gets the same check, alone.
   if (CTX_FILE) {
     const ctx = await agent(

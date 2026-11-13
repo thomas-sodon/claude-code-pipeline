@@ -14,6 +14,11 @@ export const meta = {
 //                             milestones before this one merged
 //   roadmap?: boolean         also review the doc against the whole roadmap (/review-proposal --roadmap reads the roadmap and
 //                             every proposal it names, so it costs more); default false
+//   context?: string          framing from the person for the reviewer and the reviser, as brief-to-proposals' context
+//   context_file?: string     a file (relative to dir) that holds the person's framing, as brief-to-proposals' context_file
+//                             (docs/builder-context.md after /start-product): every review and revise reads it as binding and
+//                             never edits it. A missing one is restored from the state branch (context/builder-context.md, kept
+//                             there only when the person consented), else the run ends failed (context_not_found)
 //   max_review_rounds?: number  revise rounds (default 3; 0 = review only, no revise)
 //   efforts?: { review, revise, lint }   default { review: 'high', revise: 'medium', lint: 'low' }
 //   on_question?: 'stop'|'assume'  default 'stop': a reviser that hits a blocking question (a finding only the person can settle)
@@ -25,7 +30,10 @@ export const meta = {
 //                             assumption the person corrected or a decision they made outside the questions. Every review and
 //                             revise gets them, so a re-run starts from the doc as it is now: an answer the doc does not yet
 //                             reflect is reported by the review and applied by the revise, which tags the decision it settles
-//                             (person, <date>, <id>)
+//                             (person, <date>, <id>). An answer passed without its question text still binds, but a stage
+//                             that cannot tell from the answer alone what it settles treats it as settling nothing
+// Every review and revise also reads the answers the person gave the design run, when brief-to-proposals saved them on the state
+// branch (design/answers.json): they bind this doc like the answers passed here.
 // Suggestions and nits get one revise round; a bug or concern still standing after max_review_rounds revisions ends the run with
 // findings_remain. Findings about any other doc are reported in other_docs, never applied here. A revise resets the doc's Status:
 // to draft, so the next steps say to re-accept it. The lint stage also lists what no person confirmed (lint.unconfirmed: decisions
@@ -56,6 +64,24 @@ const DOCS_ONLY = `This is design work on one doc: change nothing but ${DOC}. Ne
   `The review ledger the commands keep (under ~/.claude, with its copy on the pipeline state branch through .claude/scripts/pipeline-state.py) is theirs to write. `
 const WORK = GUARD + WHERE + DOCS_ONLY
 const LINT = `python3 .claude/scripts/proposal-lint.py`
+// The person's framing, in the words brief-to-proposals gives its authors and reviewers: binding, and replacing the source's
+// value on the point it addresses.
+const CTX_FILE = A.context_file ? String(A.context_file).trim() : ''
+const BINDING = `binding. On the point it addresses it replaces what the source says (the brief's Assumed builder, a field the person corrected): follow it, say so in what you write, and never ask it again. ` +
+  `Where another part of the source, the tree or research makes it impossible to follow, pick no side: return a blocking question naming both.`
+// A framing /start-product took without the person ends with this line: it is not the person's word until an answer confirms it.
+const UNCONFIRMED_MARK = `- Not confirmed by me yet`
+const UNCONFIRMED_FRAMING = `When that file has a line starting "${UNCONFIRMED_MARK}", /start-product assumed the framing: until an answer from the person confirms it, it is an assumption, not the person's word, and no decision that rests on it is tagged (person, ...). `
+const CTX = (A.context ? `Framing from the person, ${BINDING} The framing: ${A.context}\n` : '') +
+  (CTX_FILE ? `Before anything else, read ${CTX_FILE} (relative to ${DIR}) in full: its text is framing from the person, ${BINDING} ${UNCONFIRMED_FRAMING}Keep such a framing, or return a question to change it. Docs may state the constraints it sets; never copy personal data or credentials from it. \n` : '')
+// The reviewer runs first, so it is the stage that finds a missing framing file and restores it, or stops the run.
+const FRAMING_FOR_REVIEW = (A.context ? `The authors were told to follow this framing from the person as binding; a choice that follows it or an answer from the person is not a defect: ${A.context}\n` : '') +
+  (CTX_FILE
+    ? `If ${CTX_FILE} (relative to ${DIR}) does not exist, restore it before the review: python3 .claude/scripts/pipeline-state.py get context/builder-context.md --to ${CTX_FILE} (this restore is the one change besides the review ledger this stage may make: the file, and its line in the local exclude file; exit 0 means the person chose to keep their framing on the state branch). ` +
+      `After a restore, when the file lies inside ${DIR}, append its path from the root of ${DIR}, with a leading /, to the checkout's local exclude file unless a line there already names it (the file git rev-parse --git-path info/exclude prints, created when missing; it is never committed or pushed). ` +
+      `If the restore fails (exit 3: none saved; exit 2: git failed), review nothing: set completed=false with stop_reason "context_not_found: ${CTX_FILE} does not exist and the state branch holds no context/builder-context.md; copy it back into this checkout or rewrite it with the person". ` +
+      `The authors were also told to treat the text of ${CTX_FILE} (read it) as binding framing from the person: a choice that follows it or an answer from the person is not a defect. ${UNCONFIRMED_FRAMING}\n`
+    : '')
 const FRAME = `The doc is re-reviewed against the tree as it is now: milestones that merged since it was written may have moved or changed the files, symbols and interfaces it builds on. `
 
 // ---- Questions before assumptions. No one can answer an agent mid-run: a reviser that needs the person's call returns its
@@ -65,15 +91,26 @@ const ON_Q = A.on_question === 'assume' ? 'assume' : 'stop'
 const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers || {}).map(([id, answer]) => ({ id, answer })))
   .filter(a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
 // Each answer: { id, answer, question?, date? }. The question text and the date travel with it into every prompt.
-const ANSWERS_TEXT = ANSWERS.length
+// An answer that came back without its question text (an id-only map, an older handoff) is shown with its id as the question:
+// it still binds, and no stage may guess what it settled.
+const NO_TEXT = `An entry above whose question equals its id was passed without its question text. When its answer alone does not say what it settles, it settles nothing: never guess what it meant. `
+if (ANSWERS.some(a => !a.question)) log(`Answer(s) passed without their question text: ${ANSWERS.filter(a => !a.question).map(a => a.id).join(', ')} (pass each answer with its question, so every stage can tell what it settles)`)
+// The answers the design run was given, where brief-to-proposals saved them: a refresh judges the doc against them too, so a
+// choice the person made that became plain text in the doc (an experiment already run, a risk accepted) is not reviewed away.
+const SAVED_ANSWERS = `The answers the person gave the design run may be saved on the pipeline state branch: read them with python3 .claude/scripts/pipeline-state.py get design/answers.json ` +
+  `(this read of the state branch is allowed and changes nothing in ${DIR}; exit 3 or 2: none are saved, go on without them). Each is the person's: binding, never re-asked, and a choice that follows one is not a defect. ` +
+  `The first part of each id names the stage that asked (intake, architecture, m<N> for milestone N's proposal, consistency): an answer asked elsewhere binds this doc wherever the same choice arises, and one plainly about another doc's detail does not. ` +
+  (ANSWERS.length ? `Where an answer listed above and a saved one settle the same point differently, the one listed above is the newer and holds. ` : '')
+const ANSWERS_TEXT = (ANSWERS.length
   ? `Answers from the person to blocking questions (binding, like the person's framing; never re-ask them, and a choice that follows one is not a defect; ` +
     `a decision one settles carries the tag (person, <its date, or today's when it has none>, <its id>) in the doc, or (assumed) when the answer says it was assumed): ` +
-    `${JSON.stringify(ANSWERS.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n`
-  : ''
+    `${JSON.stringify(ANSWERS.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n` +
+    (ANSWERS.some(a => !a.question) ? NO_TEXT + '\n' : '')
+  : '') + SAVED_ANSWERS
 // What a reviewer is told about the person's choices: a doc that departs from one is a defect whose fix is a question, and an
 // answer the doc does not yet reflect is a defect the reviser applies.
 const REVIEW_CTX = `A doc that departs from the person's framing, an answer from the person, or a decision tagged (person, ...), with no newer answer from the person, is a bug whose fix is the question to ask (with its options), never a gate or a confirmation at acceptance. ` +
-  (ANSWERS.length ? `An answer above that the doc does not yet reflect (its text still says otherwise, or the decision it settles is not tagged (person, ...)) is a bug too: report it, naming the answer's id, so the reviser applies it. ` : '')
+  (ANSWERS.length ? `An answer in the list above (one passed to this run) that the doc does not yet reflect (its text still says otherwise, or the decision it settles is not tagged (person, ...)) is a bug too: report it, naming the answer's id, so the reviser applies it. ` : '')
 // The person-owned choices, in the one order every stage and doc lists them.
 const OWNED = `who the product is for and what its first release leaves out; platforms and distribution, hosted or self-run; price, plans, the revenue model, and anything that costs money or opens an account in the person's name (a host, a paid API, a billing provider, a store); ` +
   `the licence and its variant, and the legal and compliance posture; what personal data is collected, how long it is kept and who receives it; names (product, package, domain, organization or bundle id); the repository's owner and visibility; ` +
@@ -81,6 +118,8 @@ const OWNED = `who the product is for and what its first release leaves out; pla
 const DRAFTED = `a new-software-idea brief is: its header has **Verdict:** and **Assumed builder:** fields, and that skill never interviews the person`
 const BLOCKING_DEF = `A blocking question is one only the person can answer: what they intend, a requirement or constraint the doc's sources leave out or state two incompatible ways, a trade-off that is theirs to make, ` +
   `a conflict between what the person said (the framing, an answer, a decision a doc records as theirs) and the doc's sources, the tree or your research, or a blocker whose way forward is their call; and whose plausible answers lead to a different design, promise, cost or legal exposure. ` +
+  `What the person said outranks the source. On the point it addresses, it replaces what the source says: follow it, say so in what you write, and never ask it again. That difference is not a conflict. ` +
+  `The conflict that is a blocking question is the other one: another part of the doc's sources, the tree or your research makes what the person said impossible to follow. Then pick no side and ask, naming both. ` +
   `A confirmation is a question about a person-owned choice that already has a value nobody confirmed with the person: a source's value when that source was drafted for the person (${DRAFTED}), ` +
   `an item the framing or a doc lists as open, recommended or not yet decided, or the default you would otherwise take. ` +
   `The person-owned choices: ${OWNED}. ` +
@@ -96,6 +135,10 @@ const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No on
     : `Never guess the answer to a blocking question and never build on an unconfirmed value: write and change nothing, and return every such question and every confirmation (all of them, in one pass) in questions, ` +
       `each with why it blocks, 2-4 concrete options and the one you recommend; a confirmation has confirm: true and the unconfirmed value as its recommended option. `) +
   `Report in assumptions every other choice the doc's sources did not settle (empty when none). `
+// What the reviewer makes of a decision's provenance tag, as in brief-to-proposals' reviews.
+const TAG_REVIEW = ON_Q === 'assume'
+  ? `The person chose to proceed on assumptions, so a decision tagged (assumed) is not a defect. `
+  : `A person-owned decision tagged (assumed), or (source) when the source was drafted for the person (${DRAFTED}), is a concern whose fix is the question to ask. The person-owned choices: ${OWNED}. `
 const QUESTION = {
   type: 'object',
   properties: {
@@ -211,7 +254,7 @@ const history = [], other = []
 let fixes = 0, findings = [], clean = false, failed = '', questions = [], rounds = 0, before = ''
 for (let round = 1; ; round++) {
   const review = await agent(
-    WORK + ANSWERS_TEXT + REVIEW_CTX + `Invoke the Skill tool with skill "review-proposal" with args ${JSON.stringify(`${DOC}${ROADMAP_FLAG}`)}. ${FRAME}` +
+    WORK + FRAMING_FOR_REVIEW + ANSWERS_TEXT + REVIEW_CTX + TAG_REVIEW + `Invoke the Skill tool with skill "review-proposal" with args ${JSON.stringify(`${DOC}${ROADMAP_FLAG}`)}. ${FRAME}` +
     `Report every finding (bug/concern/suggestion/nit) with the doc it is about, by its path relative to ${DIR} (this one is ${DOC}), verified against the doc, its sources and the tree. Do not edit files. ` +
     `Report the doc's Status: as the review's header gives it. Set completed=false, with the reason in stop_reason, if the skill stopped without reviewing the doc (an empty findings list must mean a real, clean review).` +
     (history.length ? `\nEarlier rounds and what the reviser did (confirm each is resolved; do not re-report revised items or ones validly declined):\n${JSON.stringify(history, null, 1)}` : ''),
@@ -227,10 +270,10 @@ for (let round = 1; ; round++) {
   if (!defects.length && (!findings.length || fixes >= 1 || fixes >= MAX_REVIEW)) { clean = true; break }
   if (fixes >= MAX_REVIEW) break
   const fix = await agent(
-    WORK + ASK_RULE + ANSWERS_TEXT + `Invoke the Skill tool with skill "propose" with args ${JSON.stringify(`--revise ${DOC}`)}, applying these findings; decline any you can verify is wrong and give the reason. ` +
+    WORK + CTX + ASK_RULE + ANSWERS_TEXT + `Invoke the Skill tool with skill "propose" with args ${JSON.stringify(`--revise ${DOC}`)}, applying these findings; decline any you can verify is wrong and give the reason. ` +
     `A finding only the person can settle (the doc's sources are silent or ambiguous on it, and the fix would choose for them) is a blocking question, per QUESTIONS: never decline it or pick a side. ` +
     `So is a finding whose fix would change what the person settled (an answer, the framing, a decision tagged (person, ...)): never apply it and never decline it; return the question, naming both sides. ` +
-    (ANSWERS.length ? `Apply every answer above that the doc does not yet reflect, and tag each decision an answer settles (person, <the answer's date, or today's when it has none>, <the answer's id>). ` : '') +
+    (ANSWERS.length ? `Apply every answer in the list above (the ones passed to this run) that the doc does not yet reflect, and tag each decision an answer settles (person, <the answer's date, or today's when it has none>, <the answer's id>). ` : '') +
     `Edit only ${DOC}; never any other doc. Re-run ${LINT} ${DOC} until it reports no errors.\n` +
     JSON.stringify(findings, null, 2),
     opts(`revise-${round}`, 'Review', 'revise', REVISE_SCHEMA),

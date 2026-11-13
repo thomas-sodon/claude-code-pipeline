@@ -751,8 +751,10 @@ await test('brief-to-proposals: a context file that is missing is restored from 
   assert.match(missing.result.stop_reason, /^context_not_found: notes\/builder\.md does not exist/)
   assert.match(missing.result.stop_reason, /Copy it back into this checkout or rewrite it with the person, then re-run: a design run without the person's framing would choose for them/)
   assert.deepEqual(missing.labels, ['seed', 'existing-docs'])
-  assert.match(missing.prompt('existing-docs'), /pipeline-state\.py get context\/builder-context\.md --to notes\/builder\.md \(the one write this stage may make/)
+  assert.match(missing.prompt('existing-docs'), /pipeline-state\.py get context\/builder-context\.md --to notes\/builder\.md \(this restore is the one change this stage may make: the file, and its line in the local exclude file;/)
   assert.match(missing.prompt('existing-docs'), /Read-only but for the one restore step 6 allows/)
+  // A restored framing is kept out of commits the way /start-product keeps the file it writes: by the local exclude file.
+  assert.match(missing.prompt('existing-docs'), /After a restore, when the file lies inside \/abs\/p, append its path from the root of \/abs\/p, with a leading \/, to the checkout's local exclude file unless a line there already names it \(the file git rev-parse --git-path info\/exclude prints/)
   // Restored: the run goes on.
   const back = await run(WF, args, design({}, { ...NO_DOCS, context_exists: true, context_restored: true }))
   assert.equal(back.result.status, 'ready')
@@ -978,6 +980,54 @@ await test('brief-to-proposals: in brief mode an answer reaches the stages befor
   }
   // The start inference is unchanged: with the docs on disk, the same answers start at the architecture review.
   assert.equal((await run(WF, { ...BRIEF, answers }, design())).result.from, 'architecture')
+})
+
+await test('brief-to-proposals: a person\'s Intake answer on a fresh run reaches the sketches, the judge and the architecture reviser', async () => {
+  const answers = [{ id: 'intake.q1', question: Q.question, answer: 'ANSWER-INTAKE: email', date: '2026-11-12' }]
+  const concern = { findings: [{ doc: PATH.roadmap, severity: 'concern', description: 'no rollback plan' }], completed: true }
+  const { result, prompt, labels } = await run(WF, { ...BRIEF, panel: 3, answers }, design({ 'review:architecture-1': concern }, NO_DOCS))
+  assert.equal(result.status, 'ready')
+  const LIST = JSON.stringify([{ id: 'intake.q1', question: Q.question, answer: 'ANSWER-INTAKE: email', date: '2026-11-12' }])
+  for (const l of ['sketch:validate-first', 'sketch:trust-first', 'sketch:operate-first', 'judge', 'revise:architecture-1']) {
+    assert.ok(labels.includes(l), `${l} ran`)
+    assert.ok(prompt(l).includes(LIST), `${l}: the answer with its id, question text and date`)
+    assert.match(prompt(l), /never re-ask them/, l)
+  }
+  // An answer passed without its question says so to every stage it reaches; the log names it.
+  const bare = await run(WF, { ...BRIEF, answers: { 'intake.q1': 'email' } }, design({}, NO_DOCS))
+  for (const l of ['intake', 'roadmap', 'propose:m2']) assert.match(bare.prompt(l), /An entry above whose question equals its id was passed without its question text\. When its answer alone does not say what it settles, it settles nothing: never guess what it meant\./, l)
+  assert.ok(bare.logs.some(m => /^Answer\(s\) without their question text: intake\.q1 /.test(m)), bare.logs.join('\n'))
+  // The saved copy supplies the question: then nothing is said and nothing is logged.
+  const saved = await run(WF, { ...BRIEF, answers: { 'intake.q1': 'email' } }, design({}, { ...NO_DOCS, saved_answers: [{ id: 'intake.q1', stage: 'intake', question: Q.question, answer: 'email', date: '2026-11-05' }] }))
+  assert.doesNotMatch(saved.prompt('roadmap'), /passed without its question text/)
+  assert.ok(!saved.logs.some(m => /without their question text/.test(m)))
+})
+
+await test('brief-to-proposals: assumptions an author or reviser reports reach the result with their stage (roadmap, a milestone, consistency, concern mode)', async () => {
+  const over = {
+    roadmap: { ...WRITTEN, assumptions: ['A-ROADMAP'] },
+    'propose:m2': { doc: PATH.m2, steps: 3, lint_clean: true, assumptions: ['A-M2'] },
+    'consistency:arch-m2': { findings: [{ doc: PATH.m2, severity: 'bug', description: 'uses a table the architecture does not have' }], coverage_gaps: [] },
+    'revise:consistency-1': { summary: 'aligned', lint_clean: true, assumptions: ['A-CONSISTENCY'] },
+  }
+  const { result } = await run(WF, BRIEF, design(over, NO_DOCS))
+  for (const want of [{ stage: 'architecture', assumption: 'A-ROADMAP' }, { stage: 'm2', assumption: 'A-M2' }, { stage: 'consistency', assumption: 'A-CONSISTENCY' }]) {
+    assert.ok(result.assumptions.some(a => a.stage === want.stage && a.assumption === want.assumption), JSON.stringify([want, result.assumptions]))
+  }
+  assert.match(result.next_steps.find(s => s.startsWith('Before a doc is accepted')), /show the person this result's assumptions \(3\)/)
+  const concern = await run(WF, { concern: 'big change', dir: '/abs/p' }, design({ propose: { doc: 'docs/design/big-change.md', steps: 3, lint_clean: true, assumptions: ['A-CONCERN'] } }))
+  assert.deepEqual(concern.result.assumptions, [{ stage: 'proposal', assumption: 'A-CONCERN' }])
+})
+
+await test('brief-to-proposals: an option taken on assumptions is never saved as the person\'s answer', async () => {
+  const given = [{ id: 'intake.d1', question: 'Which licence?', answer: 'MIT', date: '2026-11-12' }]
+  const brief = await run(WF, { ...BRIEF, on_question: 'assume', answers: given }, design({ intake: { questions: [Q] }, 'save-answers': { saved: true } }, NO_DOCS))
+  assert.equal(brief.result.status, 'ready')
+  assert.match(brief.prompt('roadmap'), /email \(assumed: the person chose to proceed on recommendations\)/, 'the authors build on the assumed option')
+  assert.doesNotMatch(brief.prompt('save-answers'), /\(assumed|intake\.q1/, 'only what the person said is saved')
+  assert.match(brief.prompt('save-answers'), /"id": "intake\.d1"/)
+  const concern = await run(WF, { concern: 'big change', dir: '/abs/p', on_question: 'assume', answers: given }, design({ intake: { questions: [Q] }, 'save-answers': { saved: true }, propose: { doc: 'docs/design/big-change.md', steps: 3, lint_clean: true } }))
+  assert.doesNotMatch(concern.prompt('save-answers'), /\(assumed|intake\.q1/)
 })
 
 process.exit(failed ? 1 : 0)

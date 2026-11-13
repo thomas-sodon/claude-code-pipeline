@@ -36,7 +36,9 @@ export const meta = {
 //             the one the person saw (a resumeFromRunId replay does); otherwise the run stops again with the new proposal.
 //             A lane's own questions are not answered here (see below). An answer given here with a lane
 //             ([{ lane, id, answer, question?, date? }]) is still passed to that lane's plan-to-merged-pr run, and one with
-//             no lane to every lane's
+//             no lane to every lane's: that is for a decision the person made for the whole run, under an id no lane issues.
+//             The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor, .q<N> or .d<N>) repeat across
+//             lanes, so one of those with no lane is refused when the run has more than one lane. An intake id reaches no lane
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
@@ -67,7 +69,9 @@ const SHARED = {}
 for (const k of ['gate', 'main_branch', 'ai_review_check', 'commit_trailers', 'max_review_rounds', 'max_polish', 'max_monitor_rounds', 'efforts', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
 if (ACCESS) SHARED.github_access = ACCESS
 if (A.ship === false) SHARED.ship = false
-// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane); the Intake's goes to none.
+// Answers to a lane's questions go to that lane only; the Intake's goes to none. An answer with no lane goes to every lane, which
+// is for a decision the person made for the whole run; an id a lane's own run issues repeats across lanes, so with no lane it
+// could be read against another lane's question: refused once the run has more than one lane (checked when the lanes are known).
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const isIntakeAnswer = a => String(a.id || '').split('.')[0] === 'intake'
 const laneAnswers = key => ANSWERS.filter(a => !isIntakeAnswer(a) && (!a.lane || a.lane === key)).map(({ lane, ...a }) => a)
@@ -375,6 +379,8 @@ for (const field of ['key', 'dir', 'branch']) {
   const seen = {}
   for (const l of lanes) { if (seen[l[field]]) throw new Error(`bug-fix-backlog: lanes ${seen[l[field]]} and ${l.key} share ${field} ${l[field]}`); seen[l[field]] = l.key }
 }
+const LOOSE = ANSWERS.filter(a => !a.lane && ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor'].includes(String(a.id || '').split('.')[0])).map(a => a.id)
+if (lanes.length > 1 && LOOSE.length) throw new Error(`bug-fix-backlog: answers: ${LOOSE.join(', ')} ${LOOSE.length > 1 ? 'name' : 'names'} no lane; these ids repeat across lanes: pass the lane its question carried`)
 const owner = {}
 for (const l of lanes) for (const n of l.issues) { if (owner[n]) throw new Error(`bug-fix-backlog: issue #${n} is in lanes ${owner[n]} and ${l.key}`); owner[n] = l.key }
 
@@ -392,6 +398,9 @@ const results = await pipeline(
     (l.issues.length > 1 ? `These issues share a code site: design one fix that resolves all of them rather than stacking patches. ` : '') +
     `List in assumptions every choice the plan makes that the issues and the code do not settle (which of two readings of an issue it fixes, a behaviour it picks where the issue names none), one line each; empty when there is none. ` +
     `A choice that is the person's to make (what the product promises its users, a public interface, money, a new service or dependency that receives data) is never settled in the plan: write it there as open, naming the options, so the implementer's stage asks the person. ` +
+    `The skill's dry run asks nobody: it prints each question for the person under the verdict, then a plan body written on its recommended option, or "no plan: waits for the person's answer". Carry every such question into the combined plan as an open choice in that same way ` +
+    `(the question, why it blocks, its options, the recommended one), and never build the plan on the option that printed body took; an issue that waits for the person's answer keeps the verdict plan, and its part of the plan holds the open choice and no edit that depends on it. ` +
+    `A bullet of that body's "## Assumptions" section that is not one of those questions goes into assumptions. ` +
     `Do NOT edit any repo file in this step.`,
     { label: `triage:${l.key}`, phase: 'Triage', effort: EFF.triage, schema: TRIAGE_SCHEMA },
   ),

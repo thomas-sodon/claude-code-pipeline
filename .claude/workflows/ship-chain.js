@@ -12,7 +12,7 @@ export const meta = {
 
 // args: { chain: { chain, order: [{ lane, branch, steps?, args }] }, title_prefix?, max_wait_rounds?, answers?, ...shared ship settings }
 //   chain           — one entry of proposal-build-chain's derive-mode ship_plan (its ship_chain_args.chain), lanes in merge order;
-//                     each lane's args are plan-to-merged-pr ship-only args ({ ship_only: true, branch, dir, title, proposal, plan_text?, predecessor_prs? })
+//                     each lane's args are plan-to-merged-pr ship-only args ({ ship_only: true, branch, dir, title, proposal, plan_ref? | plan_text?, repo?, predecessor_prs? })
 //   title_prefix    — prepended to every lane's PR title (e.g. '[status page] '), unless the title already starts with it
 //   max_wait_rounds — default 48: wait rounds per lane, each polling the PR for up to ~30 minutes, before the run stops with not_merged.
 //                     A round that ends with the PR still open and needing action (a person's comment with no reply after it,
@@ -27,7 +27,10 @@ export const meta = {
 //                     lane's plan-to-merged-pr run; given here, it overrides the lanes' own
 //   repo            — the repository's GitHub owner/name (default: each lane's own, as the ship plan gives it): what a missing
 //                     lane checkout is cloned from when no checkout of the repository is at hand; given here, it overrides
-//   answers         — [{ lane, id, answer, question?, date? }]: answers to the questions a needs_input result returned; each lane gets only its own
+//   answers         — [{ lane, id, answer, question?, date? }]: answers to the questions a needs_input result returned; each lane gets only its own.
+//                     One with no lane reaches every lane: that is for a decision the person made for the whole chain, under an id
+//                     no lane issues (intake.d<N>). The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor,
+//                     .q<N> or .d<N>) repeat across lanes, so one of those with no lane is refused when the chain has more than one lane
 // A lane's placeholder title (empty, or '<...>' as the ship plan writes it) is written from its proposal steps (steps, or the
 // numbers in the placeholder), else from the branch's own commits. predecessor_prs placeholders are replaced by the PR numbers
 // of the lanes above, as merged; numbers already given are kept.
@@ -77,9 +80,14 @@ if (TOP_ACCESS) SHARED.github_access = TOP_ACCESS
 if (TOP_REPO) SHARED.repo = TOP_REPO
 const accessOf = e => TOP_ACCESS || normAccess(e.args.github_access)
 const repoOf = e => TOP_REPO || (e.args.repo ? String(e.args.repo).trim() : '')
-// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
+// Answers to a lane's questions go to that lane only. An answer with no lane goes to every lane, which is for a decision the
+// person made for the whole chain; an id a lane's own run issues repeats across lanes, so with no lane it could be read against
+// another lane's question: refused once the chain has more than one lane.
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
+const LANE_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']
+const LOOSE = ANSWERS.filter(a => !a.lane && LANE_SCOPES.includes(String(a.id || '').split('.')[0])).map(a => a.id)
+if (keys.length > 1 && LOOSE.length) throw new Error(`ship-chain: answers: ${LOOSE.join(', ')} ${LOOSE.length > 1 ? 'name' : 'names'} no lane; these ids repeat across lanes: pass the lane its question carried`)
 const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
   `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
   `Also show the person the assumptions of the lane that asked (lanes[].result.assumptions; its PR body lists the ones its build made): a line they correct is passed as an answer too (that lane, id <its stage>.d<N>, with the assumption as its question). ` +

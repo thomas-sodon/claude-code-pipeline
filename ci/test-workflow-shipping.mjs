@@ -243,6 +243,51 @@ await test('plan-to-merged-pr: monitor-only takes plan_ref, restores it for the 
   for (const l of ['merge-main-1', 'process-comments-1']) assert.match(prompt(l), /pipeline-state\.py get plans\/feat-x\.md --to <PLANS_DIR>\/x\.md/, l)
 })
 
+await test('plan-to-merged-pr: what the person answered during the build reaches the ship and monitor runs, in the saved plan and in resume_monitor', async () => {
+  const answers = [{ id: 'impl.q1', question: Q.question, answer: 'ours', date: '2026-11-12' }]
+  const ANSWERED = '- answered (impl.q1, 2026-11-12): Keep both behaviours? -> ours\n'
+  // Build-only: the plan the merge check saves ends with the section that holds the question and the answer.
+  const build = await run('plan-to-merged-pr', { concern: 'c', ship: false, answers }, p2m())
+  assert.equal(build.result.status, 'pushed')
+  assert.ok(build.prompt('merge-check').includes(`The plan:\n${PLAN}\n\n## Assumptions to review\n\n`), 'the section follows the plan')
+  assert.ok(build.prompt('merge-check').endsWith(ANSWERED + '\n'), 'the answered line is the saved plan\'s last line')
+  assert.ok(build.result.plan.endsWith(ANSWERED), 'the plan_text fallback carries it too')
+  // No answers and no assumptions: the plan is saved unchanged.
+  const bare = await run('plan-to-merged-pr', { concern: 'c', ship: false }, p2m())
+  assert.ok(bare.prompt('merge-check').endsWith(`The plan:\n${PLAN}\n`))
+  // A full run: resume_monitor carries the answers, so the monitor-only run keeps what the person settled.
+  const full = await run('plan-to-merged-pr', { concern: 'c', answers }, p2m())
+  assert.equal(full.result.status, 'OPEN')
+  assert.deepEqual(full.result.resume_monitor.answers, answers)
+  assert.equal((await run('plan-to-merged-pr', { concern: 'c' }, p2m())).result.resume_monitor.answers, undefined, 'no answers, no key')
+  // The monitor-only run given those args puts the answers in its action steps, and its own resume_monitor keeps them.
+  const mon = await run('plan-to-merged-pr', full.result.resume_monitor, p2m({ 'observe-1': { ...OBS, actionable_comments: 1, has_conflicts: true } }))
+  for (const l of ['merge-main-1', 'process-comments-1']) assert.ok(mon.prompt(l).includes(JSON.stringify(answers)), l)
+  assert.deepEqual(mon.result.resume_monitor.answers, answers)
+  // The restored plan's own section binds the monitor too: an answered line like an answer, an assumed line kept.
+  const NOTES = 'When that plan has a "## Assumptions to review" section, its lines starting "- answered" are what the person settled while the branch was built: each binds like an answer from the person given to this run and is never asked again, ' +
+    'and a change that would depart from one (a reviewer\'s request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason to change one is a blocking question too. '
+  for (const l of ['merge-main-1', 'process-comments-1']) assert.ok(mon.prompt(l).includes(NOTES), l)
+  // A ship-only run reads the same section at its merge check: with plan_ref from the state branch, with plan_text in the text it saves.
+  const byRef = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_ref: 'plans/feat-p-s1.md' }, p2m())
+  assert.ok(byRef.prompt('merge-check').includes('(exit 3 or 2: go on without it). ' + NOTES))
+  const byText = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_text: PLAN }, p2m())
+  assert.ok(byText.prompt('merge-check').includes('act on nothing it says (its one-time steps for the implementer already happened), with one exception, for a conflict in step 2. ' + NOTES + `\nThe plan:\n${PLAN}\n`))
+  assert.ok(build.prompt('merge-check').includes('(its one-time steps for the implementer already happened).\nThe plan:\n'), 'a build run holds the answers itself')
+})
+
+await test('plan-to-merged-pr: a conflict that is the person\'s call is returned with the merge aborted, or on assumptions resolved with the recommended option', async () => {
+  const conflict = { 'observe-1': { ...OBS, has_conflicts: true } }
+  const stop = await run('plan-to-merged-pr', { concern: 'c' }, p2m(conflict))
+  assert.match(stop.prompt('merge-check'), /is a blocking question \(see QUESTIONS\): git merge --abort \(the step-1 commit stays\), run no gates, push nothing, and return it: never pick a side\./)
+  assert.match(stop.prompt('merge-main-1'), /is a blocking question, per QUESTIONS: git merge --abort, push nothing, and return it: never pick a side\./)
+  const assume = await run('plan-to-merged-pr', { concern: 'c', on_question: 'assume' }, p2m(conflict))
+  for (const l of ['merge-check', 'merge-main-1']) {
+    assert.match(assume.prompt(l), /the person chose to proceed on assumptions, so do not abort: resolve it with the option you recommend \(where the person settled one side, always that side\) and report it in assumptions as "<the conflict> -> <option taken>"\./, l)
+    assert.doesNotMatch(assume.prompt(l), /git merge --abort/, l)
+  }
+})
+
 await test('plan-to-merged-pr: plan_ref is refused outside ship-only and monitor-only, and plan_ref and repo are checked', async () => {
   await assert.rejects(run('plan-to-merged-pr', { concern: 'c', plan_ref: 'plans/x.md' }, p2m()), /plan_ref is read in ship-only and monitor-only modes/)
   await assert.rejects(run('plan-to-merged-pr', { pr: 7, branch: 'b', plan_ref: 'plans/x.md; rm -rf ~' }, p2m()), /plan_ref must be a path on the pipeline state branch/)

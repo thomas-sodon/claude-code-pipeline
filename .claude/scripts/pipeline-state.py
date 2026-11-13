@@ -11,7 +11,8 @@ overrides) holds what the pipeline must not lose with a container: the
 orchestrator's handoff (STATE.md), lane plans (plans/<branch-slug>.md), review
 ledgers (reviews/<branch-slug>.json, reviews/proposal-<doc-slug>.json), the design
 panel's synthesis (design/panel-synthesis.md), the answers the person gave a
-design run (design/answers.json), run records
+design run (design/answers.json; a concern-mode run's go to
+design/answers-concern.json, which no run restores), run records
 (runs/<YYYYMMDDTHHMMSSZ>-<workflow>.json) and, only when the person consented to
 keep it there, the builder context (context/builder-context.md). It is never main
 and never force-pushed. It is written without a checkout, with git plumbing and a

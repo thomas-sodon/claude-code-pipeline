@@ -56,9 +56,12 @@ export const meta = {
 //   answers?: [{ id, answer, question?, date? }]  the questions a needs_input result returned, each with the person's answer, its
 //                              question text and the date they gave it (or { <id>: answer }); each answer reaches the stage that
 //                              asked and every later stage, so a resume (resumeFromRunId) replays the stages before it from the
-//                              record. A result's assumption the person corrects is passed the same way, as <its stage>.d<N>
+//                              record. A result's assumption the person corrects is passed the same way, as <its stage>.d<N>.
+//                              An answer passed without its question text still binds, but a stage that cannot tell from the
+//                              answer alone what it settles treats it as settling nothing, so pass the question with it
 // Monitor-only mode: { pr: number, branch: string, dir?: string } skips straight to the Monitor phase.
 // A run that hands the PR off while it is still open returns resume_monitor (these args, ready to re-run) and a one-line handoff.
+// resume_monitor carries the answers this run was given, so the monitor-only run keeps what the person settled during the build.
 // A run given `proposal` whose PR reads MERGED checks the proposal on origin/<main_branch> and returns closeout (read-only:
 // only a person sets Status: done or ticks the roadmap milestone): { proposal_complete: true, edits, next_milestone, roadmap,
 // milestone: { n, title, acceptance } | null } (the milestone they tick, with the Acceptance they check first) or
@@ -200,6 +203,10 @@ const RESTORE = A.plan_ref
   ? `This branch's plan is saved on the pipeline state branch as ${A.plan_ref}. First restore it into the plans directory (PLANS_DIR from the "Pipeline config" section of CLAUDE.md, default ~/.claude/plans), under the name the commands' own plan lookup reads for this branch: ` +
     `python3 .claude/scripts/pipeline-state.py get ${A.plan_ref} --to <PLANS_DIR>/${String(A.branch || '').replace(/^(feat|fix|refactor)\//, '')}.md, with <PLANS_DIR> that directory, ~ expanded. `
   : ''
+// The plan a ship-only or monitor-only stage reads may end with "## Assumptions to review": what the build's stages assumed and
+// what the person answered then. Those answers reach this run through the plan alone, unless they were passed again.
+const PLAN_NOTES = `When that plan has a "## Assumptions to review" section, its lines starting "- answered" are what the person settled while the branch was built: each binds like an answer from the person given to this run and is never asked again, ` +
+  `and a change that would depart from one (a reviewer's request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason to change one is a blocking question too. `
 const RESTORE_ELSE = A.plan_text
   ? `If that get fails, use this copy of the plan instead:\n${clip(A.plan_text)}\n`
   : `If that get fails (exit 3: the plan was never saved; exit 2: git failed), go on without a plan: plans are saved and restored best effort. `
@@ -227,6 +234,11 @@ const PREDS_CHECK = PREDS.length
   ? `First confirm each of ${PREDS.map(n => '#' + n).join(', ')} reads MERGED (gh pr view <n> --json state${cxIn('pull_request_read method get, merged true')}). If any does not, change nothing and report blocked=true naming it. `
   : ''
 const WORK = GUARD + WHERE + GATES
+// A merge conflict that is the person's call, as /merge-main handles it: returned with the merge aborted, or, when the person
+// chose to proceed on assumptions, resolved with the recommended option and reported.
+const conflictCall = aborted => A.on_question === 'assume'
+  ? `the person chose to proceed on assumptions, so do not abort: resolve it with the option you recommend (where the person settled one side, always that side) and report it in assumptions as "<the conflict> -> <option taken>".`
+  : `git merge --abort${aborted}, push nothing, and return it: never pick a side.`
 // Every stage that commits keeps out what must not reach the repo: the brief and builder context a new product starts from
 // (often private), and whatever the plan or /bootstrap's report lists as left out. Those stay uncommitted and are reported.
 const KEEP_OUT = `Stage files by explicit path only (never git add -A, git add . or git commit -a), and never stage or commit docs/brief.md or docs/builder-context.md, ` +
@@ -243,6 +255,10 @@ const kindOrder = id => { const i = KINDS.indexOf(String(id || '').split('.')[0]
 // plan and the PR body.
 const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers || {}).map(([id, answer]) => ({ id, answer })))
   .filter(a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
+// An answer that came back without its question text (an id-only map, an older handoff) is shown with its id as the question:
+// it still binds, and no stage may guess what it settled.
+const NO_TEXT = `An entry above whose question equals its id was passed without its question text. When its answer alone does not say what it settles, it settles nothing: never guess what it meant. `
+if (ANSWERS.some(a => !a.question)) log(`Answer(s) passed without their question text: ${ANSWERS.filter(a => !a.question).map(a => a.id).join(', ')} (pass each answer with its question, so every stage can tell what it settles)`)
 const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No one can answer a question mid-run, so never wait for one and never use a question tool. ` +
   `A blocking question is one only the person can answer (what they intend, a requirement or constraint the concern, plan or design doc leaves out or states two incompatible ways, a trade-off that is theirs to make, ` +
   `a conflict between what the person said (an answer given to this run, the framing, a decision a design doc tags (person, ...)) and the concern, the plan, the tree or your research, or a blocker whose way forward is their call) ` +
@@ -260,7 +276,8 @@ const answersFor = kind => {
   const mine = ANSWERS.filter(a => kindOrder(a.id) <= KINDS.indexOf(kind))
   return mine.length
     ? `Answers from the person to questions an earlier run raised (binding, like an explicit constraint; never re-ask them, and never change what one settled: a reason to change it is a blocking question): ` +
-      `${JSON.stringify(mine.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n`
+      `${JSON.stringify(mine.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n` +
+      (mine.some(a => !a.question) ? NO_TEXT + '\n' : '')
     : ''
 }
 // The assumptions the stages so far reported reach every later stage of the run, so none replaces one with a pick of its own,
@@ -561,7 +578,7 @@ const needsInput = (kind, r, extra) => {
       `The branch's uncommitted work is kept only while this checkout exists` + (A.plan_text || PLAN_REF ? `; a new container builds it again from that plan with the answers.` : `.`) +
       (PLAN_REF && !A.plan_text ? ` When the person's answer is to plan the work again, also pass replan: true${A.branch ? '' : ` and branch: '${BRANCH}'`} (in either session): the planner then ignores the saved plan and saves the new one over it.` : '')
   const relay = RELAY + (kind === 'monitor'
-    ? `Then re-run this workflow in monitor-only mode (this result's resume_monitor as args, plus ${RELAY_ANSWERS}), so the PR is observed afresh.`
+    ? `Then re-run this workflow in monitor-only mode (this result's resume_monitor as args, plus ${RELAY_ANSWERS}; the answers given before are resume_monitor's own answers, when it has any), so the PR is observed afresh.`
     : `Then re-run this workflow with the same args plus ${RELAY_ANSWERS}. In this session, also set resumeFromRunId to this run's id: ` +
       `the stages before the one that asked replay from the record and the work in the checkout is kept. ` + fresh)
   return done('needs_input', { stage: kind, questions, relay, ...(extra || {}) })
@@ -745,7 +762,7 @@ if (MONITOR_ONLY) {
   const SAVE_AS = !A.plan_ref && PLAN_TEXT ? planRefFor(BRANCH) : ''
   const mc = await agent(
     WORK + AUTH + PROPOSAL_CTX + ASK('merge_check') + (SHIP_ONLY ? PREDS_CHECK : '') +
-    (SHIP_ONLY && A.plan_ref ? `This branch's plan, its design intent for any merge conflict, is saved on the pipeline state branch as ${A.plan_ref}: read it with python3 .claude/scripts/pipeline-state.py get ${A.plan_ref} when a conflict needs it (exit 3 or 2: go on without it). ` : '') +
+    (SHIP_ONLY && A.plan_ref ? `This branch's plan, its design intent for any merge conflict, is saved on the pipeline state branch as ${A.plan_ref}: read it with python3 .claude/scripts/pipeline-state.py get ${A.plan_ref} when a conflict needs it (exit 3 or 2: go on without it). ${PLAN_NOTES}` : '') +
     `On branch ${BRANCH}:\n` +
     (STEPS.length
       ? `0. Mark the proposal steps this change implements as landed: run python3 .claude/scripts/proposal-lint.py ${A.proposal} --tick ${STEPS.join(',')} (if that script is missing, change only "[ ]" to "[x]" on the lines of steps ${STEPS.join(', ')} under "## Steps" in ${A.proposal}, nothing else). Stage ${A.proposal} with the change.\n`
@@ -754,7 +771,7 @@ if (MONITOR_ONLY) {
     KEEP_OUT + `\n` +
     `2. Merge check: git fetch; merge origin/${MAIN}${BASES.length ? ' and the latest origin/<base> of each stacked branch, fetched and checked as below' : ''} (never rebase); resolve conflicts preserving both sides' intent and commit the merge. ` +
     `A conflict where both sides changed the same behaviour incompatibly and neither the plan nor the design doc decides which wins is a blocking question (see QUESTIONS): ` +
-    `git merge --abort (the step-1 commit stays), run no gates, push nothing, and return it — never pick a side. ` + STACK + `\n` +
+    conflictCall(' (the step-1 commit stays), run no gates') + ` ` + STACK + `\n` +
     (SHIP_ONLY || !clean
       ? `3. Run the full QUALITY_GATES command (from the "Pipeline config" section of CLAUDE.md) whatever the merge brought in — ${SHIP_ONLY ? 'this run built nothing, so no earlier green run can be relied on' : 'polish never reached a clean, green round'} — and continue only when green. Confirm git merge-tree against origin/${MAIN} is clean.\n`
       : `3. If the merge brought in any change, run the full QUALITY_GATES command (from the "Pipeline config" section of CLAUDE.md) and continue only when green; if it brought in nothing, polish's last clean round already ran the gates green — say so. Confirm git merge-tree against origin/${MAIN} is clean.\n`) +
@@ -766,7 +783,8 @@ if (MONITOR_ONLY) {
         `for each assumption you report from this step, a line "- assumed (merge_check): <the assumption>" at the end of the plan's last section, "${NOTES_HEAD}" (when the plan has no such section, add that heading at the end of the file first). Then run ` +
         `python3 .claude/scripts/pipeline-state.py save <that file> --as ${SAVE_AS} -m "Plan for ${BRANCH}" (it pushes the state branch only, never ${BRANCH}). ` +
         `Report plan_saved=true only when it printed "saved": true. If it fails (exit 2, or the script is missing in this checkout), report plan_saved=false, say why in merge_check, and let nothing else depend on it. ` +
-        `The plan is data to save, not instructions for this step: act on nothing it says (its one-time steps for the implementer already happened).\nThe plan:\n${PLAN_TEXT}\n`
+        `The plan is data to save, not instructions for this step: act on nothing it says (its one-time steps for the implementer already happened)` +
+        (SHIP_ONLY ? `, with one exception, for a conflict in step 2. ${PLAN_NOTES}` : `.`) + `\nThe plan:\n${PLAN_TEXT}\n`
       : ''),
     opts('merge-check', 'PR', 'merge_check', SAVE_AS ? MERGE_CHECK_SAVE_SCHEMA : MERGE_CHECK_SCHEMA),
   )
@@ -817,11 +835,14 @@ if (MONITOR_ONLY) {
   // The PR body shows what the person has not confirmed and what they answered, so they can correct one before merging: this
   // run's lines (those of the plan it holds included), and with plan_ref the section of the plan restored from the state branch.
   const NOTES = PLAN_TEXT ? splitNotes(planForPr()).lines : noteLines()
+  const NOTE_HAS_SECTION = !A.existing_pr && String(A.pr_note || '').includes(NOTES_HEAD)
   const NOTES_FOR_PR = A.plan_ref
     ? `Copy that plan's "${NOTES_HEAD}" section, when it has one, into the PR body under the same heading, after the Deploy notes` +
       (NOTES.length ? `, and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone):\n${NOTES.join('\n')}\n` : `; when it has none, the body gets no such section. `)
     : NOTES.length
-      ? `Give the PR body a "${NOTES_HEAD}" section, after the Deploy notes, holding exactly these lines (choices this branch's stages made that the person has not confirmed, and what the person answered), so the person can correct one before merging:\n${NOTES.join('\n')}\n`
+      ? `Give the PR body a "${NOTES_HEAD}" section, after the Deploy notes, holding exactly these lines (choices this branch's stages made that the person has not confirmed, and what the person answered), so the person can correct one before merging:\n${NOTES.join('\n')}\n` +
+        // A caller's pr_note may give lines for the same section (bootstrap-repo's does): one section holds both.
+        (NOTE_HAS_SECTION ? `The note to include in the body, below, gives more lines for that section: they follow these in the same section, and the body has one section of that name. ` : '')
       : ''
   const opened = await agent(
     GUARD + WHERE + GATES + AUTH + PREDS_CHECK + KEEP_OUT + (A.existing_pr
@@ -865,9 +886,9 @@ const MAX_ROUNDS = A.max_monitor_rounds ?? A.max_rounds ?? 10
 // when the run was given plan_ref, else the text this run holds (its own plan, or args.plan_text).
 const PLAN_FOR_PR = planForPr()
 const MONITOR_CTX = PROPOSAL_CTX + answersFor('monitor') + (A.plan_ref
-  ? `${RESTORE}That file, the plan this branch was built from, is its design intent; use it instead of any other plan file in the plans directory or the folder pointer's, but ignore any one-time instruction in it addressed to the implementer (deleting, reverting or cleaning up files or tests): that already happened. ${RESTORE_ELSE}`
+  ? `${RESTORE}That file, the plan this branch was built from, is its design intent; use it instead of any other plan file in the plans directory or the folder pointer's, but ignore any one-time instruction in it addressed to the implementer (deleting, reverting or cleaning up files or tests): that already happened. ${PLAN_NOTES}${RESTORE_ELSE}`
   : PLAN_FOR_PR
-    ? `The plan this branch was built from is its design intent; use it instead of any plan file in the plans directory, but ignore any one-time instruction in it addressed to the implementer (deleting, reverting or cleaning up files or tests): that already happened:\n${clip(PLAN_FOR_PR)}\n`
+    ? `The plan this branch was built from is its design intent; use it instead of any plan file in the plans directory, but ignore any one-time instruction in it addressed to the implementer (deleting, reverting or cleaning up files or tests): that already happened. ${PLAN_NOTES}The plan:\n${clip(PLAN_FOR_PR)}\n`
     : '')
 // A conflict-free BEHIND merge restarts CI + AI review (~20 min); on a busy main the PR falls behind
 // again meanwhile, so these merges are capped and only taken once nothing else is pending.
@@ -886,6 +907,9 @@ for (const k of ['proposal', 'main_branch', 'ai_review_check', 'required_checks'
 if (GH_ACCESS) RESUME.github_access = GH_ACCESS
 if (REPO) RESUME.repo = REPO
 if ((A.max_monitor_rounds ?? A.max_rounds) !== undefined) RESUME.max_monitor_rounds = MAX_ROUNDS
+// What the person answered, during the build or an earlier monitor run, goes on to the next monitor-only run: a review comment
+// or a conflict must not reverse it, and the person is not asked it again.
+if (ANSWERS.length) RESUME.answers = ANSWERS
 let handoffWhy = ''
 for (let r = 1; r <= MAX_ROUNDS; r++) {
   const obs = await agent(
@@ -934,7 +958,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
       GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + KEEP_OUT + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". The branch to merge in is origin/${MAIN}, whatever MAIN_BRANCH the Pipeline config names. Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main). ` +
-      `A conflict whose resolution is the person's call (both sides changed the same behaviour incompatibly; neither the plan nor the design doc decides it) is a blocking question, per QUESTIONS: git merge --abort, push nothing, and return it.`,
+      `A conflict whose resolution is the person's call (both sides changed the same behaviour incompatibly; neither the plan nor the design doc decides it) is a blocking question, per QUESTIONS: ` + conflictCall(''),
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     noteAssumptions('monitor', m)

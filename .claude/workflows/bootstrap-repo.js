@@ -26,11 +26,12 @@ export const meta = {
 //                             status needs_input, before /bootstrap's first write; 'assume' takes each recommended option
 //                             instead and lists it in assumptions
 //   answers?: [{ id, answer, question?, date? }]  the questions a needs_input result returned, each with its question text,
-//                             the person's answer and the date they gave it (or { <id>: answer }). bootstrap.q<N>, and
-//                             bootstrap.d<N> (an assumption the person corrected, or a decision they made outside the questions),
-//                             reach the bootstrap stage and the ship run; the ship run's own ids (merge_check.q<N>,
-//                             monitor.q<N>) reach the ship run only, so a resume (resumeFromRunId) replays the bootstrap stage
-//                             from the record
+//                             the person's answer and the date they gave it (or { <id>: answer }). Every answer reaches the
+//                             bootstrap stage and the ship run: bootstrap.q<N>, bootstrap.d<N> (an assumption the person
+//                             corrected, or a decision they made outside the questions) and any other id, such as a design
+//                             run's intake.d<N> passed on. The one exception is the ship run's own ids (plan, impl, fix,
+//                             polish, merge_check and monitor, .q<N> or .d<N>): they reach the ship run only, so a resume
+//                             (resumeFromRunId) replays the bootstrap stage from the record
 // Every result carries assumptions: [{ stage, assumption }], the choices no person confirmed. The bootstrap stage's also go to
 // the ship run as pr_note, so the PR body shows them, and the first next step says to show them to the person before the merge.
 // Root mode: when the remote has no commits, /bootstrap makes the root commit on local main; nothing is shipped, and the next
@@ -90,26 +91,35 @@ const TRAILER_NOTE = TRAILERS.length
 // questions and the run stops with needs_input; the caller asks the person and re-runs with args.answers.
 // Scopes in run order: bootstrap, then the ship run (plan-to-merged-pr, which routes its own ids: merge_check, monitor, ...).
 // An answer reaches the scope that asked and every later one, never an earlier one, so a resume replays the bootstrap stage.
+// An id in neither scope (a design answer, a decision the person made for the whole product) reaches both: the bootstrap stage
+// is the one that writes the licence, the names and the skeleton.
 const ON_Q = A.on_question === 'assume' ? 'assume' : 'stop'
 const ANSWERS = (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers || {}).map(([id, answer]) => ({ id, answer })))
   .filter(a => a && a.answer !== undefined && a.answer !== null && String(a.answer).trim() !== '')
 const scopeOf = id => String(id || '').split('.')[0]
-const BOOT_ANSWERS = ANSWERS.filter(a => scopeOf(a.id) === 'bootstrap')
+const SHIP_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']
+const BOOT_ANSWERS = ANSWERS.filter(a => !SHIP_SCOPES.includes(scopeOf(a.id)))
+// An answer that came back without its question text (an id-only map, an older handoff) is shown with its id as the question:
+// it still binds, and no stage may guess what it settled.
+const NO_TEXT = `An entry above whose question equals its id was passed without its question text. When its answer alone does not say what it settles, it settles nothing: never guess what it meant. `
+if (ANSWERS.some(a => !a.question)) log(`Answer(s) passed without their question text: ${ANSWERS.filter(a => !a.question).map(a => a.id).join(', ')} (pass each answer with its question, so every stage can tell what it settles)`)
 const answersText = list => list.length
   ? `Answers from the person to questions an earlier run raised (binding, like an explicit constraint; never re-ask them, and never change what one settled: a reason to change it is a blocking question): ` +
-    `${JSON.stringify(list.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n`
+    `${JSON.stringify(list.map(a => ({ id: a.id, question: a.question || a.id, answer: a.answer, ...(a.date ? { date: a.date } : {}) })))}\n` +
+    (list.some(a => !a.question) ? NO_TEXT + '\n' : '')
   : ''
 const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No one can answer a question mid-run, so never wait for one and never use a question tool. ` +
   `A blocking question is one only the person can answer (what they intend, a requirement or choice the architecture leaves out or states two ways and the skeleton would bake in, a trade-off that is theirs to make, ` +
   `a conflict between what the person said (an answer, the framing, a decision the architecture tags (person, ...)) and what you find in the architecture, the tree or your research, or a blocker whose way forward is their call) ` +
   `and whose plausible answers lead to materially different work: a different skeleton, promise, cost or legal exposure. In such a conflict pick no side: ask, naming both. ` +
-  `A person-owned choice that no decision of the architecture and no answer settles is asked, never assumed: the command's "Questions before assumptions" section names the ones a skeleton meets ` +
-  `(the copyright holder, an existing LICENSE of another licence, no licence decision, a published name). ` +
+  `In two cases a person-owned choice the skeleton bakes in is ${ON_Q === 'assume' ? 'a blocking question' : 'asked as a blocking question, never assumed'}: when no decision of the architecture and no answer settles it, ` +
+  `and when the architecture records it as unconfirmed (a baked-in decision tagged (assumed) or untagged, which no answer confirms: a confirmation, with its Choice as the recommended option). The command's "Questions before assumptions" section names the ones a skeleton meets ` +
+  `(the copyright holder, an existing LICENSE of another licence, no licence decision, a published name, a baked-in decision nobody confirmed). ` +
   `Never change what the person settled: an answer or a decision tagged (person, ...) is changed only by a newer answer from the person; a reason to change it is a blocking question. ` +
   `A question, its options and the recommendation name decisions and milestones by title; a number alone is never enough (numbers move between revisions). ` +
   `Settle yourself anything the architecture, the roadmap, CLAUDE.md, the tree or research can settle; never ask about it. An error= stop the command defines is a stop to report, not a question. ` +
   (ON_Q === 'assume'
-    ? `The person chose to proceed on assumptions: for each blocking question, take the option you recommend (for a conflict with what the person said, what the person said; an existing LICENSE is never replaced) and report it in assumptions as "<question> -> <option taken>". `
+    ? `The person chose to proceed on assumptions: for each blocking question, take the option you recommend (for a conflict with what the person said, what the person said; for a baked-in decision nobody confirmed, its Choice as the architecture states it; an existing LICENSE is never replaced) and report it in assumptions as "<question> -> <option taken>". `
     : `Never guess the answer to a blocking question: stop before the first write (create no branch, write no file) and return every such question (all of them, in one pass) in questions, each with why it blocks, 2-4 concrete options and the one you recommend. ` +
       `A question that surfaces only after the first write stops the run where it is: commit nothing, keep the files, return it the same way and name the unfinished branch in branch (a re-run resumes on it). `) +
   `Report in assumptions every other choice you made that the inputs did not settle, with every line the command's report lists under Assumptions (empty when none). `
@@ -151,8 +161,8 @@ const bootRelay = branch => RELAY + `the bootstrap stage runs again with the ans
 const SHIP_RELAY = RELAY + `the commit /bootstrap made is kept (a stage whose prompt is unchanged replays from the record), and the ship run starts again with the answers.`
 const MONITOR_RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
   `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
-  SHOW_ASSUMED + `The bootstrap PR is already open: re-run plan-to-merged-pr with this result's ship.resume_monitor as args plus ${WITH_ANSWERS}, ` +
-  `in monitor-only mode, so the PR is observed afresh. The next_steps still apply once it merges.`
+  SHOW_ASSUMED + `The bootstrap PR is already open: re-run plan-to-merged-pr with this result's ship.resume_monitor as args plus ${WITH_ANSWERS} ` +
+  `(the answers given before are ship.resume_monitor's own answers, when it has any), in monitor-only mode, so the PR is observed afresh. The next_steps still apply once it merges.`
 const logQuestions = questions => {
   log(`${questions.length} question(s) only the person can answer — status needs_input`)
   for (const q of questions) log(`  ${q.id}: ${q.question} (recommended: ${q.recommended})`)
@@ -286,7 +296,7 @@ if (!SHIP) {
 }
 
 // ---- Ship: the bootstrap branch through plan-to-merged-pr ship-only (merge check, PR, monitor). Every answer goes along: the
-// ship run's own route to its stages, and the bootstrap stage's reach every later stage.
+// ship run's own route to its stages, and every other one (the bootstrap stage's, a design answer) reaches every stage of it.
 phase('Ship')
 log(`Shipping ${BRANCH} as "${TITLE}"`)
 let r = null, threw = ''

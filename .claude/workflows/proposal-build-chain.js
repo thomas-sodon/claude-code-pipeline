@@ -41,8 +41,11 @@ export const meta = {
 // Both modes: on_question ('stop' | 'assume') and github_access ('gh' | 'connector' | ''; '' leaves it to the GITHUB_ACCESS
 //   line of the Pipeline config) pass through to every lane; github_access also goes into the ship plan's args. A lane whose
 //   run stops with needs_input carries its questions (each tagged with the lane's key) up into this result; re-run with the
-//   same args plus answers: [{ lane, id, answer, question?, date? }], and each lane gets only its own answers. The lane that
-//   asked then continues from the plan its earlier run saved (its result's plan_ref) instead of planning a second time, so
+//   same args plus answers: [{ lane, id, answer, question?, date? }], and each lane gets only its own answers. An answer with
+//   no lane reaches every lane: that is for a decision the person made for the whole run, under an id no lane issues (a design
+//   answer, intake.d<N>). The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor, .q<N> or .d<N>)
+//   repeat across lanes, so one of those with no lane is refused (the run throws) when the run has more than one lane. The lane
+//   that asked then continues from the plan its earlier run saved (its result's plan_ref) instead of planning a second time, so
 //   the answer reaches the stage that asked and no planner re-asks or contradicts it.
 //   replan — true, or the keys of the lanes ([key, ...]) whose planner plans again instead of continuing from a saved plan
 //   (passed to those lanes as replan: true). Pass it when the person's answer is to plan a lane again, or when a lane failed on
@@ -66,9 +69,16 @@ if (!['', 'gh', 'connector'].includes(GH_ACCESS)) throw new Error(`github_access
 const SHARED = {}
 for (const k of ['planner', 'gate', 'main_branch', 'commit_trailers', 'max_review_rounds', 'max_polish', 'efforts', 'allow_draft', 'on_question']) if (A[k] !== undefined) SHARED[k] = A[k]
 if (GH_ACCESS) SHARED.github_access = GH_ACCESS
-// Answers to a lane's questions go to that lane only (an answer with no lane goes to every lane).
+// Answers to a lane's questions go to that lane only. An answer with no lane goes to every lane, which is for a decision the
+// person made for the whole run; an id a lane's own run issues repeats across lanes, so with no lane it could be read against
+// another lane's question: refused once the run has more than one lane.
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
+const LANE_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']
+const checkLaneAnswers = lanes => {
+  const loose = ANSWERS.filter(a => !a.lane && LANE_SCOPES.includes(String(a.id || '').split('.')[0])).map(a => a.id)
+  if (lanes > 1 && loose.length) throw new Error(`proposal-build-chain: answers: ${loose.join(', ')} ${loose.length > 1 ? 'name' : 'names'} no lane; these ids repeat across lanes: pass the lane its question carried`)
+}
 // The lanes whose planner plans again instead of continuing from the plan an earlier run saved.
 const replanLane = key => A.replan === true || (Array.isArray(A.replan) && A.replan.includes(key))
 const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
@@ -81,6 +91,7 @@ const RELAY = `Ask the person these questions yourself, in one batch, in as few 
     ? `Lanes already pushed come back already_built. A lane that asked builds again in its kept worktree with its answers: `
     : `Every lane runs again in the order given, each in its kept worktree, and a lane that asked gets its answers: `) +
   `it continues from the plan its earlier run saved on the pipeline state branch (its result's plan_ref) instead of planning a second time, and plans again only when no plan for the same work is saved, when the saved plan contradicts an answer to a planning question, or when its key is listed in replan. ` +
+  `Its uncommitted work is kept only while its worktree exists: in a new container the lane is built again from that plan, with the answers. ` +
   `When the person's answer is to plan a lane again, add replan: ['<that lane's key>'] to the re-run's args.`
 // Settings the later ship-only runs need, carried into the ship plan's args.
 const SHIP_SHARED = {}
@@ -172,6 +183,7 @@ if (!DERIVE) {
   // No ship plan carries the fallback here, so a lane that pushed without saving its plan keeps the text in its own result,
   // for the ship-only run that opens its PR. One that did not push is built again by a re-run (from its saved plan, else from a
   // new one), so it stays slim.
+  checkLaneAnswers(A.lanes.length)
   phase('Lanes')
   const results = []
   for (const l of A.lanes) {
@@ -226,6 +238,7 @@ if (derived.source === 'working_copy') {
   return { status: 'proposal_not_on_main', proposal: A.proposal, preview: L }
 }
 const nLanes = L.chains.reduce((n, c) => n + c.lanes.length, 0)
+checkLaneAnswers(nLanes)
 log(`${A.proposal}: ${L.chains.length} chain(s), ${nLanes} lane(s), ${(L.blocked || []).length} blocked, ${(L.human_gates_pending || []).length} human gate(s) pending`)
 for (const b of L.blocked || []) log(`Blocked lane ${b.lane} (steps ${b.steps.join(', ')}): waits on ${b.waiting_on.map(w => `${w.doc ? w.doc + '#' : 'step '}${w.n} (${w.reason})`).join(', ')}`)
 
