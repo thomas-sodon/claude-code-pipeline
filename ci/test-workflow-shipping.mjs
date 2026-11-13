@@ -109,7 +109,7 @@ await test('plan-to-merged-pr: a lane\'s planner first reads the plan an earlier
   const save = p.indexOf(`python3 .claude/scripts/pipeline-state.py save <plan file> --as ${S1_REF} -m "Plan for feat/p-s1"`)
   assert.ok(get > 0 && get < skill && skill < save, 'the get comes before the skill call, the save to the same path after it')
   assert.match(p, /Use the saved plan only when all three hold: the command exits 0; the saved plan is for the same work as this run \(the design doc p\.md, steps 1, 2\), as its ## Context says; and it contradicts no answer from the person given above\./)
-  assert.match(p, /When all three hold, invoke no planning skill and return no questions: return that text unchanged as plan, with branch feat\/p-s1, plan_restored=true and plan_saved=true\. In every other case plan the work now, as follows\./)
+  assert.match(p, /When all three hold, invoke no planning skill and return no questions: return that text unchanged as plan, with branch feat\/p-s1, plan_restored=true and plan_saved=true, and with the bullets of its "## Assumptions" section \(not "## Assumptions to review"\), when it has one, as assumptions: what its planning chose, so this run's result lists them too\. In every other case plan the work now, as follows\./)
   assert.match(p, /As the last step, only when the skill wrote a plan in this run \(so not when you return questions, when the skill stopped without a plan, or when you restored a saved plan\), save that plan to the pipeline state branch, best effort/)
   assert.match(p, /then write no plan file, create no branch, save nothing, and return the questions/)
   // An answer to a later stage never reaches the planner, so a same-session resume still replays it from the record.
@@ -143,14 +143,29 @@ await test('plan-to-merged-pr: a lane that stops on a later question already car
   const mc = second.prompt('merge-check')
   assert.match(mc, new RegExp(`pipeline-state\\.py save <that file> --as ${S1_REF.replace(/\./g, '\\.')} `))
   assert.ok(mc.endsWith('\n\n## Assumptions to review\n\nChoices the stages of this branch made that the person has not confirmed (assumed), and what the person answered (answered). ' +
-    'Show them to the person before the PR is merged; a line they correct is passed back as an answer.\n\n- assumed (plan): kept the v1 parser\n- answered (impl.q1, 2026-11-12): Keep both behaviours? -> ours\n\n'), 'the save text ends with the section')
+    'Show them to the person before the PR is merged; they correct an assumed line with a review comment on the PR, which the monitor\'s comment step applies.\n\n- assumed (plan): kept the v1 parser\n- answered (impl.q1, 2026-11-12): Keep both behaviours? -> ours\n\n'), 'the save text ends with the section')
   assert.equal(mc.split('## Assumptions to review\n').length - 1, 1, 'one section, never a second heading')
   assert.ok(mc.includes(`The plan:\n${PLAN}\n\n## Assumptions to review`), 'the plan body is unchanged above it')
   assert.match(mc, /exactly as given, with one addition: for each assumption you report from this step, a line "- assumed \(merge_check\): <the assumption>" at the end of the plan's last section, "## Assumptions to review"/)
+  // A newer answer to a question the restored plan already lists as answered replaces that line: one answer per id, the person's last.
+  const OLDER = `${PLAN}\n\n## Assumptions to review\n\nintro line\n\n- answered (impl.q1, 2026-11-10): Keep both behaviours? -> theirs\n- assumed (plan): kept the v1 parser\n- answered (fix.q1): Rename the flag? -> no\n`
+  const newer = await run('plan-to-merged-pr', { ...LANE, ship: undefined, answers }, p2m({ plan: { branch: 'feat/p-s1', plan: OLDER, plan_saved: true, plan_restored: true } }))
+  assert.equal(newer.result.status, 'OPEN')
+  const LINES = '- assumed (plan): kept the v1 parser\n- answered (fix.q1): Rename the flag? -> no\n- answered (impl.q1, 2026-11-12): Keep both behaviours? -> ours\n'
+  assert.ok(newer.prompt('merge-check').endsWith(`\n\n${LINES}\n`), 'the saved plan keeps the other lines and holds the new answer alone for impl.q1')
+  assert.ok(newer.prompt('create-pr').includes(`so the person can correct one before merging:\n${LINES}`), 'so does the PR body')
+  for (const c of newer.calls) assert.doesNotMatch(c.prompt, /-> theirs/, `${c.label}: no stage is shown the superseded answer`)
+  assert.ok(newer.prompt('impl').includes('- assumed (plan): kept the v1 parser\n- answered (fix.q1): Rename the flag? -> no\n'), '/impl still gets the restored plan\'s other lines')
   // The person's answer was to plan again, or the saved plan is what failed: replan reads nothing back and saves the new plan over it.
   const replan = await run('plan-to-merged-pr', { ...LANE, replan: true }, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN, plan_saved: true } }))
   assert.doesNotMatch(replan.prompt('plan'), /pipeline-state\.py get/)
   assert.match(replan.prompt('plan'), /Then plan the work again from today's tree: ignore any plan an earlier run saved for this branch \(the save at the end replaces it\)\. Invoke the Skill tool with skill "plan"/)
+  // The answer that asked for the new plan came from a later stage: under replan the planner gets every answer, and is told the plan follows them.
+  const why = await run('plan-to-merged-pr', { ...LANE, replan: true, answers: [{ id: 'impl.q1', question: Q.question, answer: 'PLAN-AGAIN-WITH-REDIS' }, { id: 'monitor.d1', answer: 'LATER-STILL' }] }, p2m({ plan: { branch: 'feat/p-s1', plan: PLAN, plan_saved: true } }))
+  assert.match(why.prompt('plan'), /PLAN-AGAIN-WITH-REDIS/)
+  assert.match(why.prompt('plan'), /LATER-STILL/)
+  assert.match(why.prompt('plan'), /\(the save at the end replaces it\)\. The new plan follows every answer from the person given above, whichever stage asked: one of them may be why the work is planned again\. Invoke the Skill tool with skill "plan"/)
+  assert.doesNotMatch(why.prompt('impl'), /LATER-STILL/, 'the later stages still get only their own and earlier answers')
   assert.ok(replan.prompt('plan').includes(`pipeline-state.py save <plan file> --as ${S1_REF} `))
   assert.match(first.result.relay, /When the person's answer is to plan the work again, also pass replan: true \(in either session\)/)
   // A run that /impl stopped keeps its plan saved, and says how to plan afresh when the plan is what stopped it.
@@ -211,12 +226,31 @@ await test('plan-to-merged-pr: ship-only with plan_ref restores the plan for /cr
   }
   const own = await run('plan-to-merged-pr', { ...args, answers: [{ id: 'merge_check.q1', question: Q.question, answer: 'ours' }] }, p2m({ 'merge-check': { ...MC_OK, assumptions: ['kept both sides'] } }))
   assert.match(own.prompt('create-pr'), COPY)
-  assert.ok(own.prompt('create-pr').includes(', and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone):\n' +
+  assert.ok(own.prompt('create-pr').includes(', and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone); ' +
+    'an "- answered (<id>" line of these replaces the plan\'s line of the same id, which is the person\'s older answer:\n' +
     '- assumed (merge_check): kept both sides\n- answered (merge_check.q1): Keep both behaviours? -> ours\n'))
   assert.equal(own.result.relay, undefined, 'no question, no relay')
   // A ship-only question says what a new session keeps: nothing is planned or built, only unpushed commits can be lost.
   const stop = await run('plan-to-merged-pr', args, p2m({ 'merge-check': { questions: [Q] } }))
   assert.match(stop.result.relay, /A new session has no run record: re-run the same way without resumeFromRunId\. Commits not yet pushed are kept only while this checkout exists\.$/)
+  // A ship-only re-run builds nothing: a corrected assumption goes on the PR as a review comment once it is open, never into answers.
+  assert.match(stop.result.relay, /Also show the person this result's assumptions\. A line they correct is no answer: this re-run builds nothing, so no stage would apply it\. The person leaves the correction as a review comment on the PR, once it is open, and a monitor run's comment step applies it\. Only the answers to these questions go into answers\. Then re-run this workflow with the same args plus answers/)
+  assert.doesNotMatch(stop.result.relay, /is passed as an answer too/)
+})
+
+await test('plan-to-merged-pr: ship-only with no plan lists the assumptions it is given in the PR body, and its comment step applies a comment that corrects one', async () => {
+  // The bootstrap branch: no plan, and what /bootstrap assumed arrives as assumptions.
+  const assumptions = [{ stage: 'bootstrap', assumption: 'package name: acme-app' }]
+  const args = { ship_only: true, branch: 'bootstrap/20261113', dir: '/r', title: 'Bootstrap repository', assumptions }
+  const { result, prompt } = await run('plan-to-merged-pr', args, p2m({ 'merge-check': { ...MC_OK, assumptions: ['kept the lockfile'] }, 'observe-1': { ...OBS, actionable_comments: 1 } }))
+  assert.equal(result.status, 'OPEN')
+  assert.ok(prompt('create-pr').includes('Give the PR body a "## Assumptions to review" section, after the Deploy notes, holding exactly these lines (choices this branch\'s stages made that the person has not confirmed, and what the person answered), so the person can correct one before merging:\n' +
+    '- assumed (bootstrap): package name: acme-app\n- assumed (merge_check): kept the lockfile\n'))
+  const c = prompt('process-comments-1')
+  assert.ok(c.includes('a reason to change one is a blocking question: ["package name: acme-app","kept the lockfile"]'))
+  assert.match(c, /Neither is a person's comment that corrects a choice nobody confirmed \(.* or a choice listed above as made by an earlier stage of this run\): it is the correction those lists ask for, so validate it and apply it like any other actionable request/)
+  assert.deepEqual(result.assumptions, [...assumptions, { stage: 'merge_check', assumption: 'kept the lockfile' }])
+  assert.deepEqual(result.resume_monitor.assumptions, result.assumptions)
 })
 
 await test('plan-to-merged-pr: ship-only saves a given plan_text, and with both plan_ref wins with the text as its fallback', async () => {
@@ -266,7 +300,9 @@ await test('plan-to-merged-pr: what the person answered during the build reaches
   assert.deepEqual(mon.result.resume_monitor.answers, answers)
   // The restored plan's own section binds the monitor too: an answered line like an answer, an assumed line kept.
   const NOTES = 'When that plan has a "## Assumptions to review" section, its lines starting "- answered" are what the person settled while the branch was built: each binds like an answer from the person given to this run and is never asked again, ' +
-    'and a change that would depart from one (a reviewer\'s request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason to change one is a blocking question too. '
+    'and a change that would depart from one (a reviewer\'s request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Where an answer given to this run has the id of such a line, the answer given to this run is the newer one and holds. ' +
+    'Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason of your own to change one is a blocking question too. A person\'s comment on the PR that corrects one is no such reason: it is the correction that section asks for, ' +
+    'a request to validate and apply (a blocking question only when it also departs from an "- answered" line or a decision tagged (person, ...)). '
   for (const l of ['merge-main-1', 'process-comments-1']) assert.ok(mon.prompt(l).includes(NOTES), l)
   // A ship-only run reads the same section at its merge check: with plan_ref from the state branch, with plan_text in the text it saves.
   const byRef = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_ref: 'plans/feat-p-s1.md' }, p2m())

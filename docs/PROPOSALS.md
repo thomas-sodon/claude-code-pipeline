@@ -88,7 +88,7 @@ ends with one tag that says who made the choice:
 
 | Tag | Means |
 |---|---|
-| `(person, YYYY-MM-DD)`, `(person, YYYY-MM-DD, <ref>)` | the person chose it. The date is the day they said it: the answer's date, the date the framing records for a choice the framing makes, else the day the record is written. `<ref>` is where they said it, as one token with no space, comma or parenthesis: an answer's id as it was handed in (`intake.q2`, `intake.d3`, `m3.q1`; `q<N>` for a question the author's own run asked), `framing`, a gate whose `Outcome:` records it (`roadmap.md#4`), or `edit` when the person wrote it into the doc themselves. |
+| `(person, YYYY-MM-DD)`, `(person, YYYY-MM-DD, <ref>)` | the person chose it. The date is the day they said it: the answer's date, the date the framing records for a choice the framing makes, else the day the record is written. `<ref>` is where they said it, as one token with no space, comma or parenthesis: an answer's id as it was handed in (`intake.q2`, `intake.d3`, `m3.q1`; `q<N>` for a question the author's own run asked), `framing`, a gate whose `Outcome:` records it (`roadmap.md#4`), or `edit` when the person wrote it into the doc themselves, or confirmed the record as it stands (below). |
 | `(source)` | the source states it, and either the source is the person's own writing or the choice is not person-owned |
 | `(assumed)` | the author chose |
 
@@ -124,14 +124,25 @@ themselves.
   `(assumed)`, or tagged `(source)` when the source was drafted for the person, is
   a `concern` in `/review-proposal` whose fix is the question to ask (not in a run
   that proceeds on assumptions), and `/bootstrap` asks each one its skeleton bakes
-  in, tagged `(assumed)` or untagged, before it writes anything.
+  in, tagged `(assumed)` or untagged, before it writes anything. The person
+  confirms a record as it stands by its tag: it becomes
+  `(person, <today's date>, edit)`. They edit the heading while accepting the doc,
+  or the session makes that one-line edit when they say so (the tag only, never
+  the Choice or any other text); no re-run is needed. A record they change goes
+  back as an answer (below).
 - **`(proposed)` marks a value, not a record.** A threshold, a retention period or a
   price the author proposes is labelled `(proposed)` and says where the person fixes
   it: a confirmation asked now when it is a promise they own and can answer from
   what they know, else the gate whose `Acceptance:` records it. A person-owned value
   from a source drafted for the person counts as stated only once the person
-  confirmed it: until then it is a proposed value. Authors write no other
-  provenance mark (`(brief)`, `(judge)` and `(confirmed)` are not tags).
+  confirmed it: until then it is a proposed value. In a run that proceeds on
+  assumptions the confirmation is not asked: the value keeps the label, needs no
+  gate, and is reported under **Unconfirmed decisions**. `/review-proposal`
+  reports a person-owned `(proposed)` value that no answer settled and no gate's
+  `Acceptance:` records as a `concern` (not in a run that proceeds on
+  assumptions); a `(proposed)` value that is the author's own to choose (a rate
+  limit, a timeout, a page size) is no finding. Authors write no other provenance
+  mark (`(brief)`, `(judge)` and `(confirmed)` are not tags).
 
 A record with no tag is W `decision_untagged`: one warning per doc, at its first
 untagged record, naming each, so a doc written before the tag keeps passing. A
@@ -143,15 +154,38 @@ part of the title. `--json` lists the records as
 `decisions: [{id, n, title, line, by, date, ref}]`, where `by` is `person`,
 `source`, `assumed` or `''`.
 
+A heading under `## Decisions` that numbers a decision without being
+`### D<N>: <title>` is W `bad_decision_heading`: `### D1 — Licence`,
+`### D2. Price`, `### Decision 3: Hosting`, `#### D4: Hosting`, `### d5: Price`,
+an indented heading, or a number in other than ASCII digits. The record is still
+listed, with the heading's whole text as its title and no tag read from it, so it
+counts as unconfirmed; it is never also reported as `decision_untagged`. A
+D-number an earlier record already uses is W `duplicate_decision`, at each later
+record, and every record is still listed: answers and reviews name a record by
+its number. The D-number and the date of a `(person, YYYY-MM-DD)` tag are ASCII
+digits; a date in other digits is `bad_decision_tag`.
+
 `proposal-lint.py <doc> --decisions` answers "what has nobody confirmed with the
 person?". It prints `{doc, kind, decisions, unconfirmed, proposed}`: `unconfirmed`
-holds the records tagged `(assumed)` or not tagged, and `proposed` every line
-outside a code fence that contains `(proposed`, as `{line, text}`. It only reads
+holds the records tagged `(assumed)` or not tagged (one with a malformed tag or
+heading included), and `proposed` every line outside a code fence that contains
+`(proposed`, as `{line, text}`. It only reads
 and never lints: it exits 0 on any doc it can read, lint errors or not, a roadmap
 included (no decisions; its `(proposed)` lines are listed). `brief-to-proposals`
 and `refresh-proposal` return both lists as `lint.unconfirmed` and `lint.proposed`,
 and `/roadmap` and `/propose` report them as **Unconfirmed decisions**: the person
-confirms or corrects each before accepting the doc
+confirms or corrects each before accepting the doc. A decision they confirm as it
+stands needs no re-run: its heading tag becomes `(person, <today's date>, edit)`,
+edited by the person while accepting the doc, or by the session when they say so
+(the tag only, never the Choice or any other text). A decision or a value they
+change goes back as an answer, its question naming the decision by title: to
+`refresh-proposal` on the one doc (`revise.d<N>`), or to a re-run of the
+`brief-to-proposals` run that wrote the docs (`architecture.d<N>` with
+`from: 'architecture'` and `max_milestones: 0`, so no further proposal is
+written; `m<N>.d<K>` with `from: 'proposals'` and `milestones: [N]`;
+`proposal.d<N>` for a concern's proposal). The number is the next one not yet in
+use, and the revise tags the decision `(person, <date>, <id>)`. A confirmation
+may be passed as an answer the same way when such a re-run happens anyway
 ([REFERENCE.md](REFERENCE.md#answering-questions)).
 
 ## Steps and milestones
@@ -401,11 +435,14 @@ a short paragraph on the ordering, then `## Milestones` (E `missing_section` /
   it; `/bootstrap` stops (`bootstrap_gates_pending`) until each such gate is ticked
   with an `Outcome:`, and (`architecture_outdated`) while a ticked one's `Outcome:`
   names another name, licence, namespace or id than the architecture records,
-  until `/propose --revise <architecture>` has carried it in. Then the source's
-  cheapest validation, a `decision`
-  gate applying its stop criteria (not its success criteria; a threshold the source
-  does not give is labelled `(proposed)`),
-  and everything that result could cancel after it. Every legal check, account or secret, release
+  until `/propose --revise <architecture>` has carried it in. Then come the
+  source's cheapest validation and a `decision` gate applying its stop criteria
+  (not its success criteria). The threshold and
+  the window are the person's: they are asked before the docs are written, and
+  stay labelled `(proposed)` only in a run that proceeds on assumptions. The
+  gate's `Acceptance:` names the evidence that closes it (the count and the
+  decision), never the person recording the threshold there. Everything that
+  result could cancel comes after it. Every legal check, account or secret, release
   and store submission is a gate; a release is a roadmap milestone only when one
   launch ships several milestones' work (see *Release ownership*).
 
@@ -735,6 +772,7 @@ budgets until it is split.
 | `lane_mixed` | W | a lane mixes ticked and unticked steps |
 | `gate_without_outcome`, `outcome_on_code_step` | W | see *Outcome* |
 | `decision_untagged`, `bad_decision_tag` | W | a D-record heading with no provenance tag (one warning per doc, naming each record), or with a trailing parenthetical that starts like a tag and is not one (see *Who decided*) |
+| `bad_decision_heading`, `duplicate_decision` | W | a heading under `## Decisions` that numbers a decision without being `### D<N>: <title>` (the record is still listed, with no tag read from it, so it counts as unconfirmed), or a D-number used a second time |
 | `xref_unreadable` | W | a `<file>.md#N` doc cannot be read |
 | `source_unresolved` | W | a proposal's `Source:` names a roadmap milestone that cannot be resolved; `--lanes` blocks every lane (`milestone_unresolved`) |
 | `file_not_found`, `new_file_exists` | W | `--repo`: `Files:` disagree with the tree |

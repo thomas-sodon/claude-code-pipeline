@@ -35,7 +35,9 @@ export const meta = {
 //   branch?: string            use this branch instead of letting the planner create one
 //   replan?: boolean           true = plan again even when an earlier run of this branch saved its plan (the new plan is saved
 //                              over it). Default false: the planner of a given branch continues from the saved plan. Pass it when
-//                              the person's answer is to plan the work again, or when a run failed on the saved plan itself
+//                              the person's answer is to plan the work again, or when a run failed on the saved plan itself.
+//                              It is for one run: that run's planner gets every answer, whichever stage asked, and a re-run after
+//                              a later stage's question leaves it out (the relay says so), or it would plan a further time
 //   bases?: string[]           branches this work is stacked on (merged before planning and at the merge check)
 //   ship?: boolean             default true; false = build only: commit, merge check, push the branch, open no PR
 //   ship_only?: boolean        skip planning/building: open (or ready `existing_pr`) a PR for `branch`, then monitor
@@ -56,12 +58,20 @@ export const meta = {
 //   answers?: [{ id, answer, question?, date? }]  the questions a needs_input result returned, each with the person's answer, its
 //                              question text and the date they gave it (or { <id>: answer }); each answer reaches the stage that
 //                              asked and every later stage, so a resume (resumeFromRunId) replays the stages before it from the
-//                              record. A result's assumption the person corrects is passed the same way, as <its stage>.d<N>.
-//                              An answer passed without its question text still binds, but a stage that cannot tell from the
-//                              answer alone what it settles treats it as settling nothing, so pass the question with it
+//                              record. A result's assumption the person corrects is passed the same way, as <its stage>.d<N>
+//                              (N the next number not yet in use), to a run that builds. A ship-only or monitor-only run builds
+//                              nothing, so no stage would apply it: there the person corrects it with a review comment on the PR,
+//                              which the monitor's comment step applies. An answer passed without its question text still binds,
+//                              but a stage that cannot tell from the answer alone what it settles treats it as settling nothing,
+//                              so pass the question with it
+//   assumptions?: [{ stage, assumption }]  an earlier run's result.assumptions, for a re-run from a session with no run record
+//                              (without resumeFromRunId): the stages that made them find their work in place and report nothing
+//                              the second time, so without this they would reach neither the result, the saved plan nor the PR
+//                              body. They are listed with this run's own; a line this run reports again is kept once
 // Monitor-only mode: { pr: number, branch: string, dir?: string } skips straight to the Monitor phase.
 // A run that hands the PR off while it is still open returns resume_monitor (these args, ready to re-run) and a one-line handoff.
-// resume_monitor carries the answers this run was given, so the monitor-only run keeps what the person settled during the build.
+// resume_monitor carries the answers this run was given, so the monitor-only run keeps what the person settled during the build,
+// and, as assumptions, what the run lists as assumed, so that run's steps keep each choice too.
 // A run given `proposal` whose PR reads MERGED checks the proposal on origin/<main_branch> and returns closeout (read-only:
 // only a person sets Status: done or ticks the roadmap milestone): { proposal_complete: true, edits, next_milestone, roadmap,
 // milestone: { n, title, acceptance } | null } (the milestone they tick, with the Acceptance they check first) or
@@ -73,9 +83,10 @@ export const meta = {
 // run reads it from there. Every result carries plan_ref: 'plans/<branch-slug>.md' (or the plan_ref given), else '' when it was
 // not saved; resume_monitor carries plan_ref instead of plan_text when there is one. A failed_at_impl result whose plan stays
 // saved carries hint: a re-run continues from that plan unless it passes replan.
-// Every result carries assumptions: [{ stage, assumption }]. They reach every later stage of the run, the saved plan and the PR
-// body ("## Assumptions to review"), so the person can correct one before merging; the result's plan text ends with that
-// section too (the fallback a ship-only run is given as plan_text when the save failed). A result also lists, when there are any,
+// Every result carries assumptions: [{ stage, assumption }]. They reach every later stage of the run, the monitor's steps
+// included, the saved plan and the PR body ("## Assumptions to review"), so the person can correct one before merging (with a
+// review comment on the PR); the result's plan text ends with that section too (the fallback a ship-only run is given as
+// plan_text when the save failed). A result also lists, when there are any,
 // declined (review findings the fixer judged wrong: [{ round, finding, reason }]) and polish_unfixed (bugs and concerns the last
 // polish round left unfixed: [{ file, severity, description }]; polish_clean is then false).
 // Every stage that commits stages by explicit path and never commits docs/brief.md, docs/builder-context.md or a file the plan
@@ -104,7 +115,22 @@ if (!['', 'gh', 'connector'].includes(GH_ACCESS)) throw new Error(`github_access
 // The plan this branch was built from: this run's, or args.plan_text (ship-only / monitor-only), ending with its
 // "## Assumptions to review" section as it stands when called (withNotes). Called once planning is done.
 const planForPr = () => withNotes((plan && plan.plan && plan.plan !== 'given') ? plan.plan : (A.plan_text || ''))
-const clip = t => t.length > 8000 ? t.slice(0, 8000) + '\n[plan truncated]' : t
+// A plan text without its "## Assumptions to review" section, and that section's lines.
+const splitNotes = text => {
+  const m = /^## Assumptions to review[ \t]*$/m.exec(text)
+  if (!m) return { body: text, lines: [] }
+  const rest = text.slice(m.index + m[0].length)
+  const next = rest.search(/^## /m)
+  const lines = (next < 0 ? rest : rest.slice(0, next)).split('\n').filter(l => l.startsWith('- '))
+  return { body: (text.slice(0, m.index) + (next < 0 ? '' : rest.slice(next))).trimEnd(), lines }
+}
+// A long plan is cut for the prompts that only read it. The cut never takes its "## Assumptions to review" lines: they sit at
+// the end of the text, and they are how a later run learns what was assumed and what the person answered.
+const clip = t => {
+  const { body, lines } = splitNotes(t)
+  if (body.length <= 8000) return t
+  return body.slice(0, 8000) + '\n[plan truncated]' + (lines.length ? `\n\n## Assumptions to review\n\n${lines.join('\n')}\n` : '')
+}
 // A name as the pipeline state branch spells it in paths: `pipeline-state.py slug`, copied here and in proposal-build-chain.js
 // (ci/test-workflow-shipping.mjs checks both copies against the script). Every character outside [A-Za-z0-9._-] becomes '-';
 // when any did, '-' and 8 hex digits of FNV-1a 32 over the name's UTF-8 bytes follow, so feat/x and feat-x never share a file.
@@ -205,8 +231,12 @@ const RESTORE = A.plan_ref
   : ''
 // The plan a ship-only or monitor-only stage reads may end with "## Assumptions to review": what the build's stages assumed and
 // what the person answered then. Those answers reach this run through the plan alone, unless they were passed again.
+// An answer given to this run under the id of an answered line is the person's newer word on it. A comment on the PR that corrects
+// an assumed line is the correction the section asks for: the comment step applies it.
 const PLAN_NOTES = `When that plan has a "## Assumptions to review" section, its lines starting "- answered" are what the person settled while the branch was built: each binds like an answer from the person given to this run and is never asked again, ` +
-  `and a change that would depart from one (a reviewer's request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason to change one is a blocking question too. `
+  `and a change that would depart from one (a reviewer's request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Where an answer given to this run has the id of such a line, the answer given to this run is the newer one and holds. ` +
+  `Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason of your own to change one is a blocking question too. A person's comment on the PR that corrects one is no such reason: it is the correction that section asks for, ` +
+  `a request to validate and apply (a blocking question only when it also departs from an "- answered" line or a decision tagged (person, ...)). `
 const RESTORE_ELSE = A.plan_text
   ? `If that get fails, use this copy of the plan instead:\n${clip(A.plan_text)}\n`
   : `If that get fails (exit 3: the plan was never saved; exit 2: git failed), go on without a plan: plans are saved and restored best effort. `
@@ -262,7 +292,9 @@ if (ANSWERS.some(a => !a.question)) log(`Answer(s) passed without their question
 const ASK_RULE = `QUESTIONS: this stage runs unattended inside a workflow. No one can answer a question mid-run, so never wait for one and never use a question tool. ` +
   `A blocking question is one only the person can answer (what they intend, a requirement or constraint the concern, plan or design doc leaves out or states two incompatible ways, a trade-off that is theirs to make, ` +
   `a conflict between what the person said (an answer given to this run, the framing, a decision a design doc tags (person, ...)) and the concern, the plan, the tree or your research, or a blocker whose way forward is their call) ` +
-  `and whose plausible answers lead to materially different work: a different design, promise, cost or legal exposure. In such a conflict pick no side: ask, naming both. ` +
+  `and whose plausible answers lead to materially different work: a different design, promise, cost or legal exposure. ` +
+  `What the person said outranks the concern and the plan. On the point it addresses, it replaces what they say: follow it, and never ask it again. That difference is not a conflict. ` +
+  `The conflict that is a blocking question is the other one: another part of the concern, the plan or the design doc, the tree or your research makes what the person said impossible to follow. Then pick no side and ask, naming both. ` +
   `Settle yourself anything the tree, CLAUDE.md, the plan, the design docs or desk research can settle; never ask about it. ` +
   `A person-owned choice that no doc, plan or answer settles is ${ON_Q === 'assume' ? 'a blocking question' : 'asked as a blocking question, never assumed'}: money or an account in the person's name; a new third-party service or dependency that receives data; ` +
   `a change to what the product promises its users or to its public interface; a licence; a name (product, package, domain, organization or bundle id). ` +
@@ -301,42 +333,47 @@ const QA = {
   questions: { type: 'array', items: QUESTION, description: 'blocking questions only the person can answer; non-empty means you stopped there and changed nothing further' },
   assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice you made that the inputs did not settle' },
 }
+const oneLine = t => String(typeof t === 'string' ? t : (JSON.stringify(t) ?? '')).replace(/\s*\n\s*/g, ' ').trim()
+// What nobody confirmed: this run's stages add to it, after what an earlier run of the branch assumed (args.assumptions). A re-run
+// from a session with no run record finds that run's work in place, so its stages report nothing the second time; a line a stage
+// does report again (the same stage, the same text) is kept once.
 const ASSUMED = []
-const noteAssumptions = (kind, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) if (a) ASSUMED.push({ stage: kind, assumption: a }); return r }
+const addAssumed = (stage, a) => { if (a && !ASSUMED.some(x => x.stage === stage && oneLine(x.assumption) === oneLine(a))) ASSUMED.push({ stage, assumption: a }) }
+for (const a of Array.isArray(A.assumptions) ? A.assumptions : []) if (a && a.assumption) addAssumed(String(a.stage || 'earlier run'), a.assumption)
+const noteAssumptions = (kind, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) addAssumed(kind, a); return r }
 // What the person has not confirmed, and what they answered, as the lines of a plan's last section, "## Assumptions to review":
 // the merge check saves the plan with it, /create-pr copies it into the PR body, and a later run that restores the plan reads it
 // there. A plan that already ends with the section (restored from an earlier run of the branch) keeps its lines; new ones follow.
 const NOTES_HEAD = '## Assumptions to review'
 const NOTES_INTRO = 'Choices the stages of this branch made that the person has not confirmed (assumed), and what the person answered (answered). ' +
-  'Show them to the person before the PR is merged; a line they correct is passed back as an answer.'
-const oneLine = t => String(typeof t === 'string' ? t : (JSON.stringify(t) ?? '')).replace(/\s*\n\s*/g, ' ').trim()
+  'Show them to the person before the PR is merged; they correct an assumed line with a review comment on the PR, which the monitor\'s comment step applies.'
 const noteLines = () => [
   ...ASSUMED.map(a => `- assumed (${a.stage}): ${oneLine(a.assumption)}`),
   ...ANSWERS.map(a => `- answered (${a.id || 'no id'}${a.date ? `, ${oneLine(a.date)}` : ''}): ${oneLine(a.question || a.id || '')} -> ${oneLine(a.answer)}`),
 ]
-// A plan text without its notes section, and that section's lines.
-const splitNotes = text => {
-  const m = /^## Assumptions to review[ \t]*$/m.exec(text)
-  if (!m) return { body: text, lines: [] }
-  const rest = text.slice(m.index + m[0].length)
-  const next = rest.search(/^## /m)
-  const lines = (next < 0 ? rest : rest.slice(0, next)).split('\n').filter(l => l.startsWith('- '))
-  return { body: (text.slice(0, m.index) + (next < 0 ? '' : rest.slice(next))).trimEnd(), lines }
-}
+// An answered line the plan kept from an earlier run gives way to this run's answer of the same id: the person's newer word on it.
+const ANSWER_IDS = new Set(ANSWERS.map(a => String(a.id || '')).filter(Boolean))
+const superseded = line => { const m = /^- answered \(([^,)]+)[,)]/.exec(line); return !!m && ANSWER_IDS.has(m[1]) }
 const withNotes = text => {
   if (!text) return ''
   const { body, lines } = splitNotes(text)
-  const all = [...new Set([...lines, ...noteLines()])]
+  const all = [...new Set([...lines.filter(l => !superseded(l)), ...noteLines()])]
   return all.length ? `${body}\n\n${NOTES_HEAD}\n\n${NOTES_INTRO}\n\n${all.join('\n')}\n` : text
 }
 // Files committing stages kept out on purpose (KEEP_OUT), reported in the result so a person decides what becomes of them.
 const LEFT_OUT = new Set()
 const noteLeftOut = r => { if (r && Array.isArray(r.left_uncommitted)) for (const f of r.left_uncommitted) if (f) LEFT_OUT.add(String(f)); return r }
 const asked = r => !!(r && Array.isArray(r.questions) && r.questions.length)
-// The relay of a needs_input result: how the caller asks, and what it passes back. needsInput adds how to re-run.
+// The relay of a needs_input result: how the caller asks, and what it passes back. needsInput adds what becomes of a corrected
+// assumption and how to re-run.
 const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
-  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
-  `Also show the person this result's assumptions: a line they correct is passed as an answer too (id <its stage>.d<N>, with the assumption as its question). `
+  `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. `
+// A run that builds applies a corrected assumption like any answer: the stage that made the choice gets it, and every later one.
+const SHOW_ASSUMED = `Also show the person this result's assumptions: a line they correct is passed as an answer too (id <its stage>.d<N>, N the next number not yet in use, with the assumption as its question). `
+// A ship-only or monitor-only re-run builds nothing, so no stage would apply a correction passed as an answer: it is a change to the
+// branch, which the person asks for on the PR, where the monitor's comment step applies it.
+const showAssumedOnPr = open => `Also show the person this result's assumptions. A line they correct is no answer: this re-run builds nothing, so no stage would apply it. ` +
+  `The person leaves the correction as a review comment on the PR${open ? '' : ', once it is open'}, and a monitor run's comment step applies it. Only the answers to these questions go into answers. `
 const RELAY_ANSWERS = `answers (each question's id and question text with the person's answer and the date they gave it, added to any answers given before)`
 // Review scope: a stacked branch's HEAD carries its bases' commits, so review only this branch's own change.
 // `bases` are ordered so the last one contains the others. Once that base is deleted or merged, the review is scoped
@@ -564,23 +601,33 @@ const needsInput = (kind, r, extra) => {
   // Ids continue after the highest q<N> already answered for the kind, so a question asked on a re-run never reuses an answered id.
   let n = 0
   for (const a of ANSWERS) { const m = String(a.id || '').match(/^([a-z_]+)\.q(\d+)$/); if (m && m[1] === kind) n = Math.max(n, Number(m[2])) }
-  const questions = r.questions.map((q, i) => ({ id: `${kind}.q${n + i + 1}`, stage: kind, ...q }))
+  // A stage may copy the id its command printed (q1) into its reply: the workflow's id and stage replace a question's own.
+  const questions = r.questions.map((q, i) => { const { id: _id, stage: _stage, ...rest } = q; return { id: `${kind}.q${n + i + 1}`, stage: kind, ...rest } })
   log(`${kind}: ${questions.length} question(s) only the person can answer — stopping (status needs_input)`)
   for (const q of questions) log(`  ${q.id}: ${q.question} (recommended: ${q.recommended})`)
   // How to re-run: the monitor alone on the open PR; else the same run, which continues from the record (this session) or from
   // the plan saved on the state branch (a new session). Work that is not committed and pushed lives only in the checkout.
+  // A run that created its own branch names it for the new session, saved plan or not: without it the planner would cut a second
+  // branch while this run's uncommitted work sits on the first.
+  const created = !A.branch && BRANCH
+  // replan was for this run, whose planner has planned again: left in the args, every later re-run would plan a further time.
+  const replanned = !!A.replan && kind !== 'plan' && !A.plan_text && !SHIP_ONLY
   const fresh = SHIP_ONLY
     ? `A new session has no run record: re-run the same way without resumeFromRunId. Commits not yet pushed are kept only while this checkout exists.`
-    : `A new session has no run record: re-run the same way without resumeFromRunId${PLAN_REF && !A.branch ? `, adding branch: '${BRANCH}' (the branch this run created)` : ''}; ` +
+    : `A new session has no run record: re-run the same way without resumeFromRunId${created ? `, adding branch: '${BRANCH}' (the branch this run created)` : ''}` +
+      (ASSUMED.length ? `${created ? ' and' : ', adding'} assumptions: this result's assumptions (the stages that made them find their work in place and do not report them again)` : '') + `; ` +
       (A.plan_text ? `the plan is in the args (plan_text). `
         : PLAN_REF ? `that run continues from the branch's saved plan (${PLAN_REF} on the pipeline state branch) instead of planning again. `
           : `that run plans the work again, because no plan of this run is saved. `) +
       `The branch's uncommitted work is kept only while this checkout exists` + (A.plan_text || PLAN_REF ? `; a new container builds it again from that plan with the answers.` : `.`) +
       (PLAN_REF && !A.plan_text ? ` When the person's answer is to plan the work again, also pass replan: true${A.branch ? '' : ` and branch: '${BRANCH}'`} (in either session): the planner then ignores the saved plan and saves the new one over it.` : '')
   const relay = RELAY + (kind === 'monitor'
-    ? `Then re-run this workflow in monitor-only mode (this result's resume_monitor as args, plus ${RELAY_ANSWERS}; the answers given before are resume_monitor's own answers, when it has any), so the PR is observed afresh.`
-    : `Then re-run this workflow with the same args plus ${RELAY_ANSWERS}. In this session, also set resumeFromRunId to this run's id: ` +
-      `the stages before the one that asked replay from the record and the work in the checkout is kept. ` + fresh)
+    ? showAssumedOnPr(true) + `Then re-run this workflow in monitor-only mode (this result's resume_monitor as args, plus ${RELAY_ANSWERS}; the answers given before are resume_monitor's own answers, when it has any), so the PR is observed afresh.`
+    : (SHIP_ONLY ? showAssumedOnPr(false) : SHOW_ASSUMED) +
+      `Then re-run this workflow with ${replanned ? `the same args without replan (it applied to this run, which planned the work again)` : `the same args`} plus ${RELAY_ANSWERS}. In this session, also set resumeFromRunId to this run's id: ` +
+      (replanned
+        ? `the work in the checkout is kept, and the planner, whose prompt changes without replan, ${PLAN_REF ? `reads back the plan this run saved` : `plans again`} instead of replaying from the record. `
+        : `the stages before the one that asked replay from the record and the work in the checkout is kept. `) + fresh)
   return done('needs_input', { stage: kind, questions, relay, ...(extra || {}) })
 }
 if (MONITOR_ONLY) {
@@ -604,15 +651,18 @@ if (MONITOR_ONLY) {
     // later stage's question. The planner reads it back before anything else, so a re-run from a session with no run record
     // continues from that plan and never plans a second time without the later answers. The text is the same on every run
     // (answers to later stages never reach it), so a same-session resume still replays the planner from the record.
-    // Whether the saved plan still fits today's tree is /impl's plan review to judge, not the planner's; args.replan plans afresh.
+    // Whether the saved plan still fits today's tree is /impl's plan review to judge, not the planner's; args.replan plans afresh,
+    // and its planner gets every answer: the one that asked for the new plan came from a later stage.
     const PLAN_PATH = BRANCH ? planRefFor(BRANCH) : ''
     const SAME_WORK = A.proposal ? `the design doc ${A.proposal}${STEPS.length ? `, step${STEPS.length > 1 ? 's' : ''} ${STEPS.join(', ')}` : ''}` : 'the concern below'
     const restore = BRANCH && !A.replan
       ? `Then check whether an earlier run of this branch already planned it: run python3 .claude/scripts/pipeline-state.py get ${PLAN_PATH} (it prints the plan saved on the pipeline state branch; exit 3 = none saved, exit 2 = git failed). ` +
         `Use the saved plan only when all three hold: the command exits 0; the saved plan is for the same work as this run (${SAME_WORK}), as its ## Context says; and it contradicts no answer from the person given above. ` +
-        `When all three hold, invoke no planning skill and return no questions: return that text unchanged as plan, with branch ${BRANCH}, plan_restored=true and plan_saved=true. ` +
+        `When all three hold, invoke no planning skill and return no questions: return that text unchanged as plan, with branch ${BRANCH}, plan_restored=true and plan_saved=true, ` +
+        `and with the bullets of its "## Assumptions" section (not "## Assumptions to review"), when it has one, as assumptions: what its planning chose, so this run's result lists them too. ` +
         `In every other case plan the work now, as follows. `
-      : BRANCH ? `Then plan the work again from today's tree: ignore any plan an earlier run saved for this branch (the save at the end replaces it). ` : ''
+      : (BRANCH ? `Then plan the work again from today's tree: ignore any plan an earlier run saved for this branch (the save at the end replaces it). ` : '') +
+        (A.replan && ANSWERS.length ? `The new plan follows every answer from the person given above, whichever stage asked: one of them may be why the work is planned again. ` : '')
     const savePlan = `As the last step, only when the skill wrote a plan in this run (so not when you return questions, when the skill stopped without a plan, or when you restored a saved plan), save that plan to the pipeline state branch, best effort, so a later run of this branch continues from it instead of planning again: ` +
       `python3 .claude/scripts/pipeline-state.py save <plan file> --as ${PLAN_PATH || 'plans/<slug>.md'} -m "Plan for ${BRANCH || '<branch>'}" (it pushes the state branch only, never ${BRANCH || 'the feature branch'}). ` +
       `<plan file> is the file the skill wrote, holding the same text you return as plan; when the skill wrote no file, write that text to a file in your scratch area (outside the checkout) and save that. ` +
@@ -641,7 +691,7 @@ if (MONITOR_ONLY) {
       })
       : await agent(
       // /plan lists open PRs that touch the same code: a GitHub read.
-      WORK + ACCESS + ASK('plan') + setup + restore + skillCall +
+      WORK + ACCESS + ASK(A.replan ? KINDS[KINDS.length - 1] : 'plan') + setup + restore + skillCall +
       (CONTEXT ? `Scout context already found: ${CONTEXT}\n` : '') +
       `Do NOT stop for interactive approval or plan mode — produce the plan directly, unless a blocking question stops it (see QUESTIONS): ` +
       `then write no plan file, create no branch, save nothing, and return the questions with branch and plan empty. ` + branchAfter +
@@ -657,7 +707,8 @@ if (MONITOR_ONLY) {
     // Saved (or found saved) by the planner: a result that stops at a later stage's question already carries plan_ref.
     if (!A.plan_text && plan.plan_saved === true) PLAN_REF = PLAN_PATH || planRefFor(BRANCH)
     log(`Plan ready on branch ${BRANCH}` + (A.plan_text ? '' : plan.plan_restored ? ` (restored from the pipeline state branch: ${PLAN_REF})` : PLAN_REF ? ` (saved to the pipeline state branch as ${PLAN_REF})` : ' (not saved to the pipeline state branch: best effort)'))
-    const AUTHORITATIVE = `The plan below is authoritative for this branch; ignore any other plan file in the plans directory.\n\n${plan.plan}\n\n`
+    // A restored plan may list an answer this run was given a newer one for: the stages read the newer one above, never both.
+    const AUTHORITATIVE = `The plan below is authoritative for this branch; ignore any other plan file in the plans directory.\n\n${String(plan.plan).split('\n').filter(l => !superseded(l)).join('\n')}\n\n`
 
     // ---- Implement
     phase('Implement')
@@ -838,7 +889,8 @@ if (MONITOR_ONLY) {
   const NOTE_HAS_SECTION = !A.existing_pr && String(A.pr_note || '').includes(NOTES_HEAD)
   const NOTES_FOR_PR = A.plan_ref
     ? `Copy that plan's "${NOTES_HEAD}" section, when it has one, into the PR body under the same heading, after the Deploy notes` +
-      (NOTES.length ? `, and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone):\n${NOTES.join('\n')}\n` : `; when it has none, the body gets no such section. `)
+      (NOTES.length ? `, and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone); ` +
+        `an "- answered (<id>" line of these replaces the plan's line of the same id, which is the person's older answer:\n${NOTES.join('\n')}\n` : `; when it has none, the body gets no such section. `)
     : NOTES.length
       ? `Give the PR body a "${NOTES_HEAD}" section, after the Deploy notes, holding exactly these lines (choices this branch's stages made that the person has not confirmed, and what the person answered), so the person can correct one before merging:\n${NOTES.join('\n')}\n` +
         // A caller's pr_note may give lines for the same section (bootstrap-repo's does): one section holds both.
@@ -910,6 +962,9 @@ if ((A.max_monitor_rounds ?? A.max_rounds) !== undefined) RESUME.max_monitor_rou
 // What the person answered, during the build or an earlier monitor run, goes on to the next monitor-only run: a review comment
 // or a conflict must not reverse it, and the person is not asked it again.
 if (ANSWERS.length) RESUME.answers = ANSWERS
+// So does what nobody confirmed, as it stands when the run hands the PR back: the plan's section may lack it (a save that failed,
+// a monitor step's own assumption), and the next run's steps keep each choice only when they are shown it.
+const resumeArgs = () => ASSUMED.length ? { ...RESUME, assumptions: ASSUMED.map(a => ({ ...a })) } : RESUME
 let handoffWhy = ''
 for (let r = 1; r <= MAX_ROUNDS; r++) {
   const obs = await agent(
@@ -957,13 +1012,13 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   let pushed = false
   if (last.has_conflicts || behindMergeDue) {
     const m = await agent(
-      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + KEEP_OUT + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". The branch to merge in is origin/${MAIN}, whatever MAIN_BRANCH the Pipeline config names. Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main). ` +
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + assumedSoFar() + KEEP_OUT + `On branch ${BRANCH} (PR #${PRN}), invoke the Skill tool with skill "merge-main". The branch to merge in is origin/${MAIN}, whatever MAIN_BRANCH the Pipeline config names. Resolve every conflict, run the full QUALITY_GATES command from the Pipeline config, and push to the PR branch (never force-push, never main). ` +
       `A conflict whose resolution is the person's call (both sides changed the same behaviour incompatibly; neither the plan nor the design doc decides it) is a blocking question, per QUESTIONS: ` + conflictCall(''),
       opts(`merge-main-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
     )
     noteAssumptions('monitor', m)
     noteLeftOut(m)
-    if (asked(m)) return needsInput('monitor', m, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME })
+    if (asked(m)) return needsInput('monitor', m, { pr, monitor_actions: actions, final_state: last, resume_monitor: resumeArgs() })
     if (m) { actions.push({ round: r, step: 'merge-main', ...m }); pushed = pushed || m.pushed }
     // Count every BEHIND attempt: one that pushes nothing (no-op or failed) would otherwise retry every round and never settle.
     if (behindMergeDue) behindMerges++
@@ -971,9 +1026,10 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
   if (last.actionable_comments > 0) {
     // A reviewer's request that goes against the plan, the design doc or an answer is the person's call, never applied and never
     // declined on the plan's word: the step returns it as a question and leaves its thread without a reply, so the monitor-only
-    // re-run that carries the answer still finds the thread actionable.
+    // re-run that carries the answer still finds the thread actionable. One request is no question: a person's comment that
+    // corrects a choice nobody confirmed is the correction the PR body's "Assumptions to review" asks for, and is applied.
     const c = await agent(
-      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + KEEP_OUT + `On branch ${BRANCH}, invoke the Skill tool with skill "process-comments" with args "${PRN}". ` +
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + assumedSoFar() + KEEP_OUT + `On branch ${BRANCH}, invoke the Skill tool with skill "process-comments" with args "${PRN}". ` +
       `Address EVERY actionable item (AI bug/suggestion/nit threads incl. outdated ones, overflow findings, human comments): fix with tests or decline/answer with reasons, ` +
       `run the gates once, push, then post the terminal-marker replies and verify every item carries one, apart from an item left for the person as described below. ` +
       `A thread where a person replied after a terminal-marker or out-of-scope reply, asking for a change or asking a question, is actionable again: read that reply and handle it like a new comment. ` +
@@ -984,6 +1040,8 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
         : `In this step the QUESTIONS rule's "stop there, change nothing further" covers that item alone: validate every item before changing anything, handle every other item as usual (fix, push, reply), post no reply on that thread ` +
           `(so the next observation still counts it, and the re-run reaches it with the person's answer), and return the question, naming the thread (its URL, the reviewer and their words) and what the plan or the design doc says. `) +
       `An item that an answer from the person given above settles is no question any more: handle it as that answer says and post its terminal-marker reply. ` +
+      `Neither is a person's comment that corrects a choice nobody confirmed (an "- assumed" line of the plan's "## Assumptions to review" section, a bullet of its "## Assumptions" section, or a choice listed above as made by an earlier stage of this run): ` +
+      `it is the correction those lists ask for, so validate it and apply it like any other actionable request, and post its terminal-marker reply. It is a blocking question only when it also departs from an "- answered" line, an answer from the person given above or a decision tagged (person, ...). ` +
       (last.has_conflicts || behindMergeDue ? `A merge-main step just ran; pull the branch first. ` : '') +
       `Do not resolve threads and do not merge the PR.`,
       opts(`process-comments-${r}`, 'Monitor', 'monitor', ACTION_SCHEMA),
@@ -995,12 +1053,12 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
       pushed = pushed || c.pushed
       if (c.remaining > 0 && !asked(c)) log(`process-comments left ${c.remaining} item(s) without a reply — will retry next round`)
     }
-    if (asked(c)) return needsInput('monitor', c, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME })
+    if (asked(c)) return needsInput('monitor', c, { pr, monitor_actions: actions, final_state: last, resume_monitor: resumeArgs() })
   }
   if (last.ci_state === 'red' && last.ci_red_caused_by_pr && !pushed) {
     // Green CI is no licence to change what a test asserts or what a gate checks: that is the plan's or the person's call.
     const f = await agent(
-      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + KEEP_OUT + `CI quality gates are red on PR #${PRN} (branch ${BRANCH}, head ${last.head_sha}) because of this PR. ` +
+      GUARD + WHERE + GATES + AUTH + MONITOR_CTX + ASK_RULE + assumedSoFar() + KEEP_OUT + `CI quality gates are red on PR #${PRN} (branch ${BRANCH}, head ${last.head_sha}) because of this PR. ` +
       `Read the failing run log${cx('get_job_logs with the run_id and failed_only')}, fix the root cause (no lint/type-check suppression comments, test skips or lowered thresholds), run the gates locally, commit and push to the PR branch. ` +
       `Never get CI green by changing what an existing test asserts, deleting a test, or editing a CI workflow, a required check, the QUALITY_GATES line or a threshold, unless the plan or the design doc calls for that change: then make it and name the test or file and the plan line in assumptions. ` +
       `When neither the plan nor the design doc decides whether the test or the code is right, that is a blocking question, per QUESTIONS, naming the test, what it asserts and the two readings: push nothing and return it.` +
@@ -1010,7 +1068,7 @@ for (let r = 1; r <= MAX_ROUNDS; r++) {
     noteAssumptions('monitor', f)
     noteLeftOut(f)
     if (f) { actions.push({ round: r, step: 'fix-ci', ...f }); pushed = pushed || f.pushed }
-    if (asked(f)) return needsInput('monitor', f, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME })
+    if (asked(f)) return needsInput('monitor', f, { pr, monitor_actions: actions, final_state: last, resume_monitor: resumeArgs() })
   }
 
   // Red CI this PR did not cause (flake, broken main) with nothing else to do: no step can change it.
@@ -1038,7 +1096,7 @@ if (STATUS === 'OPEN' || STATUS === 'monitor_failed') {
   const handoff = `PR #${PRN} handed off — ${handoffWhy || 'no round could observe it'}. Later comments, conflicts or red CI are not watched: ` +
     `re-run plan-to-merged-pr with this result's resume_monitor as args (monitor-only), or schedule that re-run (the pipeline REFERENCE, "Watching a handed-off PR").`
   log(handoff)
-  return done(STATUS, { pr, monitor_actions: actions, final_state: last, resume_monitor: RESUME, handoff })
+  return done(STATUS, { pr, monitor_actions: actions, final_state: last, resume_monitor: resumeArgs(), handoff })
 }
 
 // ---- Close-out: the proposal's last lane may just have merged. Report the edits a person makes; never make them.

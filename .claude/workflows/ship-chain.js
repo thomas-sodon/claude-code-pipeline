@@ -30,7 +30,10 @@ export const meta = {
 //   answers         — [{ lane, id, answer, question?, date? }]: answers to the questions a needs_input result returned; each lane gets only its own.
 //                     One with no lane reaches every lane: that is for a decision the person made for the whole chain, under an id
 //                     no lane issues (intake.d<N>). The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor,
-//                     .q<N> or .d<N>) repeat across lanes, so one of those with no lane is refused when the chain has more than one lane
+//                     .q<N> or .d<N>) repeat across lanes, so one of those with no lane is refused when the chain has more than one lane.
+//                     So is an answer whose lane is no lane of the chain (it would reach nobody), and an { id: answer } map, which
+//                     cannot name a lane. A chain builds nothing, so an assumption the person corrects is no answer: they leave
+//                     it as a review comment on that lane's PR, and the lane's monitor applies it
 // A lane's placeholder title (empty, or '<...>' as the ship plan writes it) is written from its proposal steps (steps, or the
 // numbers in the placeholder), else from the branch's own commits. predecessor_prs placeholders are replaced by the PR numbers
 // of the lanes above, as merged; numbers already given are kept.
@@ -83,14 +86,20 @@ const repoOf = e => TOP_REPO || (e.args.repo ? String(e.args.repo).trim() : '')
 // Answers to a lane's questions go to that lane only. An answer with no lane goes to every lane, which is for a decision the
 // person made for the whole chain; an id a lane's own run issues repeats across lanes, so with no lane it could be read against
 // another lane's question: refused once the chain has more than one lane.
+// A map cannot name a lane, and an answer for a lane the chain does not have would reach nobody: both are refused before anything
+// runs, since dropped without a word the question would be asked again.
+if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers)) throw new Error('ship-chain: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
 const LANE_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']
 const LOOSE = ANSWERS.filter(a => !a.lane && LANE_SCOPES.includes(String(a.id || '').split('.')[0])).map(a => a.id)
 if (keys.length > 1 && LOOSE.length) throw new Error(`ship-chain: answers: ${LOOSE.join(', ')} ${LOOSE.length > 1 ? 'name' : 'names'} no lane; these ids repeat across lanes: pass the lane its question carried`)
+const STRAY = ANSWERS.filter(a => a.lane && !keys.includes(a.lane))
+if (STRAY.length) throw new Error(`ship-chain: answers: ${STRAY.map(a => `${a.id} (lane ${a.lane})`).join(', ')} ${STRAY.length > 1 ? 'name' : 'names'} no lane of this chain (lanes: ${keys.join(', ')}): fix the lane key, or leave the answer out`)
 const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
   `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
-  `Also show the person the assumptions of the lane that asked (lanes[].result.assumptions; its PR body lists the ones its build made): a line they correct is passed as an answer too (that lane, id <its stage>.d<N>, with the assumption as its question). ` +
+  `Also show the person the assumptions of the lane that asked (lanes[].result.assumptions; its PR body lists the ones its build made). A line they correct is no answer: this chain builds nothing, so no stage would apply it. ` +
+  `The person leaves the correction as a review comment on that lane's PR, once it is open, and the lane's monitor applies it (its comment step). Only the answers to these questions go into answers. ` +
   `Then re-run ship-chain with the same args plus answers: each question's lane, id and question text with the person's answer and the date they gave it, added to any answers given before. ` +
   `Lanes whose PR already merged are skipped; the lane that asked ships again with its answers (monitored, if its PR is already open).`
 

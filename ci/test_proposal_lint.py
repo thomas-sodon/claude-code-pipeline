@@ -46,7 +46,7 @@ ERROR_CODES = {'malformed_step', 'duplicate_step', 'step_numbering', 'missing_fi
 WARNING_CODES = {'unknown_key', 'missing_acceptance', 'lane_mixed', 'step_too_big', 'no_kind',
                  'missing_status', 'gate_without_outcome', 'outcome_on_code_step', 'proposal_not_written',
                  'xref_unreadable', 'proposal_in_steps', 'source_unresolved', 'decision_untagged',
-                 'bad_decision_tag'}
+                 'bad_decision_tag', 'bad_decision_heading', 'duplicate_decision'}
 INLINE_WARNINGS = {'file_not_found', 'new_file_exists', 'missing_section', 'unexpected_steps',
                    'milestone_ticked_incomplete', 'milestone_complete_unticked'}
 # Errors only a mode reports (--lanes, --roadmap, --claude-md): each is exercised by a test below.
@@ -597,11 +597,17 @@ class TestArchitectureLint(Base):
 # ---- D-records: who decided ---------------------------------------------------------------------
 
 DECISION_KEYS = ['id', 'n', 'title', 'line', 'by', 'date', 'ref']
-DECISION_CODES = ('decision_untagged', 'bad_decision_tag')
+DECISION_CODES = ('decision_untagged', 'bad_decision_tag', 'bad_decision_heading', 'duplicate_decision')
 # Trailing parentheticals that start like a tag and are not one of the closed forms.
 BAD_TAGS = ('person', "person's decision, 2026-11-05", 'person 2026-11-05', 'person, 2026-02-30',
             'person, 05-11-2026', 'person, 2026-11-05, two words', 'person, 2026-11-05, intake.q2, edit',
-            'Person, 2026-11-05', 'source: the brief', 'source of truth', 'assumed by the author', 'Assumed')
+            'Person, 2026-11-05', 'source: the brief', 'source of truth', 'assumed by the author', 'Assumed',
+            'person, \uff12\uff10\uff12\uff16-\uff11\uff11-\uff10\uff15')    # the last: a date in full-width digits
+# Headings under ## Decisions that number a decision without being "### D<N>: <title>": (its number, the heading).
+BAD_HEADINGS = ((1, '### D1 \u2014 Licence (assumed)'), (2, '### D2. Price'), (3, '### Decision 3: Hosting (assumed)'),
+                (4, '### D4 No colon (assumed)'), (5, '#### D5: A deeper heading (source)'),
+                (6, ' ### D6: Indented (assumed)'), (7, '### d7: Lowercase d (person, 2026-11-05)'),
+                (8, '### D\uff18: A full-width number (assumed)'))
 
 
 def brief(decisions):
@@ -670,7 +676,7 @@ class TestDecisions(Base):
                               '```md\n' + record(8, 'Fenced', 'assumed') + '```\n\n',
                               '~~~\n### D9: Also fenced\n~~~\n\n',
                               '### Notes on the records\n\n',
-                              '#### D10: A deeper heading\n\n',
+                              '#### Decision records, 2026\n\n',
                               record(2, 'Real', 'source'))
         text = text.replace('## Design\n\nText.\n', '## Design\n\n### D1: A heading in another section\n', 1)
         out = self.assertClean(text)
@@ -725,6 +731,56 @@ class TestDecisions(Base):
                 self.assertEqual(w['line'], d['line'])
                 self.assertTrue(w['message'].startswith('D%d: "(%s)" is not a provenance tag' % (n, tag)))
                 self.assertIn('(person, YYYY-MM-DD, <ref>)', w['message'])
+
+    def test_a_heading_that_is_not_the_record_form_is_listed_and_warned(self):
+        # Such a record was invisible: no warning, and --decisions listed nothing, so nobody was shown the choice.
+        text = with_decisions(proposal(step(1)), record(9, 'Real', 'source'),
+                              *[h + '\n\n- Options: a; b.\n- Choice: a.\n\n' for _, h in BAD_HEADINGS])
+        path = self.write('d.md', text)
+        rc, out = self.lint(path)
+        self.assertEqual((rc, out['errors']), (0, []))
+        # one warning per heading, and none of them is also reported as untagged
+        self.assertEqual(codes(self.found(out)), ['bad_decision_heading'] * len(BAD_HEADINGS))
+        for (n, h), d, w in zip(BAD_HEADINGS, out['decisions'][1:], self.found(out)):
+            with self.subTest(heading=h):
+                # no tag is read from it, whatever its parenthetical says: the title is the heading's whole text
+                self.assertEqual(brief([d]), [('D%d' % n, h.strip().lstrip('#').strip(), '', '', '')])
+                self.assertEqual(list(d), DECISION_KEYS)
+                self.assertEqual((w['line'], self.heading(out, d)), (d['line'], h))
+                self.assertTrue(w['message'].startswith('D%d: "%s" is not written as a D-record' % (n, d['title'])))
+                self.assertIn('"### D<N>: <title> (<tag>)"', w['message'])
+                self.assertIn('(person, YYYY-MM-DD, <ref>)', w['message'])
+        # --decisions lists each as unconfirmed, so the person is shown it before the doc is accepted
+        res = self.decisions_mode(path)
+        self.assertEqual([d['id'] for d in res['decisions']], ['D9'] + ['D%d' % n for n, _ in BAD_HEADINGS])
+        self.assertEqual([d['id'] for d in res['unconfirmed']], ['D%d' % n for n, _ in BAD_HEADINGS])
+        # an architecture reads them the same way; a roadmap still records none
+        out = self.assertWarning(with_decisions(architecture(), BAD_HEADINGS[0][1] + '\n'), 'bad_decision_heading')
+        self.assertEqual([d['id'] for d in out['decisions']], ['D1'])
+        rm = roadmap(milestone(1, gate_kind='ops')) + '\n## Decisions\n\n' + BAD_HEADINGS[0][1] + '\n'
+        out = self.assertClean(rm)
+        self.assertEqual((out['decisions'], out['warnings']), ([], []))
+
+    def test_a_repeated_number_is_one_warning_at_each_later_record(self):
+        text = with_decisions(proposal(step(1)),
+                              record(1, 'Language', 'source'),
+                              record(2, 'Data store', 'source'),
+                              record(2, 'Repeated', 'assumed'),
+                              record(3, 'Auth', 'person, 2026-11-05'),
+                              record(2, 'Repeated again', 'source'))
+        rc, out = self.lint_text(text)
+        self.assertEqual((rc, out['errors']), (0, []))
+        self.assertEqual(codes(self.found(out)), ['duplicate_decision', 'duplicate_decision'])
+        first = out['decisions'][1]
+        for d, w in zip((out['decisions'][2], out['decisions'][4]), self.found(out)):
+            self.assertEqual(w['line'], d['line'])
+            self.assertTrue(w['message'].startswith('D2 is numbered twice (also line %d)' % first['line']), w['message'])
+        # every record is still listed, the repeated ones too
+        self.assertEqual([d['title'] for d in out['decisions']],
+                         ['Language', 'Data store', 'Repeated', 'Auth', 'Repeated again'])
+        # a number written once draws nothing
+        out = self.assertClean(with_decisions(proposal(step(1)), record(1, 'A', 'source'), record(2, 'B', 'source')))
+        self.assertEqual(out['warnings'], [])
 
     def test_tag_warnings_never_fail_the_lint(self):
         path = self.write('d.md', with_decisions(proposal(step(1)), record(1, 'Untagged'), record(2, 'Bad', 'person')))

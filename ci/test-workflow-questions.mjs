@@ -1,7 +1,7 @@
 // Behavioural tests for how the workflows surface blocking questions (status needs_input) instead of guessing, for
 // ship-chain's merge-order sequencing, and for how plan-to-merged-pr hands a PR back to the person (resume_monitor, closeout).
 // Each workflow body runs against scripted mock agents: a responder picks the reply by the agent's label, and every
-// prompt is recorded so the tests can check which stages saw which answers.
+// prompt and every log line is recorded so the tests can check which stages saw which answers and what the run said.
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -34,10 +34,10 @@ async function run(name, args, respond, { workflow } = {}) {
     try { for (const st of stages) v = await st(v, it, i) } catch { return null }
     return v
   }))
-  const noop = () => {}
+  const logs = []
   const result = await new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'workflow', 'phase', 'log', src)(
-    args, agent, parallel, pipeline, workflow || (async () => { throw new Error('no nested workflow in this test') }), noop, noop)
-  return { result, calls, prompt: label => (calls.find(c => c.label === label) || {}).prompt || '' }
+    args, agent, parallel, pipeline, workflow || (async () => { throw new Error('no nested workflow in this test') }), () => {}, m => logs.push(String(m)))
+  return { result, calls, logs, prompt: label => (calls.find(c => c.label === label) || {}).prompt || '' }
 }
 
 const Q = { question: 'Should the cache be per process or shared?', why: 'per process needs no new service; shared needs Redis', options: ['per process', 'shared (Redis)'], recommended: 'per process' }
@@ -54,6 +54,8 @@ async function test(name, fn) {
 // What the monitor's observer reports for a settled PR, and the args of a monitor-only run.
 const OBS = { pr_state: 'OPEN', head_sha: 'abcdef1234', ai_review_done_on_head: true, ci_state: 'green', ci_configured: true }
 const MON = { pr: 7, branch: 'feat/x', dir: '/w/x', plan_text: 'the plan', main_branch: 'trunk' }
+// A monitor-only run's responder: per-label replies, a settled observation otherwise.
+const monitor = over => label => over[label] !== undefined ? over[label] : label.startsWith('observe') ? OBS : {}
 
 // ---- plan-to-merged-pr: a happy path through build-only mode, with hooks to make one stage ask.
 const ptmp = (ask, extra = {}) => (label) => {
@@ -83,6 +85,10 @@ await test('plan-to-merged-pr: impl, fix, polish and merge-check questions stop 
     assert.equal(result.stage, stage)
     assert.equal(result.questions[0].id, `${stage}.q1`)
     assert.ok(calls.at(-1).label.startsWith(label), `${stage}: nothing ran after the stage that asked`)
+    // A stage that copies the id its command printed (q1), or a stage of its own, into its reply still gets the workflow's.
+    const own = await run('plan-to-merged-pr', { concern: 'c', ship: false, answers: [{ id: `${stage}.q1`, question: 'T', answer: 'x' }] },
+      l => l.startsWith(label) ? { questions: [{ id: 'q1', stage: 'x', ...Q }] } : ptmp(null)(l))
+    assert.deepEqual(own.result.questions.map(q => [q.id, q.stage, q.question]), [[`${stage}.q2`, stage, Q.question]], `${stage}: the workflow's id and stage`)
   }
 })
 
@@ -94,7 +100,10 @@ await test('plan-to-merged-pr: every stage prompt that can ask carries the quest
   // The rule every stage asks by: a conflict with what the person said, a person-owned choice, what the person settled, titles.
   const p = prompt('impl')
   assert.match(p, /a conflict between what the person said \(an answer given to this run, the framing, a decision a design doc tags \(person, \.\.\.\)\) and the concern, the plan, the tree or your research/)
-  assert.match(p, /In such a conflict pick no side: ask, naming both\./)
+  // What the person said replaces the plan's value on the point it addresses: no conflict, never asked again. The conflict is the other one.
+  assert.ok(p.includes('What the person said outranks the concern and the plan. On the point it addresses, it replaces what they say: follow it, and never ask it again. That difference is not a conflict. ' +
+    'The conflict that is a blocking question is the other one: another part of the concern, the plan or the design doc, the tree or your research makes what the person said impossible to follow. Then pick no side and ask, naming both. '))
+  assert.doesNotMatch(p, /In such a conflict pick no side/, 'the wording that told a stage to ask again about the point an answer settled')
   assert.match(p, /A person-owned choice that no doc, plan or answer settles is asked as a blocking question, never assumed: money or an account in the person's name;/)
   assert.match(p, /a licence; a name \(product, package, domain, organization or bundle id\)\./)
   assert.match(p, /Never change what the person settled: an answer, the framing or a decision tagged \(person, \.\.\.\) is changed only by a newer answer from the person, and a reason to change it is a blocking question\./)
@@ -147,28 +156,94 @@ await test('plan-to-merged-pr: an answer passed without its question text still 
   const NO_TEXT = 'An entry above whose question equals its id was passed without its question text. When its answer alone does not say what it settles, it settles nothing: never guess what it meant. '
   const bare = await run('plan-to-merged-pr', { concern: 'c', ship: false, answers: { 'plan.q1': 'yes' } }, ptmp(null))
   for (const l of ['plan', 'impl', 'review-changes-1', 'apply-review-fixes-1', 'polish-1', 'merge-check']) assert.ok(bare.prompt(l).includes('[{"id":"plan.q1","question":"plan.q1","answer":"yes"}]\n' + NO_TEXT), l)
+  assert.ok(bare.logs.includes('Answer(s) passed without their question text: plan.q1 (pass each answer with its question, so every stage can tell what it settles)'), 'the run says so in its log')
   // With its question, nothing is added; and an entry a later stage alone gets adds nothing to the earlier ones.
   const full = await run('plan-to-merged-pr', { concern: 'c', ship: false, answers: [{ id: 'plan.q1', question: Q.question, answer: 'yes' }, { id: 'polish.q1', answer: 'no' }] }, ptmp(null))
   for (const l of ['plan', 'impl', 'apply-review-fixes-1']) assert.ok(!full.prompt(l).includes(NO_TEXT), l)
   for (const l of ['polish-1', 'merge-check']) assert.ok(full.prompt(l).includes(NO_TEXT), l)
+  assert.ok(full.logs.some(l => l.startsWith('Answer(s) passed without their question text: polish.q1 ')), 'only the answer that lacks its question is named')
+  const none = await run('plan-to-merged-pr', { concern: 'c', ship: false, answers: [{ id: 'plan.q1', question: Q.question, answer: 'yes' }] }, ptmp(null))
+  assert.ok(!none.logs.some(l => l.includes('without their question text')))
 })
 
 await test('plan-to-merged-pr: the needs_input relay says how to ask, to show the assumptions, and what a new session finds', async () => {
   const stop = await run('plan-to-merged-pr', { concern: 'c', ship: false }, ptmp('impl', {}))
   const r = stop.result.relay
   assert.ok(r.startsWith(RELAY_FIRST), 'the first relay sentence every workflow shares')
-  assert.match(r, /Also show the person this result's assumptions: a line they correct is passed as an answer too \(id <its stage>\.d<N>, with the assumption as its question\)\./)
+  assert.match(r, /Also show the person this result's assumptions: a line they correct is passed as an answer too \(id <its stage>\.d<N>, N the next number not yet in use, with the assumption as its question\)\./)
   assert.match(r, /same args plus answers \(each question's id and question text with the person's answer and the date they gave it, added to any answers given before\)/)
-  assert.match(r, /In this session, also set resumeFromRunId to this run's id/)
-  // No plan was saved (the mock planner reports none): a new session plans again, and the work lives in the checkout alone.
-  assert.match(r, /A new session has no run record: re-run the same way without resumeFromRunId; that run plans the work again, because no plan of this run is saved\./)
+  assert.match(r, /In this session, also set resumeFromRunId to this run's id: the stages before the one that asked replay from the record and the work in the checkout is kept\./)
+  // No plan was saved (the mock planner reports none): a new session plans again, on the branch this run created (named, or the
+  // planner would cut a second one beside this run's uncommitted work), and the work lives in the checkout alone.
+  assert.match(r, /A new session has no run record: re-run the same way without resumeFromRunId, adding branch: 'feat\/x' \(the branch this run created\); that run plans the work again, because no plan of this run is saved\./)
   assert.match(r, /The branch's uncommitted work is kept only while this checkout exists\.$/)
+  // A planner that asked created no branch: there is none to name.
+  assert.match((await run('plan-to-merged-pr', { concern: 'c', ship: false }, ptmp('plan'))).result.relay, /without resumeFromRunId; that run plans the work again/)
   // The planner saved the plan: the relay names it, and the branch this run created, for the new session.
   const saved = await run('plan-to-merged-pr', { concern: 'c', ship: false }, label => label === 'plan' ? { branch: 'feat/x', plan: 'the plan', plan_saved: true } : ptmp('impl')(label))
   assert.equal(saved.result.plan_ref, 'plans/feat-x-d03c3cb6.md')
   assert.match(saved.result.relay, /without resumeFromRunId, adding branch: 'feat\/x' \(the branch this run created\); that run continues from the branch's saved plan \(plans\/feat-x-d03c3cb6\.md on the pipeline state branch\) instead of planning again\./)
   assert.match(saved.result.relay, /The branch's uncommitted work is kept only while this checkout exists; a new container builds it again from that plan with the answers\. /)
   assert.match(saved.result.relay, /When the person's answer is to plan the work again, also pass replan: true and branch: 'feat\/x' \(in either session\): the planner then ignores the saved plan and saves the new one over it\.$/)
+  // What the stages assumed before the question: a new session passes it back, since the re-run's stages find their work in place.
+  const assumed = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/x' },
+    label => label === 'plan' ? { branch: 'feat/x', plan: 'the plan', plan_saved: true, assumptions: ['PLAN-CHOICE'] } : ptmp('polish')(label))
+  assert.match(assumed.result.relay, /without resumeFromRunId, adding assumptions: this result's assumptions \(the stages that made them find their work in place and do not report them again\); that run continues from the branch's saved plan/)
+  assert.doesNotMatch(saved.result.relay, /adding assumptions|and assumptions/, 'nothing assumed, nothing to pass')
+})
+
+await test('plan-to-merged-pr: replan is for one run: the relay of a later stage\'s question says to leave it out', async () => {
+  const planned = { branch: 'feat/x', plan: 'the plan', plan_saved: true }
+  const args = { concern: 'c', ship: false, branch: 'feat/x', replan: true }
+  const stop = await run('plan-to-merged-pr', args, label => label === 'plan' ? planned : ptmp('impl')(label))
+  const r = stop.result.relay
+  assert.match(r, /Then re-run this workflow with the same args without replan \(it applied to this run, which planned the work again\) plus answers \(/)
+  assert.match(r, /In this session, also set resumeFromRunId to this run's id: the work in the checkout is kept, and the planner, whose prompt changes without replan, reads back the plan this run saved instead of replaying from the record\./)
+  assert.match(r, /that run continues from the branch's saved plan \(plans\/feat-x-d03c3cb6\.md on the pipeline state branch\) instead of planning again\./)
+  // Followed as written, the re-run reads the saved plan back; with replan left in, it would plan a further time.
+  const { replan, ...next } = args
+  const again = await run('plan-to-merged-pr', { ...next, answers: [{ id: 'impl.q1', question: Q.question, answer: 'shared' }] }, label => label === 'plan' ? planned : ptmp(null)(label))
+  assert.match(again.prompt('plan'), /pipeline-state\.py get plans\/feat-x-d03c3cb6\.md/)
+  assert.doesNotMatch(again.prompt('plan'), /plan the work again from today's tree/)
+  // No plan of the run saved: the planner plans again either way, and the relay says so.
+  const unsaved = await run('plan-to-merged-pr', args, ptmp('impl'))
+  assert.match(unsaved.result.relay, /the planner, whose prompt changes without replan, plans again instead of replaying from the record\./)
+  // The planner itself asked: it has not planned yet, so replan stays.
+  const early = await run('plan-to-merged-pr', args, ptmp('plan'))
+  assert.match(early.result.relay, /Then re-run this workflow with the same args plus answers \(/)
+  assert.doesNotMatch(early.result.relay, /without replan/)
+  // Without replan the relay is the plain one.
+  const plain = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/x' }, label => label === 'plan' ? planned : ptmp('impl')(label))
+  assert.doesNotMatch(plain.result.relay, /without replan/)
+})
+
+await test('plan-to-merged-pr: a re-run given the earlier run\'s assumptions lists them again, each once, and hands them to the monitor-only run', async () => {
+  // Run 1: the planner and /impl assumed, polish asked. Run 2, from a session with no record: the plan is restored and /impl
+  // finds its work in place, so neither reports again; the assumptions passed back still reach the result, the plan and the stages.
+  const first = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/x' }, label => label === 'plan' ? { branch: 'feat/x', plan: 'the plan', plan_saved: true, assumptions: ['PLAN-CHOICE'] }
+    : label === 'impl' ? { summary: 'done', files_changed: ['a.js'], gates_green: true, assumptions: ['IMPL-A1'] } : ptmp('polish')(label))
+  assert.deepEqual(first.result.assumptions, [{ stage: 'plan', assumption: 'PLAN-CHOICE' }, { stage: 'impl', assumption: 'IMPL-A1' }])
+  const answers = [{ id: 'polish.q1', question: Q.question, answer: 'shared', date: '2026-11-13' }]
+  const respond = label => label === 'plan' ? { branch: 'feat/x', plan: 'the plan', plan_saved: true, plan_restored: true, assumptions: ['PLAN-CHOICE'] }
+    : label === 'impl' ? { summary: '', files_changed: [], gates_green: true, already_implemented: true } : ptmp(null)(label)
+  const second = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/x', answers, assumptions: first.result.assumptions }, respond)
+  assert.equal(second.result.status, 'pushed')
+  assert.deepEqual(second.result.assumptions, first.result.assumptions, 'both lines, the one the planner reports again kept once')
+  assert.ok(second.prompt('merge-check').endsWith('- assumed (plan): PLAN-CHOICE\n- assumed (impl): IMPL-A1\n- answered (polish.q1, 2026-11-13): Should the cache be per process or shared? -> shared\n\n'), 'the saved plan lists them')
+  for (const l of ['impl', 'polish-1', 'merge-check']) assert.ok(second.prompt(l).includes('["PLAN-CHOICE","IMPL-A1"]'), `${l}: told to keep them`)
+  // Without them the second run's result, saved plan and PR body would hold neither line of /impl's.
+  const lost = await run('plan-to-merged-pr', { concern: 'c', ship: false, branch: 'feat/x', answers }, respond)
+  assert.deepEqual(lost.result.assumptions, [{ stage: 'plan', assumption: 'PLAN-CHOICE' }])
+  // The planner that restores a plan is asked for the plan's own assumptions.
+  assert.match(second.prompt('plan'), /plan_restored=true and plan_saved=true, and with the bullets of its "## Assumptions" section \(not "## Assumptions to review"\), when it has one, as assumptions: what its planning chose, so this run's result lists them too\./)
+  // A hand-off carries them to the monitor-only run, whose action steps are told to keep each.
+  const shipped = await run('plan-to-merged-pr', { concern: 'c' }, label => label === 'impl' ? { summary: 'done', files_changed: ['a.js'], gates_green: true, assumptions: ['IMPL-A1'] }
+    : label === 'create-pr' ? { pr_number: 7, url: 'u' } : label.startsWith('observe') ? OBS : ptmp(null)(label))
+  assert.deepEqual(shipped.result.resume_monitor.assumptions, [{ stage: 'impl', assumption: 'IMPL-A1' }])
+  const mon = await run('plan-to-merged-pr', shipped.result.resume_monitor, monitor({ 'observe-1': { ...OBS, actionable_comments: 1 } }))
+  assert.ok(mon.prompt('process-comments-1').includes('keep each, never ask it again, and it is no defect; a reason to change one is a blocking question: ["IMPL-A1"]'))
+  assert.deepEqual(mon.result.assumptions, [{ stage: 'impl', assumption: 'IMPL-A1' }])
+  assert.deepEqual(mon.result.resume_monitor.assumptions, [{ stage: 'impl', assumption: 'IMPL-A1' }])
 })
 
 await test('plan-to-merged-pr: on_question assume tells stages to proceed and collects their assumptions', async () => {
@@ -196,6 +271,35 @@ await test('plan-to-merged-pr: an assumption reaches every later stage, the revi
   // With nothing assumed, nothing is added.
   const none = await run('plan-to-merged-pr', { concern: 'c', ship: false }, ptmp(null))
   for (const c of none.calls) assert.doesNotMatch(c.prompt, /Choices earlier stages of this run made/, c.label)
+})
+
+await test('plan-to-merged-pr: the monitor\'s steps get the run\'s assumptions, and a long plan is cut without its assumptions and answers', async () => {
+  // A full run whose plan is past the cut: the three action steps are still told what /impl and the merge check assumed.
+  const LONG = `# Plan\n${'x'.repeat(9000)}`
+  const busy = { ...OBS, has_conflicts: true, actionable_comments: 1, ci_state: 'red', ci_red_caused_by_pr: true }
+  const respond = label => label === 'plan' ? { branch: 'feat/x', plan: LONG } : label === 'impl' ? { summary: 'done', files_changed: ['a.js'], gates_green: true, assumptions: ['IMPL-ASSUMED-1'] }
+    : label === 'merge-check' ? { merge_check: 'clean', gates_green: true, assumptions: ['MC-ASSUMED'] } : label === 'create-pr' ? { pr_number: 7, url: 'u' }
+      : label === 'observe-1' ? busy : label === 'merge-main-1' ? { pushed: false, handled: 1, remaining: 0, summary: 's', assumptions: ['MERGE-ASSUMED'] } : label.startsWith('observe') ? OBS : ptmp(null)(label)
+  const answers = [{ id: 'impl.q1', question: Q.question, answer: 'per process', date: '2026-11-12' }]
+  const { result, prompt } = await run('plan-to-merged-pr', { concern: 'c', answers }, respond)
+  assert.equal(result.status, 'OPEN')
+  const KEEP = 'Choices earlier stages of this run made that the person has not confirmed: keep each, never ask it again, and it is no defect; a reason to change one is a blocking question: '
+  assert.ok(prompt('merge-main-1').includes(KEEP + '["IMPL-ASSUMED-1","MC-ASSUMED"]'), 'merge-main-1')
+  // A step run later in the same round also gets what the step before it assumed.
+  for (const l of ['process-comments-1', 'fix-ci-1']) assert.ok(prompt(l).includes(KEEP + '["IMPL-ASSUMED-1","MC-ASSUMED","MERGE-ASSUMED"]'), l)
+  for (const l of ['merge-main-1', 'process-comments-1', 'fix-ci-1']) {
+    assert.ok(prompt(l).includes('x'.repeat(7000) + '\n[plan truncated]\n\n## Assumptions to review\n\n- assumed (impl): IMPL-ASSUMED-1\n- assumed (merge_check): MC-ASSUMED\n- answered (impl.q1, 2026-11-12): Should the cache be per process or shared? -> per process\n'),
+      `${l}: the cut takes the plan's body, never the section that says what was assumed and answered`)
+    assert.ok(!prompt(l).includes('x'.repeat(8500)), l)
+  }
+  // Monitor-only, given the text of a plan whose save failed: its answered and assumed lines sit past the cut and still arrive.
+  const TEXT = `${LONG}\n\n## Assumptions to review\n\nintro\n\n- assumed (impl): TAIL-ASSUMPTION\n- answered (impl.q1, 2026-11-10): T -> TAIL-ANSWER\n`
+  const mon = await run('plan-to-merged-pr', { ...MON, plan_text: TEXT }, monitor({ 'observe-1': { ...OBS, actionable_comments: 1 } }))
+  assert.ok(mon.prompt('process-comments-1').includes('\n[plan truncated]\n\n## Assumptions to review\n\n- assumed (impl): TAIL-ASSUMPTION\n- answered (impl.q1, 2026-11-10): T -> TAIL-ANSWER\n'))
+  // A plan that fits is handed over whole, as before.
+  const short = await run('plan-to-merged-pr', MON, monitor({ 'observe-1': { ...OBS, actionable_comments: 1 } }))
+  assert.ok(short.prompt('process-comments-1').includes('The plan:\nthe plan\n'))
+  assert.doesNotMatch(short.prompt('process-comments-1'), /plan truncated|Choices earlier stages of this run made/)
 })
 
 await test('plan-to-merged-pr: the PR body gets the assumptions and the answers, and the result lists what the fixer declined', async () => {
@@ -266,7 +370,6 @@ await test('plan-to-merged-pr: red CI not ours and the round cap both hand off w
 })
 
 // ---- plan-to-merged-pr: the monitor's comment and CI steps ask instead of deciding for the person
-const monitor = over => label => over[label] !== undefined ? over[label] : label.startsWith('observe') ? OBS : {}
 
 await test('plan-to-merged-pr: a review comment that is the person\'s call stops the monitor with a question, its thread left without a reply', async () => {
   const over = { 'observe-1': { ...OBS, actionable_comments: 1 }, 'process-comments-1': { pushed: true, handled: 2, remaining: 1, summary: 's', questions: [Q] } }
@@ -276,6 +379,9 @@ await test('plan-to-merged-pr: a review comment that is the person\'s call stops
   assert.ok(result.relay.startsWith(RELAY_FIRST))
   assert.match(result.relay, /monitor-only mode \(this result's resume_monitor as args, plus answers \(each question's id and question text with the person's answer and the date they gave it/)
   assert.doesNotMatch(result.relay, /resumeFromRunId/)
+  // A monitor-only re-run builds nothing: a corrected assumption goes on the PR as a review comment, never into answers.
+  assert.match(result.relay, /Also show the person this result's assumptions\. A line they correct is no answer: this re-run builds nothing, so no stage would apply it\. The person leaves the correction as a review comment on the PR, and a monitor run's comment step applies it\. Only the answers to these questions go into answers\. Then re-run this workflow in monitor-only mode/)
+  assert.doesNotMatch(result.relay, /is passed as an answer too/)
   assert.equal(calls.at(-1).label, 'process-comments-1', 'nothing runs after the step that asked')
   assert.deepEqual(result.monitor_actions.map(a => [a.step, a.pushed]), [['process-comments', true]], 'what the step did for the other items is kept')
   const p = prompt('process-comments-1')
@@ -285,6 +391,9 @@ await test('plan-to-merged-pr: a review comment that is the person\'s call stops
   assert.match(p, /return the question, naming the thread \(its URL, the reviewer and their words\) and what the plan or the design doc says/)
   assert.match(p, /verify every item carries one, apart from an item left for the person as described below/)
   assert.match(p, /A thread where a person replied after a terminal-marker or out-of-scope reply, asking for a change or asking a question, is actionable again/)
+  // The correction the PR body asks for is applied, never returned as a question: a comment on a choice nobody confirmed.
+  assert.match(p, /Neither is a person's comment that corrects a choice nobody confirmed \(an "- assumed" line of the plan's "## Assumptions to review" section, a bullet of its "## Assumptions" section, or a choice listed above as made by an earlier stage of this run\): it is the correction those lists ask for, so validate it and apply it like any other actionable request, and post its terminal-marker reply\. It is a blocking question only when it also departs from an "- answered" line, an answer from the person given above or a decision tagged \(person, \.\.\.\)\./)
+  assert.match(p, /Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason of your own to change one is a blocking question too\. A person's comment on the PR that corrects one is no such reason: it is the correction that section asks for, a request to validate and apply/)
   // The observer counts such a thread again.
   assert.match(prompt('observe-1'), /counts again when a person replied after that reply \(a real user, not a bot and not one of this pipeline's own replies\), asking for a change or asking a question: that reply is unanswered/)
 })
@@ -350,6 +459,25 @@ await test('the same rule reads the same way in every workflow and command that 
   const OUTRANKS = /What the person said outranks the source\. On the point it addresses, it replaces what the source says[^.]*: follow it, say so in (the doc|what you write), and never ask it again\. That difference is not a conflict\. The conflict that is a blocking question is the other one: another part of the (source|doc's sources), the tree or your research makes what the person said impossible to follow\. Then pick no side and ask, naming both\./
   for (const f of ['roadmap.md', 'propose.md']) assert.match(read(join(CMD, f)), OUTRANKS, f)
   for (const f of ['brief-to-proposals.js', 'refresh-proposal.js']) assert.match(read(join(dir, f)).replace(/` \+\n\s*`/g, ''), OUTRANKS, f)
+  // The build half says the same of the plan and of the architecture: an answer that differs from them is followed, never asked again.
+  const BUILD_OUTRANKS = /What the person said (in an answer )?outranks the (concern and the plan|architecture)\. On the point it addresses, it replaces what (they say|the architecture says): follow it, and never ask it again\. That difference is not a conflict\. The conflict that is a blocking question is the other one: another part of the (concern, the plan or the design doc|architecture), the tree or your research makes what the person said impossible to follow\. Then pick no side and ask, naming both\./
+  for (const f of ['plan-to-merged-pr.js', 'bootstrap-repo.js']) {
+    assert.match(read(join(dir, f)).replace(/` \+\n\s*`/g, ''), BUILD_OUTRANKS, f)
+    assert.doesNotMatch(read(join(dir, f)), /In such a conflict pick no side/, f)
+  }
+  // The line /start-product writes under a framing it assumed is the line the design commands and workflows key on.
+  for (const f of ['start-product.md', 'roadmap.md', 'propose.md', 'review-proposal.md']) assert.ok(read(join(CMD, f)).includes('- Not confirmed by me yet'), f)
+  for (const f of ['brief-to-proposals.js', 'refresh-proposal.js']) assert.ok(read(join(dir, f)).includes('- Not confirmed by me yet'), f)
+  // The plan section plan-to-merged-pr writes is the one the build commands read, under the same heading.
+  for (const f of ['create-pr.md', 'impl.md', 'polish.md', 'merge-main.md', 'process-comments.md', 'review-changes.md']) assert.ok(read(join(CMD, f)).includes('## Assumptions to review'), f)
+  assert.ok(read(join(dir, 'plan-to-merged-pr.js')).includes("const NOTES_HEAD = '## Assumptions to review'"))
+  // A new id never reuses a number: every relay and next step that gives a .d<N> id says which N.
+  for (const f of ['plan-to-merged-pr.js', 'proposal-build-chain.js', 'bug-fix-backlog.js', 'bootstrap-repo.js', 'refresh-proposal.js']) {
+    const src = read(join(dir, f)).replace(/` \+\n\s*`/g, '')
+    const ids = [...src.matchAll(/\bid ([a-z]+|<its stage>)\.d<N>,([^)]*)\)/g)]
+    assert.ok(ids.length, `${f}: a relay or next step gives a .d<N> id`)
+    for (const m of ids) assert.match(m[2], /^ N the next number not yet in use,/, `${f}: ${m[0]}`)
+  }
   // No file keeps the wording this replaced.
   const all = [...readdirSync(CMD).map(f => join(CMD, f)), ...readdirSync(dir).map(f => join(dir, f))]
   for (const f of all) assert.doesNotMatch(read(f), /the source wins over what the person|binding unless a source fact contradicts/i, f)
@@ -357,7 +485,7 @@ await test('the same rule reads the same way in every workflow and command that 
   for (const f of all) {
     for (const m of read(f).matchAll(/\(person, ([^)…]*)\)/g)) {
       if (m[1] === '...') continue
-      assert.match(m[1], /^(<[^>]*(date|YYYY)[^>]*>|YYYY-MM-DD|\d{4}-\d\d-\d\d)(\[?, (<[^>]+>|[^\s,()]+)\]?)?$/, `${f}: (person, ${m[1]})`)
+      assert.match(m[1], /^(<[^>]*(date|YYYY|today)[^>]*>|YYYY-MM-DD|\d{4}-\d\d-\d\d)(\[?, (<[^>]+>|[^\s,()]+)\]?)?$/, `${f}: (person, ${m[1]})`)
     }
     assert.doesNotMatch(read(f), /\((person's decision|by the person|confirmed by the person),/i, f)
   }
@@ -591,8 +719,13 @@ await test('proposal-build-chain: the relay says the lane that asked continues f
   const { result } = await run('proposal-build-chain', { lanes, answers, replan: ['b'] }, () => ({}), { workflow: ask(seen) })
   const relay = result[1].relay
   assert.ok(relay.startsWith(RELAY_FIRST))
-  assert.match(relay, /Also show the person the assumptions in each lane's result \(result\.assumptions\): a line they correct in a lane that asked is passed as an answer too \(that lane, id <its stage>\.d<N>, with the assumption as its question\)\./)
+  assert.match(relay, /Also show the person the assumptions in each lane's result \(result\.assumptions\): a line they correct in a lane that asked is passed as an answer too \(that lane, id <its stage>\.d<N>, N the next number not yet in use, with the assumption as its question\)\./)
   assert.match(relay, /plus answers: each question's lane, id and question text with the person's answer and the date they gave it, added to any answers given before\./)
+  // What the lanes assumed goes back too: a lane that builds on would not report it a second time.
+  assert.match(relay, /Pass assumptions too: the assumptions in each lane's result, each with lane: '<that lane's key>' added \(a lane that builds on finds its earlier work in place and does not report them again, so without them its PR body would not list them\)\./)
+  // replan was for this run: lane b's planner ran (its /impl asked), so the re-run leaves replan out.
+  assert.match(relay, /Then re-run proposal-build-chain with the same args \(the same date, and replan as the end of this relay says\) plus answers:/)
+  assert.match(relay, / This run was given replan, which is for one run: a lane left in it plans a further time, over the plan its work was built on\. On the re-run leave replan out \(every lane it named has planned again\), or pass only the key of a lane the person's answer says to plan once more\.$/)
   assert.match(relay, /it continues from the plan its earlier run saved on the pipeline state branch \(its result's plan_ref\) instead of planning a second time, and plans again only when no plan for the same work is saved, when the saved plan contradicts an answer to a planning question, or when its key is listed in replan\./)
   assert.match(relay, /Its uncommitted work is kept only while its worktree exists: in a new container the lane is built again from that plan, with the answers\./)
   assert.match(relay, /When the person's answer is to plan a lane again, add replan: \['<that lane's key>'\] to the re-run's args\./)
@@ -604,6 +737,23 @@ await test('proposal-build-chain: the relay says the lane that asked continues f
   const all = []
   await run('proposal-build-chain', { lanes, replan: true }, () => ({}), { workflow: ask(all) })
   assert.deepEqual(all.map(a => a.replan), [true, true])
+  // A lane whose planner itself asked, and a lane the run never reached, have not planned again: they stay in replan.
+  const three = [...lanes, { key: 'c', dir: '/w/c', branch: 'feat/c', proposal: 'p.md', concern: 'cc', bases: ['feat/b'] }]
+  const atPlan = async (name, a) => a.branch === 'feat/b' ? { status: 'needs_input', stage: 'plan', questions: [{ id: 'plan.q1', ...Q }] } : { status: 'pushed' }
+  const early = await run('proposal-build-chain', { lanes: three, replan: true }, () => ({}), { workflow: atPlan })
+  assert.match(early.result[1].relay, /On the re-run pass replan: \["b","c"\] \(the lanes it named whose planner has not planned again yet\), with the key of any lane the person's answer says to plan once more\.$/)
+  // A run given no replan says nothing about it.
+  const plain = await run('proposal-build-chain', { lanes }, () => ({}), { workflow: ask([]) })
+  assert.doesNotMatch(plain.result[1].relay, /This run was given replan/)
+  assert.match(plain.result[1].relay, /Then re-run proposal-build-chain with the same args \(the same date\) plus answers:/)
+  assert.match(plain.result[1].relay, /When the person's answer is to plan a lane again, add replan: \['<that lane's key>'\] to the re-run's args\.$/)
+  // Each lane's run gets the assumptions passed back for it, without the lane key; a line for another lane reaches nobody.
+  const given = []
+  const assumptions = [{ lane: 'b', stage: 'impl', assumption: 'B-ASSUMED' }, { lane: 'a', stage: 'plan', assumption: 'A-ASSUMED' }, { lane: 'zz', stage: 'plan', assumption: 'NOBODY' }]
+  await run('proposal-build-chain', { lanes, assumptions }, () => ({}), { workflow: async (name, a) => { given.push(a); return { status: 'pushed' } } })
+  assert.deepEqual(given.map(a => a.assumptions), [[{ stage: 'plan', assumption: 'A-ASSUMED' }], [{ stage: 'impl', assumption: 'B-ASSUMED' }]])
+  await run('proposal-build-chain', { lanes: [lanes[0]] }, () => ({}), { workflow: async (name, a) => { given.push(a); return { status: 'pushed' } } })
+  assert.equal('assumptions' in given.at(-1), false, 'no assumptions, no key')
   // Derive mode: the result's own list of assumptions, and a pushed lane's correction goes to its PR.
   const lanesJson = JSON.stringify({ chains: [{ key: 's1', lanes: [{ key: 's1', branch: 'feat/b', dir: '/w/b', bases: [], steps: [1], concern: 'c1' }] }], blocked: [], errors: [] })
   const derived = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w' }, label => label === 'derive-lanes' ? { lanes_json: lanesJson, exit_code: 0, source: 'origin' } : {}, { workflow: ask([]) })
@@ -611,6 +761,14 @@ await test('proposal-build-chain: the relay says the lane that asked continues f
   assert.match(derived.result.relay, /Also show the person this result's assumptions \(each names its lane\)/)
   assert.match(derived.result.relay, /A lane that already pushed is not built again by the re-run, so a correction to one of its lines is no answer: the person makes it on that lane's PR, as a review comment, once the PR is open\./)
   assert.match(derived.result.relay, /Lanes already pushed come back already_built\. A lane that asked builds again in its kept worktree with its answers: it continues from the plan/)
+  assert.match(derived.result.relay, /Pass assumptions too: this result's assumptions, as they are \(/)
+  assert.equal(derived.result.chains[0].lanes[0].relay, derived.result.relay, 'the lane carries the same relay')
+  // Derive mode with replan: the result's relay, and the lane's copy, name what the re-run passes once every chain has ended.
+  const twoChains = JSON.stringify({ chains: [{ key: 's1', lanes: [{ key: 's1', branch: 'feat/b', dir: '/w/b', bases: [], steps: [1], concern: 'c1' }] },
+    { key: 's2', lanes: [{ key: 's2', branch: 'feat/a', dir: '/w/a', bases: [], steps: [2], concern: 'c2' }, { key: 's3', branch: 'feat/c', dir: '/w/c', bases: ['feat/a'], steps: [3], concern: 'c3', already_built: true }] }], blocked: [], errors: [] })
+  const re = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w', replan: true }, label => label === 'derive-lanes' ? { lanes_json: twoChains, exit_code: 0, source: 'origin' } : {}, { workflow: ask([]) })
+  assert.match(re.result.relay, /On the re-run leave replan out \(every lane it named has planned again\)/, 'both lanes that ran have planned; an already-built lane is never planned')
+  assert.equal(re.result.chains.find(c => c.chain === 's1').lanes[0].relay, re.result.relay)
 })
 
 const CHAIN_2 = { chain: 's1', order: [
@@ -651,6 +809,37 @@ await test('a lane-run answer with no lane is refused when the run has more than
   await run('ship-chain', { chain: { chain: 's1', order: [CHAIN_2.order[0]] }, answers: [{ id: 'merge_check.q1', answer: 'ours' }] }, label => label.startsWith('lookup-') ? { state: 'NONE', pr_number: 0, title: 'T' } : {},
     { workflow: async (name, a) => { single.push(a); return { status: 'MERGED', pr: { pr_number: 10 } } } })
   assert.deepEqual(single[0].answers, [{ id: 'merge_check.q1', answer: 'ours' }], 'one lane: applied')
+})
+
+await test('an answer for a lane the run does not have is never dropped without a word, and an { id: answer } map is refused by the lane workflows', async () => {
+  const lanes = [{ key: 'a', dir: '/w/a', branch: 'feat/a', proposal: 'p.md', concern: 'ca' }, { key: 'b', dir: '/w/b', branch: 'feat/b', proposal: 'p.md', concern: 'cb', bases: ['feat/a'] }]
+  const pushed = seen => async (name, a) => { seen.push(a); return { status: 'pushed' } }
+  const stray = [{ lane: 'B', id: 'impl.q1', question: 'T', answer: 'per process' }, { lane: 'a', id: 'plan.q1', answer: 'x' }]
+  // Explicit lanes, a chain, a bug backlog: the caller named the lanes, so a key that matches none is refused before any lane runs.
+  const none = []
+  await assert.rejects(run('proposal-build-chain', { lanes, answers: stray }, () => ({}), { workflow: pushed(none) }),
+    /proposal-build-chain: answers: impl\.q1 \(lane B\) names no lane of this run \(lanes: a, b\): fix the lane key, or leave the answer out/)
+  await assert.rejects(run('ship-chain', { chain: CHAIN_2, answers: [{ lane: 'S2', id: 'monitor.q1', answer: 'ours' }, { lane: 'x', id: 'intake.d1', answer: 'y' }] }, () => ({}), { workflow: pushed(none) }),
+    /ship-chain: answers: monitor\.q1 \(lane S2\), intake\.d1 \(lane x\) name no lane of this chain \(lanes: s1, s2\): fix the lane key, or leave the answer out/)
+  await assert.rejects(run('bug-fix-backlog', { lanes: [{ key: 'k', issues: [11], dir: '/w/k', branch: 'bugfix/k' }], answers: [{ lane: 'other', id: 'impl.q1', answer: 'no' }] }, () => ({})),
+    /bug-fix-backlog: answers: impl\.q1 \(lane other\) names no lane of this run \(lanes: k\): fix the lane key, or leave the answer out/)
+  assert.equal(none.length, 0, 'no lane ran')
+  // Derive mode: a lane may have merged since its answer was given, so the answer is logged and returned, and the run goes on.
+  const lanesJson = JSON.stringify({ chains: [{ key: 's1', lanes: [{ key: 's1', branch: 'feat/p-s1', dir: '/w/s1', bases: [], steps: [1], concern: 'c1' }] }], blocked: [{ lane: 's4', steps: [4], waiting_on: [{ n: 3, reason: 'human_gate' }] }], errors: [] })
+  const built = []
+  const gone = { lane: 's0', id: 'impl.q1', question: 'T', answer: 'for a lane that merged' }
+  const answers = [gone, { lane: 's1', id: 'plan.q1', answer: 'for s1' }, { lane: 's4', id: 'plan.q1', answer: 'for the blocked lane' }]
+  const derived = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w', answers }, label => label === 'derive-lanes' ? { lanes_json: lanesJson, exit_code: 0, source: 'origin' } : {}, { workflow: pushed(built) })
+  assert.equal(derived.result.status, 'pushed')
+  assert.deepEqual(derived.result.answers_unused, [gone], 'the answer for no lane of the doc; a blocked lane is a lane')
+  assert.ok(derived.logs.includes('Answer(s) for no lane of this run, used by nobody: impl.q1 (lane s0). Lanes: s1, s4'))
+  assert.deepEqual(built[0].answers, [{ id: 'plan.q1', answer: 'for s1' }])
+  const clean = await run('proposal-build-chain', { proposal: 'p.md', dir: '/d', root: '/w', answers: [answers[1]] }, label => label === 'derive-lanes' ? { lanes_json: lanesJson, exit_code: 0, source: 'origin' } : {}, { workflow: pushed([]) })
+  assert.equal(clean.result.answers_unused, undefined)
+  // A map cannot name a lane: refused, never read as no answers.
+  await assert.rejects(run('proposal-build-chain', { lanes: [lanes[0]], answers: { 'plan.q1': 'per process' } }, () => ({}), { workflow: pushed([]) }), /proposal-build-chain: answers must be an array of \{ lane\?, id, answer, question\?, date\? \} \(an \{ id: answer \} map cannot name a lane\)/)
+  await assert.rejects(run('ship-chain', { chain: CHAIN_2, answers: { 'merge_check.q1': 'ours' } }, () => ({}), { workflow: pushed([]) }), /ship-chain: answers must be an array of/)
+  await assert.rejects(run('bug-fix-backlog', { root: '/w', answers: { 'intake.q1': '[]' } }, () => ({})), /bug-fix-backlog: answers must be an array of/)
 })
 
 await test('proposal-build-chain: derive mode carries a lane\'s questions up as needs_input and passes each lane its own answers and on_question', async () => {
@@ -834,7 +1023,9 @@ await test('ship-chain: a lane that did not ship says why: the PR stage\'s reaso
   const asked = await stopped({ status: 'needs_input', stage: 'merge_check', questions: [{ id: 'merge_check.q1', ...Q }] })
   assert.equal(asked.lanes[0].result.stage, 'merge_check')
   assert.ok(asked.relay.startsWith(RELAY_FIRST))
-  assert.match(asked.relay, /Also show the person the assumptions of the lane that asked \(lanes\[\]\.result\.assumptions/)
+  // A chain builds nothing: a corrected assumption is a review comment on the lane's PR, never an answer.
+  assert.match(asked.relay, /Also show the person the assumptions of the lane that asked \(lanes\[\]\.result\.assumptions; its PR body lists the ones its build made\)\. A line they correct is no answer: this chain builds nothing, so no stage would apply it\. The person leaves the correction as a review comment on that lane's PR, once it is open, and the lane's monitor applies it \(its comment step\)\. Only the answers to these questions go into answers\./)
+  assert.doesNotMatch(asked.relay, /is passed as an answer too/)
   assert.match(asked.relay, /plus answers: each question's lane, id and question text with the person's answer and the date they gave it, added to any answers given before\./)
 })
 
@@ -1046,10 +1237,11 @@ await test('bug-fix-backlog: a lane\'s question is answered through plan-to-merg
   assert.equal(lane.stage, 'fix')
   assert.deepEqual(lane.questions.map(q => [q.lane, q.id]), [['k', 'fix.q1']])
   assert.equal(seen[0].name, 'plan-to-merged-pr')
-  assert.deepEqual(lane.resume_args, seen[0].args, 'the args the lane\'s run was given')
-  assert.deepEqual(Object.keys(lane.resume_args).sort(), ['branch', 'concern', 'dir', 'main_branch', 'on_question', 'plan_text', 'pr_note'])
+  // The args the lane's run was given, plus what its stages assumed: the run that goes on would not report that a second time.
+  assert.deepEqual(lane.resume_args, { ...seen[0].args, assumptions: [{ stage: 'impl', assumption: 'a' }] })
+  assert.deepEqual(Object.keys(seen[0].args).sort(), ['branch', 'concern', 'dir', 'main_branch', 'on_question', 'plan_text', 'pr_note'])
   assert.ok(lane.relay.startsWith(RELAY_FIRST))
-  assert.match(lane.relay, /Also show the person this lane's assumptions: a line they correct is passed as an answer too \(id <its stage>\.d<N>, with the assumption as its question\)\./)
+  assert.match(lane.relay, /Also show the person this lane's assumptions: a line they correct is passed as an answer too \(id <its stage>\.d<N>, N the next number not yet in use, with the assumption as its question\)\./)
   assert.match(lane.relay, /re-run plan-to-merged-pr with this lane's resume_args as args plus answers \(each question's id and question text with the person's answer and the date they gave it, without the lane key, added to any answers those args already hold\), without resumeFromRunId/)
   assert.doesNotMatch(lane.relay, /re-run bug-fix-backlog/)
   assert.match(lane.relay, /Never send this lane back through bug-fix-backlog: its triage would judge the kept worktree, which now holds the fix, or skip the issue once the lane's own PR is open\./)
@@ -1058,10 +1250,13 @@ await test('bug-fix-backlog: a lane\'s question is answered through plan-to-merg
   assert.ok(seen[0].args.plan_text.endsWith('\n\n## Assumptions to review\n\n- assumed (triage): fixes the first of the two readings of #11\n'), 'the plan ends with the section plan-to-merged-pr keeps')
   assert.equal(seen[0].args.pr_note, 'Fixes #11')
   // An answer given with the lane reaches its run with its question text and date, and stays in resume_args.
-  const answers = [{ lane: 'k', id: 'impl.q1', answer: 'per process', question: Q.question, date: '2026-11-12' }, { lane: 'other', id: 'impl.q1', answer: 'no' }]
+  const answers = [{ lane: 'k', id: 'impl.q1', answer: 'per process', question: Q.question, date: '2026-11-12' }]
   const again = await bugLane(child, { answers })
   assert.deepEqual(again.seen[0].args.answers, [{ id: 'impl.q1', answer: 'per process', question: Q.question, date: '2026-11-12' }])
   assert.deepEqual(again.lane.resume_args.answers, again.seen[0].args.answers)
+  // A lane whose run assumed nothing gets its args back as they were.
+  const bare = await bugLane({ ...child, assumptions: [] })
+  assert.deepEqual(bare.lane.resume_args, bare.seen[0].args)
 })
 
 await test('bug-fix-backlog: a lane-run answer with no lane is refused with two lanes; the Intake\'s answer still reaches none', async () => {
@@ -1089,6 +1284,9 @@ await test('bug-fix-backlog: a lane whose monitor asked carries resume_monitor a
   assert.match(lane.relay, /in monitor-only mode and without resumeFromRunId, so the PR is observed afresh\./)
   assert.doesNotMatch(lane.relay, /resume_args|re-run bug-fix-backlog/)
   assert.match(lane.relay, /Never send this lane back through bug-fix-backlog/)
+  // The re-run only monitors: a corrected assumption is a review comment on the PR, never an answer.
+  assert.match(lane.relay, /Also show the person this lane's assumptions\. A line they correct is no answer: the re-run only monitors the PR, so no stage would apply it\. The person leaves the correction as a review comment on the lane's PR, and the monitor's comment step applies it\. Only the answers to these questions go into answers\. This lane's PR is already open/)
+  assert.doesNotMatch(lane.relay, /is passed as an answer too/)
 })
 
 await test('bug-fix-backlog: the lane result keeps the hand-off, the saved plan, the assumptions and what was left uncommitted', async () => {

@@ -53,9 +53,12 @@ FILE_RE = re.compile(r'`([^`]+)`(\s*\(new\))?')
 XREF_RE = re.compile(r'^(\S+?\.md)#(\d+)$')
 SOURCE_REF_RE = re.compile(r'(\S+?\.md)#(\d+)')
 COMMENT_RE = re.compile(r'<!--.*?-->')
-DECISION_RE = re.compile(r'^### D(\d+):\s*(.*?)\s*$')
+DECISION_RE = re.compile(r'^### D(\d+):\s*(.*?)\s*$', re.ASCII)
+# A heading under ## Decisions that numbers a decision without being "### D<N>: ...": "### D1 — Licence",
+# "### D2. Price", "### Decision 3: Hosting", "#### D4: Deeper", "### d5: Lowercase", a number in non-ASCII digits.
+DECISION_LIKE_RE = re.compile(r'^\s{0,3}#{3,4}\s*((?:D|Decision)\s*(\d+)\b.*?)\s*$', re.I)
 PAREN_RE = re.compile(r'^(.*?)\s*\(([^()]*)\)$')      # a heading's trailing parenthetical
-PERSON_TAG_RE = re.compile(r'^person\s*,\s*(\d{4}-\d{2}-\d{2})(?:\s*,\s*([^\s,()]+))?$')
+PERSON_TAG_RE = re.compile(r'^person\s*,\s*(\d{4}-\d{2}-\d{2})(?:\s*,\s*([^\s,()]+))?$', re.ASCII)
 TAG_WORD_RE = re.compile(r'^(person|source|assumed)\b', re.I)
 
 GATE_KINDS = ('research', 'decision', 'ops', 'release')
@@ -189,9 +192,14 @@ def parse(path):
                 doc.header[m.group(1).lower()] = COMMENT_RE.sub('', m.group(2)).strip()
             continue
         if section is not None and section.lower() == 'decisions':
-            m = DECISION_RE.match(COMMENT_RE.sub('', line))
+            heading = COMMENT_RE.sub('', line)
+            m = DECISION_RE.match(heading)
             if m:
                 doc.decisions.append(decision(i, int(m.group(1)), m.group(2)))
+            else:
+                m = DECISION_LIKE_RE.match(heading)
+                if m:
+                    doc.decisions.append(malformed_decision(i, int(m.group(2)), m.group(1)))
             continue
         if section is None or section.lower() not in ('steps', 'milestones'):
             continue
@@ -274,6 +282,14 @@ def decision(line, n, text):
         return d
     d['title'] = m.group(1)
     return d
+
+
+def malformed_decision(line, n, text):
+    """A heading under ## Decisions that numbers a decision but is not written "### D<N>: <title>". It is still a
+    record, so it is listed (and counts as unconfirmed): its title is the heading's whole text, and no tag is read
+    from it. '_bad_heading' marks it for bad_decision_heading."""
+    return {'id': 'D%d' % n, 'n': n, 'title': text, 'line': line, 'by': '', 'date': '', 'ref': '',
+            '_bad_heading': True}
 
 
 def public_decision(d):
@@ -469,13 +485,23 @@ def check(doc, repo=None, resolve_xrefs=True, cache=None, size_limits=True):
 
 
 def check_decisions(doc):
-    """decision_untagged, once per doc at its first untagged D-record, and bad_decision_tag per record whose
-    trailing parenthetical starts like a tag without being one (docs/PROPOSALS.md, Who decided). Both are
-    warnings, so a doc written before the tag keeps passing."""
-    untagged = [d['id'] for d in doc.decisions if not d['by'] and '_bad_tag' not in d]
+    """decision_untagged, once per doc at its first untagged D-record; bad_decision_tag per record whose trailing
+    parenthetical starts like a tag without being one; bad_decision_heading per heading that numbers a decision
+    without being "### D<N>: <title>"; duplicate_decision per D-number used again (docs/PROPOSALS.md, Who
+    decided). All are warnings, so a doc written before the tag keeps passing."""
+    untagged = [d['id'] for d in doc.decisions if not d['by'] and '_bad_tag' not in d and '_bad_heading' not in d]
     reported = False
+    seen = {}
     for d in doc.decisions:
-        if '_bad_tag' in d:
+        if d['n'] in seen:
+            doc.warn(d['line'], 'duplicate_decision', '%s is numbered twice (also line %d); give each D-record its own '
+                     'number, because answers and reviews name a record by it' % (d['id'], seen[d['n']]))
+        seen.setdefault(d['n'], d['line'])
+        if '_bad_heading' in d:
+            doc.warn(d['line'], 'bad_decision_heading', '%s: "%s" is not written as a D-record, so no provenance tag is '
+                     'read from it and the record counts as unconfirmed; write the heading as "### D<N>: <title> (<tag>)", '
+                     'the tag being %s' % (d['id'], d['title'][:80], TAG_FORMS))
+        elif '_bad_tag' in d:
             word = TAG_WORD_RE.match(d['_bad_tag']).group(1).lower()
             doc.warn(d['line'], 'bad_decision_tag', '%s: "(%s)" is not a provenance tag (%s); end the heading '
                      'with %s' % (d['id'], d['_bad_tag'], BAD_TAG_HINTS[word], TAG_FORMS))

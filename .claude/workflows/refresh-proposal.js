@@ -26,8 +26,9 @@ export const meta = {
 //                             with needs_input; 'assume' takes each recommended option, tags it (assumed) in the doc and lists
 //                             it in assumptions
 //   answers?: [{ id, answer, question?, date? }]  the questions a needs_input result returned, each with its question text, the
-//                             person's answer and the date they gave it (or { <id>: answer }); also revise.d<N> for an
-//                             assumption the person corrected or a decision they made outside the questions. Every review and
+//                             person's answer and the date they gave it (or { <id>: answer }); also revise.d<N> (N the next
+//                             number not yet in use) for an assumption the person corrected, a decision they changed or one
+//                             they made outside the questions. Every review and
 //                             revise gets them, so a re-run starts from the doc as it is now: an answer the doc does not yet
 //                             reflect is reported by the review and applied by the revise, which tags the decision it settles
 //                             (person, <date>, <id>). An answer passed without its question text still binds, but a stage
@@ -38,7 +39,8 @@ export const meta = {
 // findings_remain. Findings about any other doc are reported in other_docs, never applied here. A revise resets the doc's Status:
 // to draft, so the next steps say to re-accept it. The lint stage also lists what no person confirmed (lint.unconfirmed: decisions
 // tagged (assumed) or untagged; lint.proposed: values an author proposed): the next steps say to show them, with the
-// assumptions, before the doc is accepted.
+// assumptions, before the doc is accepted. A decision the person confirms as it stands needs no re-run: its heading tag becomes
+// (person, <today>, edit). One they change comes back as an answer (revise.d<N>) to a re-run.
 const A = args || {}
 if (!A.doc) throw new Error('refresh-proposal: args.doc (the design doc to refresh, relative to dir) is required')
 if (!A.dir) throw new Error('refresh-proposal: args.dir (absolute path of the checkout the doc is judged against) is required')
@@ -167,7 +169,7 @@ const tagQuestions = qs => {
 const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
   `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
   `Show the confirmations (the questions with confirm: true) as one list the person can accept whole or correct line by line. ` +
-  `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id revise.d<N>, with its question). ` +
+  `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id revise.d<N>, N the next number not yet in use, with its question). ` +
   `Then re-run this workflow with the same args plus answers (each question's id and question text with the person's answer and the date they gave it, added to any answers given before). ` +
   `Every review and revise gets them, so the run starts again from the doc as it is now: the revisions already applied are kept, and resumeFromRunId has nothing to replay.`
 
@@ -324,10 +326,15 @@ const isProposal = !!lint && /^proposal$/i.test(String(lint.kind || ''))
 const steps = []
 if (questions.length) steps.push(`First answer the ${questions.length} question(s) in questions (see relay): the revise that raised them changed nothing${fixes ? `, and the ${fixes} revision(s) before it are kept` : ''}.`)
 if (!questions.length && (ASSUMED.length || unconfirmed.length || proposedValues.length)) {
-  steps.push(`Before ${DOC} is accepted${fixes && before && !/^draft/i.test(before) ? ' again' : ''}, show the person this result's assumptions (${ASSUMED.length}), ` +
-    `lint.unconfirmed (${lint ? unconfirmed.length : 'not read: the lint failed'} decision(s) no person confirmed${unconfirmed.length ? `: ${unconfirmed.slice(0, 12).join('; ')}${unconfirmed.length > 12 ? `; and ${unconfirmed.length - 12} more` : ''}` : ''}) ` +
-    `and lint.proposed (${lint ? proposedValues.length : 'not read'} value(s) an author proposed), and ask them to confirm or correct each. A confirmation or a correction goes back as an answer ` +
-    `(id revise.d<N>, its question naming the decision by title, with the date) to a re-run of this workflow: the review reports what the doc does not yet reflect and the revise tags the decision (person, <date>, <id>).`)
+  // The lint stage is skipped when a review or a revise failed, and may itself fail to report: then the result has neither list.
+  steps.push(`Before ${DOC} is accepted${fixes && before && !/^draft/i.test(before) ? ' again' : ''}, show the person this result's assumptions (${ASSUMED.length})` + (lint
+    ? `, lint.unconfirmed (${unconfirmed.length} decision(s) no person confirmed${unconfirmed.length ? `: ${unconfirmed.slice(0, 12).join('; ')}${unconfirmed.length > 12 ? `; and ${unconfirmed.length - 12} more` : ''}` : ''}) ` +
+      `and lint.proposed (${proposedValues.length} value(s) an author proposed)`
+    : ` and what ${LINT} ${DOC} --decisions lists as unconfirmed and proposed (this run has no lint result, so it holds neither list)`) +
+    `, and ask them to confirm or correct each. A decision they confirm as it stands needs no re-run: its heading tag becomes (person, <today>, edit); ` +
+    `the person changes it while accepting the doc, or you make that one-line edit when the person says so (the tag only, never the Choice or any other text). ` +
+    `A decision they change goes back as an answer (id revise.d<N>, N the next number not yet in use, its question naming the decision by title, with the date) to a re-run of this workflow: ` +
+    `the review reports what the doc does not yet reflect and the revise applies it and tags the decision (person, <date>, <id>). A confirmation may be passed the same way when a re-run happens anyway.`)
 }
 if (fixes) {
   steps.push(`Read the changes (git -C ${DIR} diff -- ${DOC}). A revise resets Status: to draft${before && !/^draft/i.test(before) ? ` (it was ${before})` : ''}: ` +
