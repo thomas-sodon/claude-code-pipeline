@@ -338,8 +338,14 @@ const oneLine = t => String(typeof t === 'string' ? t : (JSON.stringify(t) ?? ''
 // What nobody confirmed: this run's stages add to it, after what an earlier run of the branch assumed (args.assumptions). A re-run
 // from a session with no run record finds that run's work in place, so its stages report nothing the second time; a line a stage
 // does report again (the same stage, the same text) is kept once.
+// Questions compare by their letters and digits in any script, case, spacing and punctuation aside (as brief-to-proposals does).
+const qKey = t => oneLine(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+// A correction to an assumption comes back as an answer whose question is the assumption itself (the relay asks for it so). The
+// assumption is then the person's choice: it is listed as answered, and never again as assumed, whoever reports or kept it.
+const SETTLED = new Set(ANSWERS.map(a => qKey(a.question || '')).filter(Boolean))
+const settled = text => SETTLED.has(qKey(text))
 const ASSUMED = []
-const addAssumed = (stage, a) => { if (a && !ASSUMED.some(x => x.stage === stage && oneLine(x.assumption) === oneLine(a))) ASSUMED.push({ stage, assumption: a }) }
+const addAssumed = (stage, a) => { if (a && !settled(a) && !ASSUMED.some(x => x.stage === stage && oneLine(x.assumption) === oneLine(a))) ASSUMED.push({ stage, assumption: a }) }
 for (const a of Array.isArray(A.assumptions) ? A.assumptions : []) if (a && a.assumption) addAssumed(String(a.stage || 'earlier run'), a.assumption)
 const noteAssumptions = (kind, r) => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) addAssumed(kind, a); return r }
 // What the person has not confirmed, and what they answered, as the lines of a plan's last section, "## Assumptions to review":
@@ -356,8 +362,6 @@ const noteLines = () => [
 // person's newer word on it. A line whose id an unrelated question of this run happens to share stays: an earlier run of the
 // branch (the build, before a ship-only run) numbers its questions on its own, and its answer is never dropped for another's.
 const ANSWERED_LINE = /^- answered \(([^,)]+)(?:,[^)]*)?\): (.*)$/
-// Questions compare by their letters and digits in any script, case, spacing and punctuation aside (as brief-to-proposals does).
-const qKey = t => oneLine(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 const superseded = line => {
   const m = ANSWERED_LINE.exec(line)
   if (!m) return false
@@ -373,10 +377,13 @@ const superseded = line => {
 }
 // The ids a plan text's answered lines use: a new question is numbered after them too.
 const answeredIds = text => splitNotes(text || '').lines.map(l => (ANSWERED_LINE.exec(l) || [])[1]).filter(Boolean)
+// An assumed line the plan kept from an earlier run gives way too, once an answer of this run settles that assumption.
+const ASSUMED_LINE = /^- assumed \([^)]*\): (.*)$/
+const settledLine = line => { const m = ASSUMED_LINE.exec(line); return !!m && settled(m[1]) }
 const withNotes = text => {
   if (!text) return ''
   const { body, lines } = splitNotes(text)
-  const all = [...new Set([...lines.filter(l => !superseded(l)), ...noteLines()])]
+  const all = [...new Set([...lines.filter(l => !superseded(l) && !settledLine(l)), ...noteLines()])]
   return all.length ? `${body}\n\n${NOTES_HEAD}\n\n${NOTES_INTRO}\n\n${all.join('\n')}\n` : text
 }
 // Files committing stages kept out on purpose (KEEP_OUT), reported in the result so a person decides what becomes of them.
@@ -732,7 +739,7 @@ if (MONITOR_ONLY) {
     if (!A.plan_text && plan.plan_saved === true) PLAN_REF = PLAN_PATH || planRefFor(BRANCH)
     log(`Plan ready on branch ${BRANCH}` + (A.plan_text ? '' : plan.plan_restored ? ` (restored from the pipeline state branch: ${PLAN_REF})` : PLAN_REF ? ` (saved to the pipeline state branch as ${PLAN_REF})` : ' (not saved to the pipeline state branch: best effort)'))
     // A restored plan may list an answer this run was given a newer one for: the stages read the newer one above, never both.
-    const AUTHORITATIVE = `The plan below is authoritative for this branch; ignore any other plan file in the plans directory.\n\n${String(plan.plan).split('\n').filter(l => !superseded(l)).join('\n')}\n\n`
+    const AUTHORITATIVE = `The plan below is authoritative for this branch; ignore any other plan file in the plans directory.\n\n${String(plan.plan).split('\n').filter(l => !superseded(l) && !settledLine(l)).join('\n')}\n\n`
 
     // ---- Implement
     phase('Implement')

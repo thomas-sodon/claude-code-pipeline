@@ -358,6 +358,27 @@ await test('plan-to-merged-pr: a question never takes an id the branch\'s saved 
   for (const c of same.calls) assert.doesNotMatch(c.prompt, /-> первый/, `${c.label}: the superseded answer is gone`)
 })
 
+await test('plan-to-merged-pr: an assumption the person corrected is listed as answered, and nowhere as assumed', async () => {
+  // The relay has a corrected assumption passed back as an answer whose question is the assumption. The restored plan still
+  // holds its "- assumed" line, and a new session passes the earlier run's assumptions again.
+  const KEPT = `${PLAN}\n\n## Assumptions to review\n\nintro line\n\n- assumed (plan): TTL is 60 seconds\n- assumed (impl): retries capped at 3\n`
+  const answers = [{ id: 'plan.d1', question: 'TTL is 60 seconds', answer: '120 seconds', date: '2026-11-13' }]
+  const assumptions = [{ stage: 'plan', assumption: 'TTL is 60 seconds' }, { stage: 'impl', assumption: 'retries capped at 3' }]
+  const { result, prompt, calls } = await run('plan-to-merged-pr', { ...LANE, ship: undefined, answers, assumptions },
+    p2m({ plan: { branch: 'feat/p-s1', plan: KEPT, plan_saved: true, plan_restored: true }, impl: { summary: 'done', files_changed: ['a.js'], gates_green: true, assumptions: ['ttl is 60 seconds.'] } }))
+  assert.equal(result.status, 'OPEN')
+  const LINES = '- assumed (impl): retries capped at 3\n- answered (plan.d1, 2026-11-13): TTL is 60 seconds -> 120 seconds\n'
+  assert.ok(prompt('merge-check').endsWith(`\n\n${LINES}\n`), 'the saved plan lists it as answered only')
+  assert.ok(prompt('create-pr').includes(`so the person can correct one before merging:\n${LINES}`), 'so does the PR body')
+  for (const c of calls) assert.doesNotMatch(c.prompt, /assumed \((plan|impl)\): TTL is 60 seconds/i, `${c.label}: no stage is told to keep the assumption the person corrected`)
+  assert.match(prompt('review-changes-1'), /the person has not confirmed: keep each.*\["retries capped at 3"\]/, 'later stages are handed the other assumption alone')
+  assert.deepEqual(result.assumptions, [{ stage: 'impl', assumption: 'retries capped at 3' }], 'neither the one passed in nor the one a stage reports again is listed')
+  // With no such answer everything stays as it was.
+  const plain = await run('plan-to-merged-pr', { ...LANE, assumptions }, p2m({ plan: { branch: 'feat/p-s1', plan: KEPT, plan_saved: true, plan_restored: true } }))
+  assert.ok(plain.prompt('merge-check').endsWith('\n\n- assumed (plan): TTL is 60 seconds\n- assumed (impl): retries capped at 3\n\n'))
+  assert.equal(plain.result.assumptions.length, 2)
+})
+
 await test('plan-to-merged-pr: a conflict that is the person\'s call is returned with the merge aborted, or on assumptions resolved with the recommended option', async () => {
   const conflict = { 'observe-1': { ...OBS, has_conflicts: true } }
   const stop = await run('plan-to-merged-pr', { concern: 'c' }, p2m(conflict))
