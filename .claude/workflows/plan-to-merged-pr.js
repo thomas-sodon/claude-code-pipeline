@@ -893,7 +893,7 @@ if (MONITOR_ONLY) {
         `an "- answered (<id>" line of these replaces the plan's line of the same id, which is the person's older answer:\n${NOTES.join('\n')}\n` : `; when it has none, the body gets no such section. `)
     : NOTES.length
       ? `Give the PR body a "${NOTES_HEAD}" section, after the Deploy notes, holding exactly these lines (choices this branch's stages made that the person has not confirmed, and what the person answered), so the person can correct one before merging:\n${NOTES.join('\n')}\n` +
-        // A caller's pr_note may give lines for the same section (bootstrap-repo's does): one section holds both.
+        // A caller's pr_note may give lines for the same section: one section holds both.
         (NOTE_HAS_SECTION ? `The note to include in the body, below, gives more lines for that section: they follow these in the same section, and the body has one section of that name. ` : '')
       : ''
   const opened = await agent(
