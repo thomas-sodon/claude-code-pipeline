@@ -341,6 +341,21 @@ await test('plan-to-merged-pr: a question never takes an id the branch\'s saved 
   const again = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'merge_check.q1', question: 'old  conflict?', answer: 'ours' }] }, p2m(restored))
   assert.ok(again.prompt('merge-check').endsWith('\n\n- answered (impl.q2): Rename it? -> no\n- answered (merge_check.q1): old  conflict? -> ours\n\n'))
   for (const c of again.calls) assert.doesNotMatch(c.prompt, /-> theirs/, `${c.label}: the superseded answer is gone`)
+  // A question can hold " -> " itself: a corrected assumption is passed back with the assumption, "<question> -> <option taken>",
+  // as its question. Answered again, it replaces its own earlier line, wherever that line's question ends.
+  const ARROW = `${PLAN}\n\n## Assumptions to review\n\nintro line\n\n- answered (plan.d1, 2026-11-01): Which DB? -> Postgres -> MySQL\n- answered (plan.d2): Which DB? -> SQLite\n`
+  const arrow = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'plan.d1', question: 'Which DB? -> Postgres', answer: 'SQLite' }] },
+    p2m({ plan: { branch: 'feat/p-s1', plan: ARROW, plan_saved: true, plan_restored: true } }))
+  assert.ok(arrow.prompt('merge-check').endsWith('\n\n- answered (plan.d2): Which DB? -> SQLite\n- answered (plan.d1): Which DB? -> Postgres -> SQLite\n\n'), 'one line for plan.d1, the newer answer')
+  for (const c of arrow.calls) assert.doesNotMatch(c.prompt, /-> MySQL/, `${c.label}: the older answer to the same question is gone`)
+  // Questions in another script are compared too: a different question under a shared id keeps its line, the same one is replaced.
+  const OTHER = `${PLAN}\n\n## Assumptions to review\n\nintro line\n\n- answered (merge_check.q1): Какой вариант оставить? -> первый\n`
+  const other = { plan: { branch: 'feat/p-s1', plan: OTHER, plan_saved: true, plan_restored: true } }
+  const kept = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'merge_check.q1', question: 'Оставить оба поведения?', answer: 'да' }] }, p2m(other))
+  assert.ok(kept.prompt('merge-check').endsWith('\n\n- answered (merge_check.q1): Какой вариант оставить? -> первый\n- answered (merge_check.q1): Оставить оба поведения? -> да\n\n'), 'another question in another script stays')
+  const same = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'merge_check.q1', question: 'какой вариант оставить', answer: 'второй' }] }, p2m(other))
+  assert.ok(same.prompt('merge-check').endsWith('\n\n- answered (merge_check.q1): какой вариант оставить -> второй\n\n'), 'the same question in another script is replaced')
+  for (const c of same.calls) assert.doesNotMatch(c.prompt, /-> первый/, `${c.label}: the superseded answer is gone`)
 })
 
 await test('plan-to-merged-pr: a conflict that is the person\'s call is returned with the merge aborted, or on assumptions resolved with the recommended option', async () => {

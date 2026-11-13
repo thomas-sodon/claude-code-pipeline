@@ -356,10 +356,20 @@ const noteLines = () => [
 // person's newer word on it. A line whose id an unrelated question of this run happens to share stays: an earlier run of the
 // branch (the build, before a ship-only run) numbers its questions on its own, and its answer is never dropped for another's.
 const ANSWERED_LINE = /^- answered \(([^,)]+)(?:,[^)]*)?\): (.*)$/
-const qKey = t => oneLine(t).toLowerCase().replace(/[^a-z0-9]+/g, '')
+// Questions compare by their letters and digits in any script, case, spacing and punctuation aside (as brief-to-proposals does).
+const qKey = t => oneLine(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 const superseded = line => {
   const m = ANSWERED_LINE.exec(line)
-  return !!m && ANSWERS.some(a => String(a.id || '') === m[1] && qKey(m[2].split(' -> ')[0]) === qKey(a.question || a.id || ''))
+  if (!m) return false
+  // The line reads "<question> -> <answer>", and a question can hold " -> " itself (an assumption passed back as a question
+  // reads "<question> -> <option taken>"), so every " -> " is a place the question may end.
+  const cuts = []
+  for (let i = m[2].indexOf(' -> '); i >= 0; i = m[2].indexOf(' -> ', i + 1)) cuts.push(m[2].slice(0, i))
+  return ANSWERS.some(a => {
+    if (String(a.id || '') !== m[1]) return false
+    const q = oneLine(a.question || a.id || ''), k = qKey(q)
+    return cuts.some(c => k ? qKey(c) === k : c.trim() === q)
+  })
 }
 // The ids a plan text's answered lines use: a new question is numbered after them too.
 const answeredIds = text => splitNotes(text || '').lines.map(l => (ANSWERED_LINE.exec(l) || [])[1]).filter(Boolean)
