@@ -24,7 +24,7 @@ async function run(name, args, respond, { workflow } = {}) {
   const src = readFileSync(join(dir, `${name}.js`), 'utf8').replace(/^export const meta = /m, 'const meta = ')
   const calls = []
   const agent = async (prompt, opts = {}) => {
-    calls.push({ label: opts.label, prompt, effort: opts.effort })
+    calls.push({ label: opts.label, prompt, effort: opts.effort, schema: opts.schema })
     const r = respond(opts.label || '', prompt)
     if (r === null) return null
     return opts.schema ? { ...blank(opts.schema), ...(r || {}) } : (r || '')
@@ -50,10 +50,8 @@ async function test(name, fn) {
 
 // ---- bootstrap-repo
 const BRANCH = 'bootstrap/20261110'
-// The next steps /bootstrap's report prints: the workflow hands each on verbatim, the one that sends a Decision the person
-// answered here back into the architecture (the refresh-proposal workflow) included.
+// The next steps /bootstrap's report prints: the workflow hands each on verbatim, whatever it says.
 const AFTER = ['Protect main: require the checks gates and docs.', 'Add each secret by NAME: gh secret set API_KEY.',
-  'For each baked-in Decision the person confirmed or corrected in this run (listed under Answers): run the refresh-proposal workflow on docs/design/architecture.md with that answer, then re-accept the doc.',
   'Tick the roadmap\'s Bootstrap gate (milestone 2).']
 const BOOT_OK = { outcome: 'committed', root_mode: false, branch: BRANCH, commit: 'abc1234', summary: 'one node package, gates PASS in 1 fix round, CI gates + docs, MIT', left_out: ['brief.md'], next_steps: AFTER }
 const boot = (over = {}) => (label, prompt) => {
@@ -97,6 +95,11 @@ await test('bootstrap-repo: the ship path calls plan-to-merged-pr ship-only with
   assert.match(result.next_steps[1], /left brief\.md out of its commit on purpose/)
   assert.deepEqual(result.next_steps.slice(2), AFTER)
   assert.match(prompt('bootstrap'), /In next_steps, put every next step its report prints, each verbatim with the values it filled in, except reviewing the commit and shipping it/)
+  // One of the steps the command prints sends a baked-in Decision the person answered back into the architecture: its wording
+  // is the command's, checked there (the workflow passes any step through).
+  const bootstrapCmd = readFileSync(join(dir, '..', 'commands', 'bootstrap.md'), 'utf8')
+  assert.match(bootstrapCmd, /^3\. Print this step only when \*\*Answers\*\* names a baked-in Decision the person confirmed or corrected, .* A Decision confirmed as it stands needs no re-run: its heading tag becomes `\(person, <today's date>, edit\)`; .* A Decision the person corrected: run the `refresh-proposal` workflow on `<architecture path>` with that answer as `architecture\.d<N>` /m)
+  assert.match(bootstrapCmd, /^- \*\*Answers\*\* — each question this run asked or was handed the answer to /m)
   assert.deepEqual(result.assumptions, [{ stage: 'ship.merge_check', assumption: 'kept the lockfile /bootstrap wrote' }])
   // The bootstrap stage: the skill and its doc, the access in use, the gate wrapper and the trailers; it never ships itself.
   const p = prompt('bootstrap')
@@ -187,6 +190,8 @@ await test('bootstrap-repo: a bootstrap question stops before shipping; on a re-
   const C = { question: 'The architecture names the package acme-app (assumed): publish under it?', why: 'a published name is hard to change', options: ['acme-app', 'another name'], recommended: 'acme-app', confirm: true, id: 'q1', stage: 'x' }
   const fifth = await run('bootstrap-repo', BARGS, boot({ bootstrap: { outcome: 'stopped', questions: [Q, C] } }), { workflow: noShip })
   assert.deepEqual(fifth.result.questions.map(q => [q.id, q.stage, q.confirm]), [['bootstrap.q1', 'bootstrap', undefined], ['bootstrap.q2', 'bootstrap', true]])
+  // The stage can return the mark only when its schema declares it (the mock returns any field).
+  assert.equal(fifth.calls.find(c => c.label === 'bootstrap').schema.properties.questions.items.properties.confirm.type, 'boolean')
 })
 
 await test('bootstrap-repo: a design answer reaches the bootstrap stage and the ship run; an answer passed without its question says so', async () => {
@@ -478,7 +483,7 @@ await test('refresh-proposal: a reviser question stops with needs_input; on a re
   assert.match(first.result.relay, /^Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit \(a numbered list when it has none\), each with its why/)
   assert.match(first.result.relay, /never re-run with on_question: 'assume' unless the person says to proceed on assumptions/)
   assert.match(first.result.relay, /Show the confirmations \(the questions with confirm: true\) as one list the person can accept whole or correct line by line/)
-  assert.match(first.result.relay, /Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too \(id revise\.d<N>, N the next number not yet in use, with its question\)/)
+  assert.match(first.result.relay, /Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too, with its question, under the id a correction to this doc takes \(architecture\.d<N> for the architecture or the roadmap, m<N>\.d<K> for milestone N's proposal, proposal\.d<N> for a concern's proposal; revise\.d<N> only for a doc no design run wrote\), its number the next one not yet in use, an id in a \(person, <date>, <id>\) tag of the docs included\. Then re-run this workflow/)
   assert.match(first.result.relay, /each question's id and question text with the person's answer and the date they gave it/)
   assert.ok(!first.calls.some(c => c.label === 'lint'), 'nothing is linted while a question is open')
   assert.equal(first.result.lint, null)
@@ -512,7 +517,7 @@ await test('refresh-proposal: a reviser question stops with needs_input; on a re
   assert.doesNotMatch(first.prompt('revise-1'), /Apply every answer in the list above/, 'no answers were given')
   const third = await run('refresh-proposal', { ...RARGS, answers }, rp({ 'review-1': concern, 'revise-1': { questions: [Q] } }))
   assert.equal(third.result.questions[0].id, 'revise.q2', 'a new question never reuses an answered id')
-  // A confirmation keeps its mark, and a decision's id (revise.d<N>) takes no part in the numbering.
+  // A confirmation keeps its mark, and a decision's id (a .d<N> id) takes no part in the numbering.
   const decided = [...answers, { id: 'revise.d7', question: 'Decision "Retention"', answer: '30 days' }]
   const fourth = await run('refresh-proposal', { ...RARGS, answers: decided }, rp({ 'review-1': concern, 'revise-1': { questions: [{ ...Q, confirm: true }] } }))
   assert.deepEqual(fourth.result.questions.map(q => [q.id, q.confirm]), [['revise.q2', true]])
@@ -571,8 +576,11 @@ await test('refresh-proposal: what no person confirmed comes back with the lint,
   // A decision confirmed as it stands is retagged by hand, with no re-run; one the person changes comes back as an answer.
   assert.ok(result.next_steps[show].endsWith(', and ask them to confirm or correct each. A decision they confirm as it stands needs no re-run: its heading tag becomes (person, <today>, edit); ' +
     'the person changes it while accepting the doc, or you make that one-line edit when the person says so (the tag only, never the Choice or any other text). ' +
-    'A decision they change goes back as an answer (id revise.d<N>, N the next number not yet in use, its question naming the decision by title, with the date) to a re-run of this workflow: ' +
-    'the review reports what the doc does not yet reflect and the revise applies it and tags the decision (person, <date>, <id>). A confirmation may be passed the same way when a re-run happens anyway.'))
+    "A (proposed) value they confirm as it stands has no tag to edit: it goes back as an answer like a change (the revise writes it as the person's and drops the label). " +
+    'A decision or a value they change goes back as an answer to a re-run of this workflow, its question naming the decision by title, with the date, ' +
+    "under the id a correction to this doc takes (architecture.d<N> for the architecture or the roadmap, m<N>.d<K> for milestone N's proposal, proposal.d<N> for a concern's proposal; revise.d<N> only for a doc no design run wrote), " +
+    'its number the next one not yet in use, an id in a (person, <date>, <id>) tag of the docs included. ' +
+    'The review reports what the doc does not yet reflect, and the revise applies it and tags the decision (person, <date>, <id>). A confirmation may be passed the same way when a re-run happens anyway.'))
   // No revision and nothing assumed: the unconfirmed decisions alone are still shown, before a draft is accepted.
   const only = await run('refresh-proposal', RARGS, rp({ lint: { ...LINT_OK, unconfirmed: lint.unconfirmed } }))
   assert.match(only.result.next_steps[0], /^Before docs\/design\/03-export\.md is accepted, show the person this result's assumptions \(0\), lint\.unconfirmed \(2 decision/)

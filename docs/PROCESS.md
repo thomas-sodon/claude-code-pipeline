@@ -467,7 +467,8 @@ person can make now is never a gate. Every D-record says who decided it, and
 `(proposed)` values ([PROPOSALS.md](PROPOSALS.md#who-decided)); a design result
 returns them (`lint.unconfirmed`, `lint.proposed`) with its assumptions, to show
 the person before a doc is accepted: a decision they confirm as it stands takes
-the tag `(person, <date>, edit)`, and one they change goes back as an answer. A PR
+the tag `(person, <date>, edit)`; one they change, and a `(proposed)` value they
+confirm or change, goes back as an answer. A PR
 body lists its lane's under `## Assumptions to review`, and the person corrects
 one with a review comment on the PR, which the monitor applies. Answers carry
 their question and date, and an id is never reused for another question; a design

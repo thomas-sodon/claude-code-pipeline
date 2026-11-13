@@ -40,7 +40,7 @@ export const meta = {
 //             The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor, .q<N> or .d<N>) repeat across
 //             lanes, so one of those with no lane is refused when the run has more than one lane. An intake id reaches no lane.
 //             An answer whose lane is no lane of the run would reach nobody, so it is refused too, and so is an
-//             { id: answer } map, which cannot name a lane
+//             { id: answer } map, which cannot name a lane (an empty map means no answers)
 // Lane: { key, issues: number[], branch?, dir? }
 //   issues  — issues fixed together in one PR (group issues that edit the same code site)
 //   branch  — default bugfix/<key>-<issues>-<date> (not fix/<NNN>-…, which /create-pr would read as the issue to close);  dir — default <root>/fix-<issues>
@@ -75,7 +75,8 @@ if (A.ship === false) SHARED.ship = false
 // Answers to a lane's questions go to that lane only; the Intake's goes to none. An answer with no lane goes to every lane, which
 // is for a decision the person made for the whole run; an id a lane's own run issues repeats across lanes, so with no lane it
 // could be read against another lane's question: refused once the run has more than one lane (checked when the lanes are known).
-if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers)) throw new Error('bug-fix-backlog: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
+// A map cannot name a lane and is refused; an empty one holds no answer and is read as none.
+if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers) && (typeof A.answers !== 'object' || Object.keys(A.answers).length)) throw new Error('bug-fix-backlog: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const isIntakeAnswer = a => String(a.id || '').split('.')[0] === 'intake'
 const laneAnswers = key => ANSWERS.filter(a => !isIntakeAnswer(a) && (!a.lane || a.lane === key)).map(({ lane, ...a }) => a)

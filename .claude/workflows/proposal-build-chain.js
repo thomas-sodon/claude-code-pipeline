@@ -45,9 +45,9 @@ export const meta = {
 //   no lane reaches every lane: that is for a decision the person made for the whole run, under an id no lane issues (a design
 //   answer, intake.d<N>). The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor, .q<N> or .d<N>)
 //   repeat across lanes, so one of those with no lane is refused (the run throws) when the run has more than one lane. answers
-//   is an array: an { id: answer } map cannot name a lane and is refused. An answer whose lane is no lane of the run reaches
-//   nobody, and never silently: with explicit lanes it is refused (a mistyped key), and in derive mode, where a lane may have
-//   merged since the answer was given, it is logged and returned in answers_unused. The lane
+//   is an array: an { id: answer } map cannot name a lane and is refused (an empty map means no answers). An answer whose
+//   lane is no lane of the run reaches nobody, and never silently: with explicit lanes it is refused (a mistyped key), and in
+//   derive mode, where a lane may have merged since the answer was given, it is logged and returned in answers_unused. The lane
 //   that asked then continues from the plan its earlier run saved (its result's plan_ref) instead of planning a second time, so
 //   the answer reaches the stage that asked and no planner re-asks or contradicts it.
 //   assumptions — [{ lane, stage, assumption }]: what an earlier run's lanes assumed (derive mode: its result's assumptions, as
@@ -81,8 +81,9 @@ if (GH_ACCESS) SHARED.github_access = GH_ACCESS
 // Answers to a lane's questions go to that lane only. An answer with no lane goes to every lane, which is for a decision the
 // person made for the whole run; an id a lane's own run issues repeats across lanes, so with no lane it could be read against
 // another lane's question: refused once the run has more than one lane.
-// A map cannot name a lane, so it is refused: dropped without a word, every answer in it would be asked again.
-if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers)) throw new Error('proposal-build-chain: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
+// A map cannot name a lane, so it is refused: dropped without a word, every answer in it would be asked again. An empty map
+// holds no answer and is read as none.
+if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers) && (typeof A.answers !== 'object' || Object.keys(A.answers).length)) throw new Error('proposal-build-chain: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
 const LANE_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']

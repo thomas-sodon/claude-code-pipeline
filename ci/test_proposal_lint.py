@@ -754,6 +754,14 @@ class TestDecisions(Base):
         res = self.decisions_mode(path)
         self.assertEqual([d['id'] for d in res['decisions']], ['D9'] + ['D%d' % n for n, _ in BAD_HEADINGS])
         self.assertEqual([d['id'] for d in res['unconfirmed']], ['D%d' % n for n, _ in BAD_HEADINGS])
+        # beside an untagged record, the malformed one is left out of decision_untagged: one warning names each
+        n, h = BAD_HEADINGS[0]
+        rc, out = self.lint_text(with_decisions(proposal(step(1)), h + '\n\n- Options: a; b.\n- Choice: a.\n\n',
+                                                record(n + 50, 'Untagged')))
+        self.assertEqual((rc, out['errors']), (0, []))
+        self.assertEqual(sorted(codes(self.found(out))), ['bad_decision_heading', 'decision_untagged'])
+        untagged = [w for w in self.found(out) if w['code'] == 'decision_untagged']
+        self.assertTrue(untagged[0]['message'].startswith('D%d has no provenance tag' % (n + 50)), untagged[0]['message'])
         # an architecture reads them the same way; a roadmap still records none
         out = self.assertWarning(with_decisions(architecture(), BAD_HEADINGS[0][1] + '\n'), 'bad_decision_heading')
         self.assertEqual([d['id'] for d in out['decisions']], ['D1'])

@@ -83,7 +83,8 @@ export const meta = {
 //                             (answers_restored), so they outlive the session; restored ones never move the inferred start, and an
 //                             answer passed again without its question takes it from the saved copy. What the Intake took as given
 //                             is saved beside them (the file's assumptions) once the run goes on past the Intake, and a run that
-//                             starts past the Intake restores it, so every later author still gets it and the result lists it.
+//                             starts past the Intake restores it, so every later author still gets it and the result lists it;
+//                             a line the person since settled (it is the question of an answer the run holds) is left out.
 //                             Concern mode saves its answers as design/answers-concern.json, which no run restores. A state branch
 //                             that cannot be read is never written: the run saves nothing (answers_saved false) and logs why.
 //                             Every run passes the earlier answers again, so they pick no milestone to propose: milestones does.
@@ -93,7 +94,8 @@ export const meta = {
 //   save_answers?: boolean    default true. false keeps the person's answers off the state branch (they quote the choices of the
 //                             brief, and the state branch is as visible as the repository): the run neither saves nor restores
 //                             answers or the Intake's assumptions, its result says so (save_answers: false), and every re-run must
-//                             be passed every answer so far
+//                             be passed every answer so far. The panel synthesis is still saved, without the judge's open
+//                             questions (they quote the brief's choices too), and the context file is still restored
 const A = args || {}
 if (!A.dir) throw new Error('brief-to-proposals: args.dir (absolute project directory) is required')
 if (!A.brief === !A.concern) throw new Error('brief-to-proposals: pass exactly one of args.brief (a product brief path) or args.concern (one large change)')
@@ -205,9 +207,9 @@ for (const a of (Array.isArray(A.answers) ? A.answers : Object.entries(A.answers
 }
 // The answers this run was passed; the ones restored from the state branch are added after the survey.
 const GIVEN = ANSWERS.length
-// save_answers: false keeps the answers and the Intake's assumptions off the state branch: nothing is saved, nothing restored.
+// save_answers: false keeps the answers and the Intake's assumptions off the state branch: neither is saved, neither restored.
 const SAVE = A.save_answers !== false
-const NO_SAVE_NOTE = SAVE ? '' : `This run saves nothing to the state branch and restores nothing from it (save_answers: false): pass every answer given so far with each re-run, each with its question and date. ` +
+const NO_SAVE_NOTE = SAVE ? '' : `This run keeps the person's answers and the Intake's assumptions off the state branch (save_answers: false): it saves and restores neither, so pass every answer given so far with each re-run, each with its question and date. ` +
   `A re-run that starts past the Intake does not get the Intake's assumptions either: pass each one the person confirmed or corrected as an answer (intake.d<N>). `
 // The next id not yet in use for a decision (<scope>.d<N>) or a question (<scope>.q<N>), over the ids given.
 const nextId = (scope, kind, ids) => {
@@ -217,6 +219,9 @@ const nextId = (scope, kind, ids) => {
 }
 const freeD = scope => nextId(scope, 'd', ANSWERS.map(a => a.id))
 const ID_RULE = `an id is never reused for another question`
+// freeD counts the answers this run holds. An answer the refresh-proposal workflow applied to a doc is saved nowhere but in
+// that doc's tag, so the session checks the docs before it takes the number named.
+const ID_COUNT = `A number named here counts only the answers this run holds (the ones passed to it and the saved ones): an id already in a doc's (person, <date>, <id>) tag is in use too, since the refresh-proposal workflow saves no answer, so search the docs for the id before using it. `
 // What a run that cannot start says when an id is used twice: the ids in use and, for each id refused, the next free one.
 const idsReused = (clashes, saved) => {
   const inUse = [...new Set(ANSWERS.map(a => a.id).concat(saved.map(a => a.id)).filter(Boolean))]
@@ -336,12 +341,14 @@ const relay = (from, ms = [], failedMs = []) => {
     `Show the confirmations (the questions with confirm: true) as one list the person can accept whole or correct line by line. ` +
     // Sibling authors run at the same time and none sees another's question: the same choice can come back once per milestone.
     (ms.length > 1 ? `Questions from different milestones that ask the same choice are one question to the person: ask it once, and pass the one answer back under each of their ids. ` : '') +
-    `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id intake.d<N>, with its question), ` +
-    `where N is the next number not yet in use (${freeD('intake')} now): ${ID_RULE}. ` +
+    // An assumption's answer carries the line itself as its question: a later run that restores the Intake's assumptions drops
+    // the line such an answer settles.
+    `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id intake.d<N>, with its question: for an assumption, the assumption as its question), ` +
+    `where N is the next number not yet in use (${freeD('intake')} now): ${ID_RULE}. ` + ID_COUNT +
     // From the Proposals stage on, no stage applies an answer to the architecture or the roadmap: such a correction names them.
     (from === 'proposals' || from === 'consistency'
       ? `One exception, since the architecture and roadmap are written and a run from '${from}' applies no answer to them: a correction to what either of them says is passed as architecture.d<N>, and the re-run then uses from: 'architecture' in place of the from below ` +
-        `(it applies the answer to both docs before their review) and max_milestones: 0 (so it writes no proposal but the milestones this relay names: a milestones list is never cut by it); ` +
+        `(it applies the answer to both docs before their review) and max_milestones: 0, with no milestones but the ones this relay names (so it writes no other proposal: a milestones list is never cut by max_milestones, and one left in the args from an earlier run is proposed again); ` +
         `a correction to one written proposal is passed as m<N>.d<K>, with N in milestones (added to the ones named below, when there are any). N in architecture.d<N> and K in m<N>.d<K> are the next numbers not yet in use (${freeD('architecture')} now for the architecture). `
       : '') +
     (from
@@ -772,10 +779,15 @@ if (BRIEF_MODE) {
   }
   log(`Starting at ${FROM}${FROM_ARG ? '' : ' (inferred)'}: ${DOCS_EXIST ? `${survey.architecture} and ${survey.roadmap} exist${A.force ? ' and are regenerated (force)' : ''}` : 'no design docs yet'}`)
   // What the Intake of an earlier run took as given: a run that starts past the Intake has no Intake to find it again.
+  // A line the person since confirmed or corrected (an answer whose question is that line) is theirs now: it is neither
+  // listed as unconfirmed nor saved again.
   savedAssumed = SAVE ? (survey.saved_assumptions || []).map(x => String(x || '').trim()).filter(Boolean) : []
   if (at(FROM) > at('intake') && savedAssumed.length) {
-    for (const x of savedAssumed) ASSUMED.push({ stage: 'intake', assumption: x })
-    log(`Restored ${savedAssumed.length} assumption(s) the Intake took, saved on the state branch (design/answers.json): every author gets them, and this result lists them`)
+    const settled = new Set(ANSWERS.map(a => qKey(a.question)).filter(Boolean))
+    const open = savedAssumed.filter(x => !settled.has(qKey(x)))
+    for (const x of open) ASSUMED.push({ stage: 'intake', assumption: x })
+    if (open.length) log(`Restored ${open.length} assumption(s) the Intake took, saved on the state branch (design/answers.json): every author gets them, and this result lists them`)
+    if (open.length < savedAssumed.length) log(`${savedAssumed.length - open.length} saved assumption(s) of the Intake left out: an answer from the person settles each`)
   }
 } else {
   FROM = 'intake'
@@ -803,10 +815,12 @@ const REGEN = BRIEF_MODE && (!!A.force || !DOCS_EXIST)
 // brief-mode run restores), and after the Intake: a stage added before the Intake would end the replay of a resumed run
 // (resumeFromRunId) there. Nothing is saved with save_answers: false, or over a saved copy the survey could not read.
 // assumptionsToo: the run goes on past the Intake, so the assumptions are saved even when no answer was given; they replace
-// the saved ones, and a save is due when either list is non-empty.
+// the saved ones, and a save is due when either list is non-empty. An Intake that stops or fails to report replaces nothing:
+// the save of the answers it was given keeps the saved list of the last Intake that finished.
 const saveAnswers = async (ph, assumptionsToo = false) => {
-  const taken = BRIEF_MODE ? intakeTaken() : []
-  if (!SAVE || !(GIVEN || (assumptionsToo && (taken.length || savedAssumed.length)))) return
+  const found = BRIEF_MODE ? intakeTaken() : []
+  if (!SAVE || !(GIVEN || (assumptionsToo && (found.length || savedAssumed.length)))) return
+  const taken = assumptionsToo || at(FROM) > at('intake') ? found : savedAssumed
   if (stateUnreadable) { answersSaved = false; return }
   const path = BRIEF_MODE ? 'design/answers.json' : 'design/answers-concern.json'
   const store = { source: BRIEF_MODE ? BRIEF_REL : 'concern', answers: ANSWERS.filter(a => !a.assumed).map(a => ({ id: a.id, stage: a.stage, question: a.question || '', answer: a.answer, date: a.date || '' })),
@@ -915,6 +929,7 @@ if (BRIEF_MODE) {
             log(`Architecture panel: ${judged.scores.map(s => `${s.sketch} ${s.total}`).join(', ')}; building on ${judged.winner}`)
             // Saved so a later run that starts at 'architecture' (a /roadmap question answered, from another session) needs no new panel.
             // The judge's open questions are saved with it: that later run has no judge to name the option it recommended.
+            // Not with save_answers: false: they quote the brief's choices, which the person keeps off the state branch.
             const oneLine = t => String(t || '').replace(/\s+/g, ' ').trim()
             const openQs = asked(judged)
               ? `\n\n## Open questions for the person\n\n${judged.questions.map(q => `- ${oneLine(q.question)} Options: ${(q.options || []).map(oneLine).join(' | ')}. Recommended by the judge: ${oneLine(q.recommended)}`).join('\n')}`
@@ -923,7 +938,7 @@ if (BRIEF_MODE) {
               GUARD + WHERE + `Save this architecture panel synthesis to the repository's state branch. Write the text between the -----BEGIN PANEL SYNTHESIS----- and -----END PANEL SYNTHESIS----- lines below (not those lines), verbatim, to a file in a new temporary directory outside ${DIR} (mktemp -d), ` +
               `then run, in ${DIR}: ${STATE} save <that file> --as design/panel-synthesis.md -m "brief-to-proposals: architecture panel synthesis". Remove the temporary directory afterwards. ` +
               `Change nothing in ${DIR}'s working tree, index or branches. Saving is best effort: when the script is missing or exits 2, report saved=false with its message, and never retry another way.\n` +
-              `-----BEGIN PANEL SYNTHESIS-----\n# Panel synthesis\n\nSource: ${BRIEF_REL}\nWinner: ${judged.winner}\nScores: ${judged.scores.map(s => `${s.sketch} ${s.total}`).join(', ')}\n\n${judged.synthesis}${openQs}\n-----END PANEL SYNTHESIS-----`,
+              `-----BEGIN PANEL SYNTHESIS-----\n# Panel synthesis\n\nSource: ${BRIEF_REL}\nWinner: ${judged.winner}\nScores: ${judged.scores.map(s => `${s.sketch} ${s.total}`).join(', ')}\n\n${judged.synthesis}${SAVE ? openQs : ''}\n-----END PANEL SYNTHESIS-----`,
               opts('save-panel', 'Architecture', 'lint', { type: 'object', properties: { saved: { type: 'boolean' }, commit: { type: 'string' }, error: { type: 'string' } }, required: ['saved'] }),
             )
             log(panelSaved && panelSaved.saved ? 'Panel synthesis saved to the state branch (design/panel-synthesis.md)' : `Panel synthesis not saved (best effort): ${(panelSaved && panelSaved.error) || 'the stage failed to report'}`)
@@ -1322,11 +1337,14 @@ return {
         `and lint.proposed (${lint ? proposedValues.length : 'not read'} value(s) an author proposed), and ask them to confirm or correct each. ` +
         // Confirmed as it stands: one edit of the tag, no re-run (a revise would reset the doc to draft for nothing).
         `A decision they confirm as it stands needs no re-run: its heading tag becomes (person, <today's date>, edit); the person changes it while accepting the doc, or you make that one-line edit when they say so (the tag only, never the Choice or any other text). ` +
-        `A decision, an assumption or a proposed value they change goes back as an answer, its question naming the decision by title and its number the next one not yet in use (${ID_RULE}): ` +
+        // A value has no tag: only an answer records that the person confirmed it.
+        `A (proposed) value they confirm as it stands has no tag to edit: it goes back as an answer like a change (the revise writes it as the person's and drops the label). ` +
+        `A decision, an assumption or a proposed value they change goes back as an answer, its question naming the decision by title (for an assumption, the assumption as its question) and its number the next one not yet in use (${ID_RULE}): ` +
         (BRIEF_MODE
-          ? `architecture.d<N> (${freeD('architecture')} now) for what the architecture or the roadmap says, m<N>.d<K> for milestone N's proposal. Pass it to the refresh-proposal workflow on the one doc, or to a re-run of this workflow with the same args${forceNote() ? ', without force,' : ''} and from set to that stage: ` +
-            `from: 'architecture' with max_milestones: 0 for the architecture or the roadmap, so the re-run writes no further proposal; from: 'proposals' with milestones: [N] for a proposal, which is written again as a draft`
-          : `proposal.d<N> (${freeD('proposal')} now). Pass it to the refresh-proposal workflow on the doc, or to a re-run of this workflow, which writes the proposal again`) +
+          ? `architecture.d<N> (${freeD('architecture')} now) for what the architecture or the roadmap says, m<N>.d<K> for milestone N's proposal. ${ID_COUNT}Pass it to the refresh-proposal workflow on the one doc, or to a re-run of this workflow with the same args${forceNote() ? ', without force,' : ''} and from set to that stage: ` +
+            // Without milestones: max_milestones never cuts a list, so one left in the args would be proposed again.
+            `from: 'architecture' with max_milestones: 0 and without milestones for the architecture or the roadmap, so the re-run writes no further proposal (a milestones list left in the args is proposed again); from: 'proposals' with milestones: [N] for a proposal, which is written again as a draft`
+          : `proposal.d<N> (${freeD('proposal')} now). ${ID_COUNT}Pass it to the refresh-proposal workflow on the doc, or to a re-run of this workflow, which writes the proposal again`) +
         `; the revise tags the decision (person, <date>, <id>). A confirmation may be passed as an answer the same way when such a re-run happens anyway.`
       : null,
     'Read and edit the docs. They are drafts (Status: draft): set Status: accepted on each one you approve; nothing is built or bootstrapped from a draft.',

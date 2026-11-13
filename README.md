@@ -79,8 +79,11 @@ cd /tmp/ccp && claude   # then: /start-product ~/ideas/2026-11-05-my-idea.md ~/m
    and the values an author proposed (`lint.proposed`). Confirm or correct each
    first. A decision you confirm as it stands needs no re-run: its heading tag
    becomes `(person, <date>, edit)`, changed by you or, when you say so, by the
-   session. What you change goes back as an answer, through `refresh-proposal` on
-   the one doc or a re-run of the design run, as the next steps say. Then, on the
+   session. A `(proposed)` value you confirm as it stands has no tag to edit: it
+   goes back as an answer like a change (the revise writes it as yours and drops
+   the label). What you change goes back as an answer, through `refresh-proposal`
+   on the one doc or a re-run of the design run, as the next steps say. Then, on
+   the
    design branch, read and edit the docs and set `Status: accepted` on each one you
    approve (`/bootstrap` and the builders refuse a draft). The name and the licence
    are not gates: you were asked before the docs were written, and the
@@ -322,7 +325,7 @@ guess, and an answered question is not asked again.
 | Design run: Intake | every choice that is yours and that the brief, your framing and your answers leave open or unconfirmed, such as how long personal data is kept and who receives it where the brief is silent, or an account the design turns out to need | once, before anything is written; nothing when all of it is settled |
 | Design run: architecture panel | a decision the sketches chose differently, or a choice that is yours, that nothing you said settles | at most once; the re-run builds on the saved synthesis |
 | Design run: authors and revisers (`/roadmap`, each milestone's `/propose`, every `/propose --revise`, Consistency), and `refresh-proposal`'s reviser | what only surfaces while writing: something that makes what you said impossible to follow, a review finding only you can settle, a part of the brief no milestone plans | only when it arises, one batch per stage; a milestone that asks waits while the others carry on |
-| Before you accept a doc | to confirm or correct the result's `assumptions`, the decisions no person made (`lint.unconfirmed`) and the values an author proposed (`lint.proposed`). A decision confirmed as it stands only has its tag changed to `(person, <date>, edit)`; what you change goes back as an answer | once per design result, and after each `refresh-proposal` |
+| Before you accept a doc | to confirm or correct the result's `assumptions`, the decisions no person made (`lint.unconfirmed`) and the values an author proposed (`lint.proposed`). A decision confirmed as it stands only has its tag changed to `(person, <date>, edit)`; a `(proposed)` value you confirm, and what you change, goes back as an answer | once per design result, and after each `refresh-proposal` |
 | `bootstrap-repo` | what the skeleton bakes in and neither a decision of yours nor an answer the design run saved settles: the licence's copyright holder, a `LICENSE` of another licence than the architecture's, the licence when there is none, a published name, and, as confirmations, a name or licence the architecture records as assumed | once, before the first write; often nothing. Again only when the install or a gate shows a decision of yours cannot hold as written |
 | A lane (`plan-to-merged-pr`): plan, implement, review fix, polish, merge check | a choice the plan, the docs and your answers do not settle (money or an account in your name, a new service that receives data, a change to what the product promises, a licence, a name); a fix that changes behaviour the plan does not call for; a merge conflict neither side's intent decides | only when it arises; a lane asks nothing when its plan and docs settle the work |
 | The PR monitor | a reviewer's request that contradicts the plan or what you settled; red CI where the plan does not say whether the test or the code is right; a merge conflict that is your call | only when it arises |
@@ -339,7 +342,7 @@ ships or monitors a PR) would apply no such correction, so you leave it as a
 review comment on the PR, and the monitor applies it. A design run also saves the
 answers, and what its Intake took as given, to the state branch
 (`design/answers.json`) and restores what a re-run does not pass, so they outlive
-the session; with `save_answers: false` it saves and restores nothing, and every
+the session; with `save_answers: false` it saves and restores neither, and every
 re-run is passed every answer so far. `/handoff` records them too
 ([details](docs/REFERENCE.md#answering-questions)).
 
@@ -529,7 +532,7 @@ only when given `branch`, and then only on that design branch.
    question than its saved answer holds also ends the run with `failed_at_start`
    (`answer_id_reused`). The run saves its answers back once (`answers_saved`):
    after the Intake, with what the Intake took as given, or right after this step
-   when it skips the Intake. With `save_answers: false` nothing is saved or
+   when it skips the Intake. With `save_answers: false` neither is saved or
    restored. The run starts at the stage the docs and your answers call for
    (*Re-running*, below).
 1. **Intake**: one read of the brief, going through the choices that are yours class
@@ -575,8 +578,8 @@ only when given `branch`, and then only on that design branch.
    you: the decisions tagged `(assumed)` or not tagged (`lint.unconfirmed`) and the
    values an author proposed (`lint.proposed`). The next steps say to show you
    these, with the run's `assumptions`, before a doc is accepted, and how each
-   comes back: a decision you confirm as it stands by an edit of its tag, what you
-   change as an answer.
+   comes back: a decision you confirm as it stands by an edit of its tag; a
+   `(proposed)` value you confirm, and what you change, as an answer.
 
 Every doc comes out `Status: draft`, for you to read, edit and accept. With
 `{ concern }` instead of a brief it skips the architecture and writes one
@@ -644,7 +647,8 @@ passed in `answers` is applied to the doc and tagged `(person, <date>, <id>)`,
 which is also how you correct a written doc. The lint lists the doc's unconfirmed
 decisions and proposed values, to review before you accept it; a decision you
 confirm as it stands needs no re-run, only its tag changed to
-`(person, <date>, edit)`. A revise resets
+`(person, <date>, edit)`, while a `(proposed)` value you confirm goes back as an
+answer, like a change. A revise resets
 `Status:` to draft: re-accept the doc and land it through a docs PR. Use it before
 accepting a proposal written ahead of its milestone, after a gate's `Outcome:`
 changes what a doc plans, or whenever a doc may have gone stale.
@@ -840,7 +844,8 @@ pushed on `design/20261016`. The result lists one decision tagged `(assumed)` an
 one `(proposed)` value. You confirm the decision as it stands, so its tag becomes
 `(person, 2026-10-16, edit)`, and you change the value: it goes back as
 `architecture.d1` in a re-run with `from: 'architecture'` and `max_milestones: 0`,
-which revises the docs and writes no further proposal. You then set
+without `milestones`, which revises the docs and writes no further proposal. You
+then set
 `Status: accepted` on each doc and merge the branch into `main` through a PR.
 `bootstrap-repo`
 with `{ architecture: 'docs/design/architecture.md', dir: '/abs/status-page' }` opens

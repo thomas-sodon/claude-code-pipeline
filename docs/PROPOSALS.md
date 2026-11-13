@@ -137,7 +137,10 @@ themselves.
   from a source drafted for the person counts as stated only once the person
   confirmed it: until then it is a proposed value. In a run that proceeds on
   assumptions the confirmation is not asked: the value keeps the label, needs no
-  gate, and is reported under **Unconfirmed decisions**. `/review-proposal`
+  gate, and is reported under **Unconfirmed decisions**. A value the person then
+  confirms as it stands has no tag to edit: it goes back as an answer like a
+  change (below), and the revise writes it as the person's and drops the label.
+  `/review-proposal`
   reports a person-owned `(proposed)` value that no answer settled and no gate's
   `Acceptance:` records as a `concern` (not in a run that proceeds on
   assumptions); a `(proposed)` value that is the author's own to choose (a rate
@@ -177,15 +180,24 @@ and `/roadmap` and `/propose` report them as **Unconfirmed decisions**: the pers
 confirms or corrects each before accepting the doc. A decision they confirm as it
 stands needs no re-run: its heading tag becomes `(person, <today's date>, edit)`,
 edited by the person while accepting the doc, or by the session when they say so
-(the tag only, never the Choice or any other text). A decision or a value they
-change goes back as an answer, its question naming the decision by title: to
-`refresh-proposal` on the one doc (`revise.d<N>`), or to a re-run of the
-`brief-to-proposals` run that wrote the docs (`architecture.d<N>` with
-`from: 'architecture'` and `max_milestones: 0`, so no further proposal is
-written; `m<N>.d<K>` with `from: 'proposals'` and `milestones: [N]`;
-`proposal.d<N>` for a concern's proposal). The number is the next one not yet in
-use, and the revise tags the decision `(person, <date>, <id>)`. A confirmation
-may be passed as an answer the same way when such a re-run happens anyway
+(the tag only, never the Choice or any other text). A `(proposed)` value they
+confirm as it stands has no tag to edit: it goes back as an answer like a change
+(the revise writes it as the person's and drops the label). A decision or a value
+they change goes back as an answer, its question naming the decision by title,
+under the id the design run uses for the doc: `architecture.d<N>` for the
+architecture or the roadmap, `m<N>.d<K>` for milestone N's proposal,
+`proposal.d<N>` for a concern's proposal (`revise.d<N>` only for a doc no design
+run wrote). It goes to `refresh-proposal` on the one doc, or to a re-run of the
+`brief-to-proposals` run that wrote the docs: with `from: 'architecture'`,
+`max_milestones: 0` and no `milestones` for the architecture or the roadmap, so
+no further proposal is written (a `milestones` list left in the args is proposed
+again); with `from: 'proposals'` and `milestones: [N]` for milestone N's
+proposal; with no `from` or `milestones` for a concern's proposal. The number is
+the next one not yet in use, an id already in a doc's `(person, <date>, <id>)` tag
+included: `refresh-proposal` saves no answer, so the number a design run names
+counts only the answers it holds. The revise tags the decision
+`(person, <date>, <id>)`. A confirmation may be passed as an answer the same way
+when such a re-run happens anyway
 ([REFERENCE.md](REFERENCE.md#answering-questions)).
 
 ## Steps and milestones

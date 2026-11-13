@@ -615,7 +615,7 @@ const needsInput = (kind, r, extra) => {
   const fresh = SHIP_ONLY
     ? `A new session has no run record: re-run the same way without resumeFromRunId. Commits not yet pushed are kept only while this checkout exists.`
     : `A new session has no run record: re-run the same way without resumeFromRunId${created ? `, adding branch: '${BRANCH}' (the branch this run created)` : ''}` +
-      (ASSUMED.length ? `${created ? ' and' : ', adding'} assumptions: this result's assumptions (the stages that made them find their work in place and do not report them again)` : '') + `; ` +
+      (ASSUMED.length && !replanned ? `${created ? ' and' : ', adding'} assumptions: this result's assumptions (the stages that made them find their work in place and do not report them again)` : '') + `; ` +
       (A.plan_text ? `the plan is in the args (plan_text). `
         : PLAN_REF ? `that run continues from the branch's saved plan (${PLAN_REF} on the pipeline state branch) instead of planning again. `
           : `that run plans the work again, because no plan of this run is saved. `) +
@@ -626,7 +626,9 @@ const needsInput = (kind, r, extra) => {
     : (SHIP_ONLY ? showAssumedOnPr(false) : SHOW_ASSUMED) +
       `Then re-run this workflow with ${replanned ? `the same args without replan (it applied to this run, which planned the work again)` : `the same args`} plus ${RELAY_ANSWERS}. In this session, also set resumeFromRunId to this run's id: ` +
       (replanned
-        ? `the work in the checkout is kept, and the planner, whose prompt changes without replan, ${PLAN_REF ? `reads back the plan this run saved` : `plans again`} instead of replaying from the record. `
+        // Nothing after a changed prompt replays: the later stages run again, find their work in place and report no assumption twice.
+        ? `the work in the checkout is kept, and the planner, whose prompt changes without replan, ${PLAN_REF ? `reads back the plan this run saved` : `plans again`} instead of replaying from the record; every stage after it runs again too` +
+          (ASSUMED.length ? `, so also pass assumptions: this result's assumptions (the stages that made them find their work in place and do not report them again). ` : `. `)
         : `the stages before the one that asked replay from the record and the work in the checkout is kept. `) + fresh)
   return done('needs_input', { stage: kind, questions, relay, ...(extra || {}) })
 }

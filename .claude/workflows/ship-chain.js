@@ -32,8 +32,8 @@ export const meta = {
 //                     no lane issues (intake.d<N>). The ids a lane's own run issues (plan, impl, fix, polish, merge_check, monitor,
 //                     .q<N> or .d<N>) repeat across lanes, so one of those with no lane is refused when the chain has more than one lane.
 //                     So is an answer whose lane is no lane of the chain (it would reach nobody), and an { id: answer } map, which
-//                     cannot name a lane. A chain builds nothing, so an assumption the person corrects is no answer: they leave
-//                     it as a review comment on that lane's PR, and the lane's monitor applies it
+//                     cannot name a lane (an empty map means no answers). A chain builds nothing, so an assumption the person
+//                     corrects is no answer: they leave it as a review comment on that lane's PR, and the lane's monitor applies it
 // A lane's placeholder title (empty, or '<...>' as the ship plan writes it) is written from its proposal steps (steps, or the
 // numbers in the placeholder), else from the branch's own commits. predecessor_prs placeholders are replaced by the PR numbers
 // of the lanes above, as merged; numbers already given are kept.
@@ -87,8 +87,8 @@ const repoOf = e => TOP_REPO || (e.args.repo ? String(e.args.repo).trim() : '')
 // person made for the whole chain; an id a lane's own run issues repeats across lanes, so with no lane it could be read against
 // another lane's question: refused once the chain has more than one lane.
 // A map cannot name a lane, and an answer for a lane the chain does not have would reach nobody: both are refused before anything
-// runs, since dropped without a word the question would be asked again.
-if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers)) throw new Error('ship-chain: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
+// runs, since dropped without a word the question would be asked again. An empty map holds no answer and is read as none.
+if (A.answers !== undefined && A.answers !== null && !Array.isArray(A.answers) && (typeof A.answers !== 'object' || Object.keys(A.answers).length)) throw new Error('ship-chain: answers must be an array of { lane?, id, answer, question?, date? } (an { id: answer } map cannot name a lane)')
 const ANSWERS = Array.isArray(A.answers) ? A.answers.filter(Boolean) : []
 const laneAnswers = key => ANSWERS.filter(a => !a.lane || a.lane === key).map(({ lane, ...a }) => a)
 const LANE_SCOPES = ['plan', 'impl', 'fix', 'polish', 'merge_check', 'monitor']
@@ -157,9 +157,13 @@ const slim = r => {
   }
 }
 // The record of a monitor the wait ran again replaces the lane's earlier one, keeping what the earlier runs assumed and left uncommitted.
+// That monitor was passed the earlier assumptions and lists them back: each line is kept once.
 const carry = (prev, next) => {
   if (!prev) return next
-  const assumptions = [...(prev.assumptions || []), ...(next.assumptions || [])]
+  const assumptions = []
+  for (const a of [...(prev.assumptions || []), ...(next.assumptions || [])]) {
+    if (a && !assumptions.some(x => x.stage === a.stage && String(x.assumption) === String(a.assumption))) assumptions.push(a)
+  }
   const left = [...new Set([...(prev.left_uncommitted || []), ...(next.left_uncommitted || [])])]
   return { ...next, ...(assumptions.length ? { assumptions } : {}), ...(left.length ? { left_uncommitted: left } : {}) }
 }
@@ -336,7 +340,9 @@ for (let i = 0; i < C.order.length && !stop; i++) {
     log(`Lane ${e.lane}: PR #${pr.pr_number} is open and needs action${o.notes ? ` (${oneLine(o.notes)})` : ''} — monitoring it again (${remonitors} of ${MAX_REMONITOR})`)
     phase('Ship')
     let m = null
-    try { m = await workflow('plan-to-merged-pr', { ...common, pr: pr.pr_number }) } catch (err) { log(`Lane ${e.lane}: ${err && err.message ? err.message : err}`) }
+    // What the lane's runs so far assumed goes with it, so the monitor's steps keep each choice and its result lists them.
+    const assumed = (entry.result && entry.result.assumptions) || []
+    try { m = await workflow('plan-to-merged-pr', { ...common, pr: pr.pr_number, ...(assumed.length ? { assumptions: assumed } : {}) }) } catch (err) { log(`Lane ${e.lane}: ${err && err.message ? err.message : err}`) }
     phase('Wait')
     if (!m) continue
     entry.result = carry(entry.result, slim(m))

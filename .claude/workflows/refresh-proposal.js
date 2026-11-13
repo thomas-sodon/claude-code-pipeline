@@ -26,9 +26,12 @@ export const meta = {
 //                             with needs_input; 'assume' takes each recommended option, tags it (assumed) in the doc and lists
 //                             it in assumptions
 //   answers?: [{ id, answer, question?, date? }]  the questions a needs_input result returned, each with its question text, the
-//                             person's answer and the date they gave it (or { <id>: answer }); also revise.d<N> (N the next
-//                             number not yet in use) for an assumption the person corrected, a decision they changed or one
-//                             they made outside the questions. Every review and
+//                             person's answer and the date they gave it (or { <id>: answer }); also an assumption the person
+//                             corrected, a decision or a value they changed or one they made outside the questions, under the
+//                             id a correction to the doc takes: architecture.d<N> (the architecture or the roadmap), m<N>.d<K>
+//                             (milestone N's proposal), proposal.d<N> (a concern's proposal); revise.d<N> only for a doc no
+//                             design run wrote. The number is the next one not yet in use, an id in a (person, <date>, <id>)
+//                             tag of the docs included: this workflow saves no answer. Every review and
 //                             revise gets them, so a re-run starts from the doc as it is now: an answer the doc does not yet
 //                             reflect is reported by the review and applied by the revise, which tags the decision it settles
 //                             (person, <date>, <id>). An answer passed without its question text still binds, but a stage
@@ -40,7 +43,7 @@ export const meta = {
 // to draft, so the next steps say to re-accept it. The lint stage also lists what no person confirmed (lint.unconfirmed: decisions
 // tagged (assumed) or untagged; lint.proposed: values an author proposed): the next steps say to show them, with the
 // assumptions, before the doc is accepted. A decision the person confirms as it stands needs no re-run: its heading tag becomes
-// (person, <today>, edit). One they change comes back as an answer (revise.d<N>) to a re-run.
+// (person, <today>, edit). One they change, and a (proposed) value they confirm or change, comes back as an answer to a re-run.
 const A = args || {}
 if (!A.doc) throw new Error('refresh-proposal: args.doc (the design doc to refresh, relative to dir) is required')
 if (!A.dir) throw new Error('refresh-proposal: args.dir (absolute path of the checkout the doc is judged against) is required')
@@ -160,16 +163,20 @@ const ASSUMED = []
 const noteAssumptions = r => { if (r && Array.isArray(r.assumptions)) for (const a of r.assumptions) if (a) ASSUMED.push({ stage: 'revise', assumption: a }); return r }
 const asked = r => !!(r && Array.isArray(r.questions) && r.questions.length)
 // Ids continue after the highest revise.q<N> already answered, so a question asked on a re-run never reuses an answered id; a
-// decision's id (revise.d<N>) takes no part in the numbering. Every other field of a question, confirm included, is kept.
+// decision's id (a .d<N> id) takes no part in the numbering. Every other field of a question, confirm included, is kept.
 const tagQuestions = qs => {
   let n = 0
   for (const a of ANSWERS) { const m = String(a.id || '').match(/^revise\.q(\d+)$/); if (m) n = Math.max(n, Number(m[1])) }
   return qs.map((q, i) => { const { id: _id, stage: _stage, ...rest } = q; return { id: `revise.q${n + i + 1}`, stage: 'revise', ...rest } })
 }
+// The id of an answer that is no reply to a question: the one the design run's results name for the doc, so a correction takes
+// the same id whichever workflow applies it. No workflow can name the next free number: this one saves no answer.
+const D_ID = `the id a correction to this doc takes (architecture.d<N> for the architecture or the roadmap, m<N>.d<K> for milestone N's proposal, proposal.d<N> for a concern's proposal; revise.d<N> only for a doc no design run wrote), ` +
+  `its number the next one not yet in use, an id in a (person, <date>, <id>) tag of the docs included`
 const RELAY = `Ask the person these questions yourself, in one batch, in as few prompts as the session's question tool allows and never dropping or merging one to fit (a numbered list when it has none), ` +
   `each with its why, its options and the recommended one first; never answer them on their behalf, and never re-run with on_question: 'assume' unless the person says to proceed on assumptions. ` +
   `Show the confirmations (the questions with confirm: true) as one list the person can accept whole or correct line by line. ` +
-  `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too (id revise.d<N>, N the next number not yet in use, with its question). ` +
+  `Also show the person this result's assumptions: a line they correct, or any decision they make outside these questions, is passed as an answer too, with its question, under ${D_ID}. ` +
   `Then re-run this workflow with the same args plus answers (each question's id and question text with the person's answer and the date they gave it, added to any answers given before). ` +
   `Every review and revise gets them, so the run starts again from the doc as it is now: the revisions already applied are kept, and resumeFromRunId has nothing to replay.`
 
@@ -333,8 +340,9 @@ if (!questions.length && (ASSUMED.length || unconfirmed.length || proposedValues
     : ` and what ${LINT} ${DOC} --decisions lists as unconfirmed and proposed (this run has no lint result, so it holds neither list)`) +
     `, and ask them to confirm or correct each. A decision they confirm as it stands needs no re-run: its heading tag becomes (person, <today>, edit); ` +
     `the person changes it while accepting the doc, or you make that one-line edit when the person says so (the tag only, never the Choice or any other text). ` +
-    `A decision they change goes back as an answer (id revise.d<N>, N the next number not yet in use, its question naming the decision by title, with the date) to a re-run of this workflow: ` +
-    `the review reports what the doc does not yet reflect and the revise applies it and tags the decision (person, <date>, <id>). A confirmation may be passed the same way when a re-run happens anyway.`)
+    `A (proposed) value they confirm as it stands has no tag to edit: it goes back as an answer like a change (the revise writes it as the person's and drops the label). ` +
+    `A decision or a value they change goes back as an answer to a re-run of this workflow, its question naming the decision by title, with the date, under ${D_ID}. ` +
+    `The review reports what the doc does not yet reflect, and the revise applies it and tags the decision (person, <date>, <id>). A confirmation may be passed the same way when a re-run happens anyway.`)
 }
 if (fixes) {
   steps.push(`Read the changes (git -C ${DIR} diff -- ${DOC}). A revise resets Status: to draft${before && !/^draft/i.test(before) ? ` (it was ${before})` : ''}: ` +
