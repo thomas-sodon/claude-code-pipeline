@@ -27,12 +27,12 @@ flowchart TD
 
   subgraph INSTALL["Install / update (any repo)"]
     clone{{"Clone a repo with origin<br/>(new product: a first commit on main)"}}:::human
-    start("/start-product brief repo<br/>verdict check, brief + builder context,<br/>setup checklist, the design call with answers")
-    sask{{"Answer its one batch: builder framing,<br/>the brief's choices, the repository,<br/>where the framing is kept"}}:::human
+    start("/start-product brief repo<br/>verdict and repo checks, its one batch of questions;<br/>then brief + builder context, setup checklist,<br/>the design call with answers")
+    sask{{"Answer its one batch: builder framing,<br/>the brief's choices, the repository,<br/>what the state branch keeps"}}:::human
     seed("/seed or pipeline-sync.py<br/>.claude files + manifest,<br/>base CLAUDE.md")
     upd("pipeline-sync.py --update<br/>or pipeline-update.yml PR")
     clone -- "new product" --> start
-    start -- "asks" --> sask
+    start -- "asks, before any write" --> sask
     clone -- "existing repo" --> seed
     seed -. "later" .-> upd
   end
@@ -58,7 +58,7 @@ flowchart TD
     bgates{{"Do the gates Bootstrap depends on, if any<br/>(an outside party or an account:<br/>tick + Outcome)"}}:::human
     boot("bootstrap-repo<br/>/bootstrap: its questions first, then skeleton,<br/>CI, gates green, 1 commit on bootstrap/date;<br/>then plan-to-merged-pr ship_only")
     bask{{"Answer /bootstrap's questions<br/>(copyright holder, licence conflict,<br/>a published name, an unconfirmed name<br/>or licence); re-run with answers"}}:::human
-    bmerge{{"Check the PR's Assumptions to review;<br/>merge, protect main,<br/>add secrets, tick Bootstrap gate<br/>via docs PR"}}:::human
+    bmerge{{"Check the PR's Assumptions to review<br/>(correct one with a review comment);<br/>merge, protect main,<br/>add secrets, tick Bootstrap gate<br/>via docs PR"}}:::human
     bgates --> boot --> bmerge
     boot -. "needs_input" .-> bask --> boot
   end
@@ -95,7 +95,7 @@ flowchart TD
   end
 
   shiplane("ship-chain: after each PR below merges,<br/>run ship_only with predecessor_prs")
-  merge{{"Read its Assumptions to review;<br/>review and merge the PR"}}:::human
+  merge{{"Read its Assumptions to review<br/>(correct one with a review comment);<br/>review and merge the PR"}}:::human
   closeout{{"Check the milestone's Acceptance;<br/>apply the reported closeout:<br/>Status: done, tick roadmap milestone"}}:::human
 
   subgraph ORCH["The orchestrating session, at any step"]
@@ -340,8 +340,9 @@ orchestrator in the pipeline checkout (where `/start-product` runs) hands off to
 wrong repository; and the first design run of a new product seeds the repository
 after its session started, so that session loaded no `CLAUDE.md`, command or guard:
 the run's relay and next steps tell it to read `CLAUDE.md`'s
-`## How work happens here` and to start every other workflow from a new session,
-and nothing enforces either.
+`## How work happens here`, to start every other workflow from a new session, and
+to hand off first by reading and following `.claude/commands/handoff.md` (it
+cannot invoke the command by name), and nothing enforces any of the three.
 
 **G11. State lived outside the repo.** Plans, review ledgers and the design panel's
 synthesis lived in `~/.claude/` or only in a run, so a cloud container took them
@@ -350,8 +351,9 @@ with it, and a new session had only the repository to go on.
 *Status:* partly fixed. `.claude/scripts/pipeline-state.py` saves files to
 `pipeline/state` on origin without a checkout: `STATE.md`, each lane's plan
 (`plans/<branch-slug>.md`), the review ledgers (restored when the local copy is
-missing), the panel synthesis and the answers a design run was given
-(`design/answers.json`, restored by a later run)
+missing), the panel synthesis, and the answers a design run was given with what
+its Intake took as given (`design/answers.json`, restored by a later run; the
+person can keep them off the branch, `save_answers: false`)
 ([REFERENCE.md](REFERENCE.md#the-state-branch)). Saves are best effort, and a
 branch rule that blocks new branches blocks them too. The brief stays local by
 design, since the branch is as visible as the repository: a new container needs it
@@ -424,14 +426,18 @@ with what time and money) reached the design authors only when the person passed
 *Fix:* a starter command.
 *Status:* partly fixed. `/start-product <brief> <repo>` checks the brief's verdict
 (and the idea ledger's newest row) and that the repository is new and clean, and
-copies the brief to `docs/brief.md`. It then asks the person, in one batch, what
-the brief chose for them: the builder framing (written to
-`docs/builder-context.md`), a confirmation for each product choice the idea skill
-made, the repository's owner and visibility, and whether the framing may be kept
-on the state branch. It keeps both files out of every commit, detects the GitHub
-access, and prints a setup checklist and the `brief-to-proposals` call, with each
-choice the person confirmed as an entry of its `answers` (`intake.d<N>`, with the
-question and the date). Still the person's: creating the repository and, when it
+detects the GitHub access. Before it writes anything it asks the person, in one
+batch, what the brief chose for them: the builder framing, a confirmation for each
+product choice the idea skill made (the working name, the personal data collected
+and the accounts the brief implies among them), the repository's owner and
+visibility, and what the state branch keeps (the framing, and their answers).
+Only then does it copy the brief to `docs/brief.md` and write the framing to
+`docs/builder-context.md`; with no one to answer it writes nothing and stops
+with `error=needs_input`. It keeps both files out of every commit, and prints a
+setup checklist and the `brief-to-proposals` call, with each choice the person
+confirmed as an entry of its `answers` (`intake.d<N>`, with the question and the
+date), and with `save_answers: false` when the person keeps their answers off the
+state branch. Still the person's: creating the repository and, when it
 is empty, pushing a first commit to `main` (else the design branch becomes the
 default branch and `/bootstrap` stops with `no_main`); and `GITHUB_ACCESS` is not
 written to `CLAUDE.md`, so it is passed to each workflow as `github_access`, or
@@ -450,7 +456,8 @@ questions arrived one per design pass.
 the answers; never overrule what the person said; show what was assumed.
 *Status:* partly fixed. The commands and workflows name the person-owned choices
 and ask each one that has no value, or a value nobody confirmed (a confirmation),
-in one batch: `/start-product` for what the brief chose, the Intake class by class,
+in one batch: `/start-product` for what the brief chose or implies, the Intake
+class by class for what is left,
 the panel's judge, every author and reviser, `/bootstrap` before its first write,
 and each lane stage and monitor step when it meets one. What the person said
 replaces the brief on the same point and changes only on a newer answer from them;
@@ -459,13 +466,19 @@ person can make now is never a gate. Every D-record says who decided it, and
 `proposal-lint.py --decisions` lists the ones no person confirmed and the
 `(proposed)` values ([PROPOSALS.md](PROPOSALS.md#who-decided)); a design result
 returns them (`lint.unconfirmed`, `lint.proposed`) with its assumptions, to show
-the person before a doc is accepted, and a PR body lists its lane's under
-`## Assumptions to review`. Answers carry their question and date; a design run
-saves them to the state branch and restores them, and `/handoff` records them with
-the person's standing rules. Still open: the roadmap's 20-milestone budget counts
-human gates like code milestones; a build lane has no up-front question pass, so a
-lane's questions still arrive one stage at a time; only the design run and
-`refresh-proposal` read the saved answers by themselves (a lane records its own in
+the person before a doc is accepted: a decision they confirm as it stands takes
+the tag `(person, <date>, edit)`, and one they change goes back as an answer. A PR
+body lists its lane's under `## Assumptions to review`, and the person corrects
+one with a review comment on the PR, which the monitor applies. Answers carry
+their question and date, and an id is never reused for another question; a design
+run saves them to the state branch, with what its Intake took as given, and
+restores both (unless the person chose `save_answers: false`), and `/handoff`
+records them with the person's standing rules. Still open: the roadmap's
+20-milestone budget counts human gates like code milestones; a build lane has no
+up-front question pass, so a lane's questions still arrive one stage at a time;
+only the design run,
+`refresh-proposal`, `/bootstrap` and a `/start-product` re-run read the saved
+answers by themselves (a lane records its own in
 its saved plan and its PR body, which its ship-only and monitor-only runs read, and
 `resume_monitor` carries them; every other re-run takes them from its args, which
 the session carries through the handoff); and CI tests the workflows' prompts and

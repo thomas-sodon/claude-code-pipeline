@@ -13,8 +13,8 @@ outside the repo. The design-doc format and its size budgets are in
 |---|---|---|
 | full (default) | `{ concern }` | one concern from plan to a watched PR |
 | build-only | `{ concern, ship: false, branch, dir, bases }` | a stacked lane whose predecessors are not merged yet: everything up to the merge check, then push, no PR |
-| ship-only | `{ ship_only: true, branch, title \| existing_pr, dir?, predecessor_prs?, proposal?, plan_ref?, plan_text?, repo?, github_access? }` | open (or ready) the PR for a built branch (a lane, or the bootstrap branch) once every PR below it has merged, then monitor; `predecessor_prs` lists the PRs below a stacked lane (the chain's ship plan gives a placeholder for every lane after the first in its chain; `ship-chain` fills it in as each PR below merges), and nothing is opened or readied until each reads `MERGED`. A run given `bases` that opens or readies a PR is refused without it |
-| monitor-only | `{ pr, branch, dir?, plan_ref?, plan_text?, proposal?, repo?, github_access?, answers? }` | babysit an existing PR; a run that hands it off returns these args as `resume_monitor`, with the answers it was given ([Watching a handed-off PR](#watching-a-handed-off-pr)) |
+| ship-only | `{ ship_only: true, branch, title \| existing_pr, dir?, predecessor_prs?, proposal?, plan_ref?, plan_text?, repo?, github_access?, answers?, assumptions?, on_question?, pr_note? }` | open (or ready) the PR for a built branch (a lane, or the bootstrap branch) once every PR below it has merged, then monitor; `predecessor_prs` lists the PRs below a stacked lane (the chain's ship plan gives a placeholder for every lane after the first in its chain; `ship-chain` fills it in as each PR below merges), and nothing is opened or readied until each reads `MERGED`. A run given `bases` that opens or readies a PR is refused without it |
+| monitor-only | `{ pr, branch, dir?, plan_ref?, plan_text?, proposal?, repo?, github_access?, answers?, assumptions?, on_question? }` | babysit an existing PR; a run that hands it off returns these args as `resume_monitor`, with the answers it was given and what it lists as assumed ([Watching a handed-off PR](#watching-a-handed-off-pr)) |
 
 ## Install and configuration
 
@@ -75,25 +75,48 @@ writes anything:
 |---|---|---|
 | `q1` | should the design follow the builder framing drafted from the brief's `**Assumed builder:**` field (who builds, time, budget, skills, revenue target)? | `docs/builder-context.md` |
 | `q2` to `q5` | the hours a week, the monthly budget, the skills and the revenue target, each only when the draft does not state it | `docs/builder-context.md` |
-| `intake.d<N>` | one confirmation per product choice the brief made, with the brief's value as the recommended option: who it is for, the platforms of the first release, what is free and each price, the licence (and its variant; when the repository already holds a `LICENSE`, `LICENCE` or `COPYING` file of another licence, the confirmation names both and recommends neither), the stack sketch, what the first release leaves out, the first experiment with its stop criteria (and a check the brief dates before it), each caveat of the verdict and each open legal question; then the repository's owner and visibility | the printed call's `answers` |
-| `q6` | keep the builder framing on the state branch, as `context/builder-context.md`? Asked only while no consent is on record | the file's header comment |
+| `intake.d<N>` | one confirmation per product choice the brief made or implies, with the brief's value as the recommended option: who it is for, the platforms of the first release, what is free and each price, the licence (and its variant; when the repository already holds a `LICENSE`, `LICENCE` or `COPYING` file of another licence, the confirmation names both and recommends neither), the stack sketch, what the first release leaves out, the first experiment with its stop criteria (and a check the brief dates before it), the verdict's caveats (one confirmation, asked only when they name something untested, unverified or still to be obtained), each open legal question (one per rule the brief says might apply), the working name (the title up to its first `:` or ` (`), the personal data the first release collects (always asked; `none: the brief names no personal data` when it names none) and the accounts opened in the person's name that the brief's model, stack sketch and MVP imply (skipped when it implies none); then the repository's owner and visibility | the printed call's `answers` |
+| `q6` | keep the builder framing on the state branch, as `context/builder-context.md`? Recommended: no. Asked only while no consent is on record | the file's header comment |
+| `q7` | keep your answers on the state branch, as `design/answers.json`? Recommended: yes. Not asked when the state branch already holds saved answers | a no puts `save_answers: false` in the printed call |
 
-A choice the brief has no field for is not asked here (the personal data collected,
-the product's final name, the accounts opened in the person's name): the design
-run's Intake asks it. Each `intake.d<N>` answer the person gave is printed in the
-call as `{ "id", "question", "answer", "date" }`; a choice they did not confirm is
-never printed as an answer, so the Intake asks it as a confirmation. The framing
-file holds who builds and the limits only: a product decision given while answering
-`q1` to `q5` becomes one more `intake.d<N>` entry. `q6` defaults to no: only the
-person's own yes is consent, and with it the command saves the file to the
-[state branch](#the-state-branch), its one push. With no one to answer (an
-unattended run, or no question tool) it writes nothing and stops with
-`error=needs_input`, printing the draft and every question. Told to proceed on
-assumptions, it takes each recommended option, prints no `answers` entry for a
-choice taken that way, never assumes the consent, and, when `q1` was taken that
-way, ends the framing file with a line starting `- Not confirmed by me yet`, which
-the design run reads ([`context_file`](#workflow-args)). `--dry-run` prints the
-draft, the questions and the call, and asks and writes nothing.
+The batch is `q1`, those of `q2` to `q5` that apply, the confirmations, the
+repository question, `q6` and `q7`. The brief has no field for the name, the
+personal data or the accounts: the command asks them from what the brief implies,
+so the design run's Intake keeps only what the brief does not imply (how long
+personal data is kept and who receives it where the brief is silent, an account
+the design turns out to need). Each `intake.d<N>` answer the person gave is
+printed in the call as `{ "id", "question", "answer", "date" }`; a choice they did
+not confirm is never printed as an answer, so the Intake asks it as a
+confirmation. The framing file holds who builds and the limits only: a product
+decision given while answering `q1` to `q5` becomes one more `intake.d<N>` entry.
+
+An `intake.d<N>` id stays on its question from run to run and is never reused for
+another one. The command reads the answers a design run saved
+(`design/answers.json` on the [state branch](#the-state-branch); not under
+`--dry-run`) and treats their `intake.d` entries as answers handed in, so a re-run
+in a new clone asks only what has no answer. A confirmation that an answer already
+answers keeps that answer's id and question text, word for word; every other one
+takes the lowest `intake.d<N>` not yet in use. An `intake.d` answer handed in
+without its question text is not used. A question with no recommended option (the
+licence, when the repository holds a file of another licence; the repository
+question, when the visibility is unknown) is asked on its own, and accepting the
+list of confirmations never covers it.
+
+`q6` and `q7` are what the state branch keeps, each the person's choice, asked
+once. `q6` defaults to no: only the person's own yes is consent, and with it the
+command saves the file to the state branch, its one push. With a no to `q7` the
+design run saves and restores no answer (`save_answers: false`,
+[Workflow args](#workflow-args)), and the person passes every answer so far with
+each re-run. With no one to answer (an unattended run, or no question tool) the
+command writes nothing and stops with `error=needs_input`, printing the draft and
+every question with its id and its text; the re-run is handed each answer with
+that id and text. Told to proceed on assumptions, it takes each recommended
+option, prints no `answers` entry for a choice taken that way, leaves a question
+with no recommended option open (listed under **Assumptions**, for the Intake to
+ask), takes `q6` and `q7` as no, and, when `q1` was taken that way, ends the
+framing file with a line starting `- Not confirmed by me yet`, which the design
+run reads ([`context_file`](#workflow-args)). `--dry-run` prints the draft, the
+questions and the call, and asks and writes nothing.
 
 **Updating.** `.claude/scripts/pipeline-sync.py` installs and updates the
 pipeline's files; `/seed` runs it. It records the source (repo, ref, commit) and
@@ -276,7 +299,11 @@ proposal-lint.py ARCHITECTURE --claude-md PATH [--json]
   `''` (no tag), from the tag that ends its heading
   ([who decided](PROPOSALS.md#who-decided)); a roadmap has none. A record with no
   tag is W `decision_untagged` (one warning per doc) and a malformed tag W
-  `bad_decision_tag`.
+  `bad_decision_tag`. A heading under `## Decisions` that numbers a decision
+  without being `### D<N>: <title>` is W `bad_decision_heading`: the record is
+  still listed, with the heading's whole text as `title` and `by` `''`. A D-number
+  used again is W `duplicate_decision`. The D-number and a tag's date are ASCII
+  digits.
   `--repo DIR` checks `Files:` against that checkout; `--no-resolve-xrefs` skips
   reading other docs (`<file>.md#N` refs, `Source:`) and, with it, the
   `source_unresolved`, `lane_mixed` and `--repo` `Files:` checks. `--as PATH` (also with `--lanes`
@@ -315,8 +342,9 @@ proposal-lint.py ARCHITECTURE --claude-md PATH [--json]
 - **`--decisions`**: reads only, and prints
   `{doc, kind, decisions: [{id, n, title, line, by, date, ref}], unconfirmed, proposed: [{line, text}]}`:
   `unconfirmed` holds the decisions no person confirmed (`by` is `assumed` or `''`,
-  a record with a malformed tag included), and `proposed` every line outside a code
-  fence that contains `(proposed`, its text cut at 200 characters. It works on any
+  a record with a malformed tag or heading included), and `proposed` every line
+  outside a code fence that contains `(proposed`, its text cut at 200 characters.
+  It works on any
   kind (a roadmap has no decisions; its proposed values are listed) and never
   lints: it exits 0 on any doc it can read, so exit 0 does not mean the doc lints
   clean. The Lint stages of `brief-to-proposals` and `refresh-proposal` run it to
@@ -363,7 +391,8 @@ file (DOC, or `--claude-md`'s PATH). `--lanes`,
   github_access: '',               // 'gh' | 'connector'; '' = GITHUB_ACCESS, else gh when authenticated, else the connector
   branch: 'feat/...',
   replan: false,                   // true = plan again although an earlier run of this branch saved its plan (the new
-                                   // plan is saved over it); default: the planner of a given branch continues from it
+                                   // plan is saved over it); default: the planner of a given branch continues from it.
+                                   // For one run: a re-run after a later stage's question leaves it out
   bases: ['feat/earlier-lane'],    // stacked-on branches, last contains the others
   ship: true,                      // false = build only
   ship_only: false, existing_pr: 123, predecessor_prs: [120, 121],
@@ -382,8 +411,12 @@ file (DOC, or `--claude-md`'s PATH). `--lanes`,
                                    // said) and list it in the result's assumptions
   answers: [{ id: 'plan.q1', question: '...', answer: '...', date: '2026-11-12' }],
                                    // answers to a needs_input result's questions, each with its question text and the
-                                   // date the person gave it; <stage>.d<N> for an assumption the person corrected
-                                   // (see Answering questions)
+                                   // date the person gave it; <stage>.d<N> for an assumption the person corrected, to
+                                   // a run that builds (see Answering questions)
+  assumptions: [{ stage: 'impl', assumption: '...' }],
+                                   // any mode: an earlier run's result.assumptions, for a re-run from a session with no
+                                   // run record; listed with this run's own (the same stage and text is kept once), so
+                                   // they still reach the result, the saved plan and the PR body
 }
 ```
 
@@ -417,10 +450,16 @@ its `## Context` shows it is for the same work (the concern, or the proposal and
 steps), and it contradicts no answer the run was given. So a run that stopped on an
 `impl`, `fix`, `polish` or `merge_check` question does not plan a second time when
 it is re-run from a session with no run record. A run that created its own branch
-names that branch in the re-run (`branch`), as its relay says. `replan: true` plans
-again and saves the new plan over the old one: pass it when the person's answer is
-to plan the work again, or when the saved plan itself is what stopped `/impl` (a
-`failed_at_impl` result whose plan stays saved says so in `hint`).
+names that branch in the re-run (`branch`), saved plan or not, and a run whose
+result lists assumptions passes them back (`assumptions`: the stages that made
+them find their work in place and do not report them again), as its relay says.
+`replan: true` plans again and saves the new plan over the old one: pass it when
+the person's answer is to plan the work again, or when the saved plan itself is
+what stopped `/impl` (a `failed_at_impl` result whose plan stays saved says so in
+`hint`). It is for one run. That run's planner gets every answer the run was
+given, whichever stage asked, since one of them may be why the work is planned
+again; when a later stage of it asks, the relay says to re-run without `replan`,
+or every re-run would plan a further time.
 
 **Assumptions travel with the plan.** Each choice a stage made that its inputs did
 not settle reaches every later stage of the run, which keeps it, never asks it
@@ -430,18 +469,40 @@ check saves ends with `## Assumptions to review`: a line `- assumed (<stage>): �
 per assumption and a line `- answered (<id>[, <date>]): <question> -> <answer>` per
 answer. `/create-pr` copies that section into the PR body, after the Deploy notes,
 so the person can correct a line before merging; a ship-only run adds the lines of
-the plan it restores, and when `pr_note` gives lines for the same section
-(`bootstrap-repo`'s does) the body keeps one section that holds both. A later
-ship-only or monitor-only run reads the `answered` lines as binding, like answers
-given to it, and keeps the `assumed` ones; a change that would depart from either
-(a reviewer's request, a conflict resolution, a CI fix) is a blocking question. The
-optional `## Assumptions` section that `/plan` and `/bug-fix` write is another
-heading: its bullets are the plan's own choices, kept the same way, and `/create-pr`
-run by hand lists them as `- assumed (plan): …` when the plan has no
-`## Assumptions to review`. `/impl` reads both sections the same way: it keeps a
-bullet of `## Assumptions` and an `assumed` line, and treats an `answered` line as
-what the person settled. `resume_monitor` carries the run's `answers`, so a
-monitor-only re-run keeps what the person settled during the build.
+the plan it restores, and when a caller's `pr_note` gives lines for the same
+section the body keeps one section that holds both. A lane that assumed nothing
+and was given no answer gets no such section. A later ship-only or monitor-only
+run reads the `answered` lines as binding, like answers given to it, and keeps the
+`assumed` ones. A change that would depart from an `answered` line (a reviewer's
+request, a conflict resolution, a CI fix), or a reason of the run's own to change
+an `assumed` one, is a blocking question. An answer given to the run under the id of an `answered` line is the
+newer one and holds: that line is replaced in the saved plan, the PR body and the
+plan handed to `/impl`, the fixer and `/polish`.
+
+**The person corrects an assumed line on the PR.** A review comment from the
+person that corrects a choice nobody confirmed (an `assumed` line, a bullet of the
+plan's `## Assumptions`, a choice an earlier stage of the run made) is the
+correction the section asks for: the monitor's comment step (`/process-comments`)
+validates it, applies it and replies `Fixed locally …`, like any actionable
+request. It is a blocking question only when it also departs from an `answered`
+line, an answer or a decision tagged `(person, …)`. Such a correction is never
+passed as an answer to a ship-only or monitor-only run: that run builds nothing,
+so no stage would apply it. In a run that builds, it is an answer
+(`<its stage>.d<N>`), which the stage that made the choice and every later one
+apply.
+
+The optional `## Assumptions` section that `/plan` and `/bug-fix` write is another
+heading: its bullets are the plan's own choices, kept the same way. A planner that
+restores a saved plan returns them as the run's `assumptions`, and `/create-pr`
+run by hand lists them as `- assumed (plan): …`, under a sentence that says to
+correct one with a review comment, when the plan has no `## Assumptions to review`.
+`/impl` reads both sections the same way: it keeps a bullet of `## Assumptions`
+and an `assumed` line, and treats an `answered` line as what the person settled.
+`resume_monitor` carries the run's `answers` and, when there are any, its
+`assumptions`, so a monitor-only re-run keeps what the person settled during the
+build and each choice nobody confirmed; the monitor's merge-main, comment and
+CI-fix steps get both. A plan over 8000 characters is cut in its body only for the
+prompts that read it: its `## Assumptions to review` lines always reach them.
 
 **A missing checkout is recreated.** In ship-only and monitor-only modes, the first
 agent that finds `dir` absent (a new container, a removed worktree) recreates it on
@@ -513,7 +574,9 @@ the recommended one), no edit of the plan rests on it, and the lane's `impl` sta
 returns it as a question. A lane's own question is not answered by re-running this
 workflow ([Answering questions](#answering-questions)); an entry of `answers` other
 than the Intake's (`[{ lane, id, answer, question?, date? }]`) is still passed on
-to the lane it names. Lanes must not share a key, an issue, a `dir` or a `branch`.
+to the lane it names. `answers` must be an array (an `{ id: answer }` map cannot
+name a lane and throws), and an entry whose `lane` is no lane of the run throws
+too. Lanes must not share a key, an issue, a `dir` or a `branch`.
 
 `brief-to-proposals` (pass exactly one of `brief` and `concern`):
 
@@ -548,10 +611,12 @@ to the lane it names. Lanes must not share a key, an issue, a `dir` or a `branch
   milestones: [2, 4],              // propose exactly these milestones, written or not (default: every pending code
                                    // milestone; when the docs existed already, the ones not written yet). Answers
                                    // select none: a needs_input relay names the milestones that asked
-  max_milestones: 1,               // propose at most the first N of those, in roadmap order (1 is recommended: later
-                                   // proposals go stale as earlier milestones land; a re-run with from: 'proposals' writes
-                                   // the next). 0 proposes none: the run stops after the reviewed architecture and
-                                   // roadmap, and lints them, so the person can confirm them first
+  max_milestones: 1,               // without milestones: propose at most the first N of the default set, in roadmap
+                                   // order (1 is recommended: later proposals go stale as earlier milestones land; a
+                                   // re-run with from: 'proposals' writes the next). 0 proposes none: the run stops after
+                                   // the reviewed architecture and roadmap, and lints them, so the person can confirm
+                                   // them first. A milestones list is never cut by it. The result names the pending
+                                   // milestones left without a proposal (not_proposed)
   force: false,                    // regenerate from scratch: /roadmap --force (never once a milestone is ticked); with
                                    // from: 'architecture', on the saved panel synthesis; never with a later from. A
                                    // re-run keeps force only until this run's /roadmap has written the docs (see
@@ -568,7 +633,10 @@ to the lane it names. Lanes must not share a key, an issue, a `dir` or a `branch
                                    // answers to a needs_input result's questions, each with its question text and the
                                    // date the person gave it; a decision made outside a question is passed the same
                                    // way, as intake.d<N> (architecture.d<N> or m<N>.d<K> for a correction to written
-                                   // docs). See Answering questions
+                                   // docs). An id is never reused for another question. See Answering questions
+  save_answers: true,              // false = keep the answers and the Intake's assumptions off the state branch: the
+                                   // run saves and restores neither, its result says so (save_answers: false), and
+                                   // every re-run is passed every answer so far
 }
 ```
 
@@ -597,21 +665,36 @@ has no Consistency phase, so its result returns those as `deferred_findings`.
   the source touches it either finds where the person settled it (the framing, an
   answer, a source the person wrote themselves) or returns it: a blocking question
   when the source is silent or states it two ways, a confirmation when the source
-  was drafted for the person or the framing lists it as open. All of them come back
-  in one `needs_input` batch, before any design is written. A framing
+  was drafted for the person or the framing lists it as open. A class the source
+  never mentions is not skipped: when the design must settle it and neither the
+  framing nor an answer does, it comes back as a blocking question. All of them
+  come back in one `needs_input` batch, before any design is written. A framing
   `/start-product` assumed is in that batch as one confirmation, with *follow it as
   the file states it* recommended: its `why` gives the limits in the Intake's own
   words and never the file's text, since questions and answers are saved to the
   state branch (`/roadmap` and `/propose` run by hand ask it the same way). What
-  the Intake takes as given beyond that is listed in `assumptions` and handed to
-  every later author, who keeps each or returns a question to change it.
+  the Intake takes as given beyond that is listed in `assumptions`, never a
+  person-owned choice: the value it would take for one is the recommended option
+  of the question it returns. Every later author gets the list and keeps each
+  assumption or returns a question to change it, within two limits: an answer on
+  the same point outranks it, and one that is a person-owned choice after all is
+  returned as a confirmation with that value recommended, unless the person chose
+  to proceed on assumptions. An Intake that fails to report ends the run
+  (`failed_at_intake`): no later stage asks in its place.
 - **The panel's judge.** A decision the sketches chose differently, or a
   person-owned choice, that the source, the framing and the answers do not settle
   is marked OPEN in the synthesis and returned as a question (`architecture.q<N>`).
-  The synthesis is saved first, and the run stops there (`resume_from:
-  'architecture'`): the re-run builds on the saved synthesis, with no new panel.
-  When that save failed, the run goes on and `/roadmap` carries the judge's
-  questions, returning the ones still open with its own.
+  The synthesis is saved first, with the judge's questions under
+  `## Open questions for the person` (each with its options and the option the
+  judge recommended), and the run stops there (`resume_from: 'architecture'`): the
+  re-run builds on the saved synthesis, with no new panel. An open question an
+  answer settles is settled by that answer; each other one is still a blocking
+  question, or, with `on_question: 'assume'`, takes the option the judge
+  recommended. When that save failed, the run goes on and `/roadmap` carries the
+  judge's questions, returning the ones still open with its own. Where the
+  synthesis contradicts the source, `/roadmap` follows the source, except where
+  the synthesis follows the framing or an answer, which outrank the source; on a
+  saved synthesis the framing and the answers win over it too.
 - **A resumed architecture.** A run that reviews existing docs (`from: 'intake'` or
   `'architecture'` with the docs on disk and no `force`) first applies the Intake's
   and the architecture's answers the docs do not yet reflect (stage
@@ -623,29 +706,67 @@ has no Consistency phase, so its result returns those as `deferred_findings`.
   gap) is planned in a milestone. Leaving it out is the person's choice, so a
   reviser that would not plan it returns it as a blocking question (plan it in a
   milestone named by title, defer it past the first release, or drop it), every
-  such gap in one batch. A part the framing or an answer already replaces or rules
-  out is no gap.
+  such gap in one batch. A part the framing or an answer replaces, rules out or
+  defers is no gap once the roadmap says so; where the roadmap is silent on it,
+  the pair reports it as a gap that names the framing or the answer's id, so the
+  roadmap records the person's choice.
 
-**Answers are kept on the state branch.** In brief mode, a run given `answers`
-saves every answer it holds to `design/answers.json`
-(`{ source, answers: [{ id, stage, question, answer, date }] }`, `source` being the
-brief's path) right after it has looked for existing docs (stage `save-answers`,
-best effort); the result's `answers_saved` says whether that worked. Every
-brief-mode run reads the file when its `source` names this brief and restores the
-answers it was not passed: `answers_restored` lists their ids. Restored
-answers reach every stage and never move the inferred start. An answer passed again
-without its question takes it from the saved copy, and its date too when the answer
-is unchanged. Concern mode saves its answers as `design/answers-concern.json`,
-after the Intake; no run restores that file.
+**Answers are kept on the state branch.** A brief-mode run saves, once and best
+effort (stage `save-answers`), every answer it holds and what its Intake took as
+given to `design/answers.json`
+(`{ source, answers: [...], assumptions: [string] }`, each answer
+`{ id, stage, question, answer, date }` and `source` the brief's path). A run with
+an Intake saves after it: one that stops there only when it was given answers; one
+that goes on also with no answer given, when there are assumptions to save or
+saved ones to replace. A run that skips the Intake saves right after it has looked
+for existing docs, only when it was given answers. Only what the person said is saved as an answer: an option
+taken under `on_question: 'assume'` never is (the ones the Intake took are among
+its `assumptions`). The result's `answers_saved` says whether the save worked.
+
+Every brief-mode run reads the file when its `source` names this brief and
+restores the answers it was not passed: `answers_restored` lists their ids.
+Restored answers reach every stage and never move the inferred start. An answer
+passed again without its question takes it from the saved copy, and its date too
+when the answer is unchanged. A run that starts past the Intake also restores the
+saved assumptions, as stage `intake`: every author gets them and the result's
+`assumptions` lists them. A run with an Intake does not: its Intake takes its own.
+
+An id is never reused. An id passed for another question than the one its saved
+answer holds, or twice in `answers` with different answers or questions, ends the
+run `failed_at_start` (`answer_id_reused`) with nothing saved; `stop_reason` names
+each id, the next number not yet in use and the ids in use. Two questions differ
+when their letters and digits do (case, spacing and punctuation aside), and an
+entry without its question text counts as the same question. The same id twice
+with the same answer and question is one entry, and a newer answer to the same
+question keeps its id. When the state branch cannot be read (the read exits 2),
+nothing is restored and nothing is written, so the run cannot overwrite what is
+there (`answers_saved: false`).
+
+Concern mode saves its answers as `design/answers-concern.json`, after the Intake;
+no run restores that file. With `save_answers: false` neither mode saves or
+restores anything and the result carries `save_answers: false`: the relay and the
+next steps say to pass every answer so far with each re-run, each with its
+question and date, and to pass each Intake assumption the person confirmed or
+corrected as an answer (`intake.d<N>`), since a re-run that starts past the
+Intake does not get the assumptions either.
 
 `proposal-build-chain` has two modes; `planner`, `gate`, `main_branch`,
 `commit_trailers`, `max_review_rounds`, `max_polish`, `efforts`, `allow_draft`,
 `on_question` and `github_access` (when not `''`) pass through to every lane in
 both, and each of `answers` (`[{ lane, id, answer, question?, date? }]`) to the lane
 it names only ([Answering questions](#answering-questions) says what one without a
-lane does). `replan` is `true`, or
+lane does). `answers` must be an array: an `{ id: answer }` map cannot name a lane
+and throws. An answer whose `lane` is no lane of the run reaches nobody: with
+explicit lanes it throws (a mistyped key), and in derive mode, where a lane may
+have merged since the answer was given, it is logged and returned in
+`answers_unused` (a blocked lane counts as a lane). `assumptions`
+(`[{ lane, stage, assumption }]`) is what an earlier run's lanes assumed: each
+lane's run gets its own, so a lane that builds on in its kept worktree still lists
+them in its result, its saved plan and its PR body. `replan` is `true`, or
 the keys of the lanes whose planner plans again instead of continuing from the plan
-an earlier run saved (those lanes get `replan: true`; default: no lane).
+an earlier run saved (those lanes get `replan: true`; default: no lane). It is for
+one run: a lane left in it would plan a further time, so a `needs_input` relay
+gives the value the re-run passes.
 `ai_review_check` and `required_checks` are not used to build: derive mode copies
 them, with `main_branch`, `gate`, `commit_trailers` and `github_access`, into each
 `ship_plan` entry's args, beside the lane's `plan_ref` and `repo` (origin's
@@ -708,7 +829,8 @@ planner.
                                    // overrides them; reaches the lookup, the wait and every lane's run
   repo: 'acme/app',                // default each lane's own: a missing lane checkout is cloned from it
   answers: [{ lane: 's2', id: 'merge_check.q1', question: '...', answer: '...', date: '2026-11-12' }],
-                                   // each to its own lane only
+                                   // each to its own lane only; an array (an { id: answer } map throws), and an entry
+                                   // whose lane is no lane of the chain throws
 }
 ```
 
@@ -764,12 +886,23 @@ existing `LICENSE` of another licence than the architecture's licence Decision; 
 licence, when there is neither a Decision nor a file; a published name no Decision
 settles; and, as confirmations, each Decision the skeleton bakes in (a name, the
 licence, a namespace, an org or bundle id) that the architecture tags `(assumed)`
-or leaves untagged, since accepting the doc did not confirm it. The skeleton is
-built on what the person answers, and the architecture still has to record it:
-`/bootstrap` never edits the doc, its report names each such Decision under
-**Answers**, and a `refresh-proposal` run on the architecture with that answer (or
-`/propose --revise`) tags it `(person, …)`. With `on_question: 'assume'` such a
-Decision is built on as the doc states it and listed in `assumptions`. A stop
+or leaves untagged, since accepting the doc did not confirm it. A confirmation
+comes back with `confirm: true` and the Decision's Choice as its recommended
+option, and the relay says to show the confirmations as one list the person can
+accept whole or correct line by line. The stage also reads the answers the design
+run saved on the state branch (`design/answers.json`; none when the read exits 3
+or 2): a baked-in choice one of them settles (the licence, also between the
+architecture's and an existing `LICENSE` file's; the copyright holder; a name) is
+settled and not asked, and an answer passed to the run is the newer one where the
+two differ. The skeleton is built on what the person answers, and the architecture
+still has to record it: `/bootstrap` never edits the doc, its report names each
+such Decision under **Answers**, and its next steps say how. A Decision confirmed
+as it stands has its tag changed to `(person, <today's date>, edit)`, by the
+person or by the session when they say so; a corrected one is revised by a
+`refresh-proposal` run on the architecture with that answer as `revise.d<N>` (or
+`/propose --revise`), which tags it `(person, <date>, <id>)`. With
+`on_question: 'assume'` such a Decision is built on as the doc states it and
+listed in `assumptions`. A stop
 before the first write leaves no branch and no file. A question that surfaces only
 after the first write (the install or a gate shows a `(person, …)` Decision cannot
 hold as written) stops the run with nothing committed and the files kept on the
@@ -787,9 +920,12 @@ Leave `ai_review_check` unset on a new repository unless a review app already po
 that check: the example AI review workflow is installed after the bootstrap PR
 merges, and a check that never registers keeps the monitor from settling. The ship
 run gets exactly `{ ship_only: true, branch: '<bootstrap/date>', title, dir }` plus
-those of the settings above that were given, every answer, and, when the bootstrap
-stage reported assumptions, a `pr_note` that puts them in the PR body under
-`## Assumptions to review`, in the one section the ship run's own lines go to. Only
+those of the settings above that were given, every answer (`answers`), and, when
+the bootstrap stage reported assumptions, those as
+`assumptions: [{ stage: 'bootstrap', assumption }]`: the ship run lists them in the
+PR body under `## Assumptions to review`, and its monitor knows each as a choice
+nobody confirmed. Every copy of those args printed in `next_steps` carries the
+same, so a ship run started later by hand still knows what the person settled. Only
 a `bootstrap/<date>` branch that holds a bootstrap commit (trailer
 `Bootstrapped-by: /bootstrap`) is ever shipped. `github_access` is `'gh'`,
 `'connector'` or unset (any other value throws).
@@ -844,7 +980,7 @@ Every result carries a `status`.
 `plan-to-merged-pr`:
 
 - `pushed` (build-only)
-- `needs_input` — a stage (`stage`: `plan`, `impl`, `fix`, `polish`, `merge_check` or `monitor`) hit questions only the person can answer and stopped there, changing nothing further; `questions` lists them and `relay` says what to do (see [Answering questions](#answering-questions)). A `monitor` question comes from `/merge-main` (a conflict that is the person's call), from `/process-comments` (a reviewer's request that contradicts the plan, the design doc or an answer, or an item whose fix is a product or trade-off choice neither settles: every other item is handled, and that thread gets no reply, so the re-run still finds it) or from the CI fix (neither the plan nor the design doc says whether the test or the code is right)
+- `needs_input` — a stage (`stage`: `plan`, `impl`, `fix`, `polish`, `merge_check` or `monitor`) hit questions only the person can answer and stopped there, changing nothing further; `questions` lists them and `relay` says what to do (see [Answering questions](#answering-questions)). A `monitor` question comes from `/merge-main` (a conflict that is the person's call), from `/process-comments` (a reviewer's request that contradicts the plan, the design doc or an answer, or an item whose fix is a product or trade-off choice neither settles: every other item is handled, and that thread gets no reply, so the re-run still finds it; the person's own comment that corrects a choice nobody confirmed is applied, not asked back) or from the CI fix (neither the plan nor the design doc says whether the test or the code is right). The ids are always `<stage>.q<N>`: an id or stage a stage wrote on its own question is dropped
 - `failed_at_plan`, `failed_at_impl` (with `hint` when its plan stays saved: a re-run continues from that plan unless it passes `replan: true`)
 - `review_failed`, `blocked_at_review` (also in ship-only, after a conflicted merge)
 - `blocked_at_predecessors`
@@ -869,7 +1005,8 @@ After monitoring, the result also carries:
   `{ pr, branch, dir?, plan_ref? }` (`plan_text` instead, only when the plan was
   never saved) plus whichever of `proposal`, `main_branch`, `ai_review_check`,
   `required_checks`, `gate`, `commit_trailers`, `efforts`, `on_question`,
-  `github_access`, `repo`, `max_monitor_rounds` and `answers` the run was given;
+  `github_access`, `repo`, `max_monitor_rounds` and `answers` the run was given,
+  and `assumptions`, the run's list, when it has any;
   `handoff` is one line saying why it stopped and how to re-run it. A `needs_input`
   result from the `monitor` stage carries `resume_monitor` too: its new answers are
   added to the `answers` in it.
@@ -896,10 +1033,10 @@ one per lane attempted, `status` being the lane's `plan-to-merged-pr` status (or
 `failed`) and `result` slim, as in derive mode (below); a `needs_input` lane also carries `questions` (each with its `lane`) and
 `relay`. There is no ship plan in explicit mode, so a lane that pushed with `plan_ref` `''`
 (its plan could not be saved) also carries `plan_text` in its `result`: the fallback
-derive mode's `ship_plan` gives it, for the ship-only run that opens its PR. Derive mode: `{ status, assumptions, proposal, source, chains, blocked, human_gates_pending, milestone_waits, ship_plan }`, where `assumptions` lists what the lanes this run built assumed, as `[{ lane, stage, assumption }]` (each lane's PR body lists its own once it is shipped), and `status` is:
+derive mode's `ship_plan` gives it, for the ship-only run that opens its PR. Derive mode: `{ status, assumptions, proposal, source, chains, blocked, human_gates_pending, milestone_waits, ship_plan, answers_unused? }`, where `assumptions` lists what the lanes this run built assumed, as `[{ lane, stage, assumption }]` (each lane's PR body lists its own once it is shipped; a re-run passes the list back as its `assumptions` arg), `answers_unused` the answers given for a lane this run does not have (a blocked lane counts as one it has), and `status` is:
 
 - `pushed` — every lane is pushed or `already_built`
-- `needs_input` — some lane stopped with `needs_input` (its chain stopped there; other chains carried on); `questions` lists every lane's questions, each with its `lane`, and `relay` says what to do
+- `needs_input` — some lane stopped with `needs_input` (its chain stopped there; other chains carried on); `questions` lists every lane's questions, each with its `lane`, and `relay` says what to do (each asking lane's own `relay` is the same text): the answers and the `assumptions` to pass, and, when the run was given `replan`, the value the re-run passes
 - `partial` — some lane did not push; its chain stopped there (`not_built` lists the rest), other chains carried on
 - `all_blocked` — no lane can build: each waits on a gate, another doc, a milestone (or an unresolvable `Source:` milestone) or acceptance (see `blocked`)
 - `nothing_to_build` — no pending code step
@@ -957,26 +1094,29 @@ complete on `main` and the edits a person makes. `status` is:
 - `ready` — every doc lints clean, every proposal's lane preview has no errors, every proposal's review came back clean, and the Consistency phase (brief mode) reported, revised every affected doc and got each revised doc back clean from its re-review; after `from: 'consistency'` or `'lint'`, the stages this run ran came out clean
 - `proposals_need_attention` — a proposal was not written (listed `failed`, with its `stop_reason` when `/propose` stopped or routed the work elsewhere), its review did not finish, or it still has a `bug` or `concern` after `max_review_rounds` (`findings_remaining`); or a consistency pair failed to report (the other pairs' findings are still revised), a consistency revision failed, a revised doc did not come back clean from its re-review, or a finding named a doc this run did not write (`consistency.unrouted`)
 - `lint_errors` — a doc still has lint errors (a size budget's error limit included), or a proposal's lane preview (`--lanes --allow-draft`, e.g. `lane_cycle`) has errors; `lint_failed` — the lint stage did not report
-- `blocked_at_architecture_review` — architecture.md or roadmap.md still has a `bug` or `concern` after `max_review_rounds`; no proposal was written; `resume_from: 'architecture'`. What happens to those findings is the person's choice: `relay` says to show them `architecture_review.findings_remaining` and the `assumptions`, with the ways forward `next_steps` lists: another pass (`from: 'architecture'` and a higher `max_review_rounds`), answering the findings that are theirs (each passed back as `architecture.d<N>`, the finding as its question, then `from: 'architecture'`), or going on with `from: 'proposals'`, accepting the findings that remain
-- `review_failed` — a review or revise stage of the architecture failed to report; `resume_from: 'architecture'` (an inferred re-run would start at `proposals`)
+- `blocked_at_architecture_review` — architecture.md or roadmap.md still has a `bug` or `concern` after `max_review_rounds`; no proposal was written; `resume_from: 'architecture'`. What happens to those findings is the person's choice: `relay` says to show them `architecture_review.findings_remaining` and the `assumptions`, with the ways forward `next_steps` lists: another pass (`from: 'architecture'` and a higher `max_review_rounds`), answering the findings that are theirs (each passed back as `architecture.d<N>`, N the next number not yet in use, the finding as its question, then `from: 'architecture'`), or going on with `from: 'proposals'`, accepting the findings that remain. The relay ends `They choose; never choose for them.`, and it and `next_steps` then carry the notes that apply: whether the re-run keeps `force`, the `save_answers: false` note, and the note for a session that loaded none of the seeded files
+- `review_failed` — a review or revise stage of the architecture failed to report; `resume_from: 'architecture'` (an inferred re-run would start at `proposals`); `next_steps` say how to re-run from `'architecture'`, followed by the same notes
 - `failed_at_branch` — with `branch`, the design branch could not be checked out (`not_a_repo`, `no_remote`, `invalid_branch`, `branch_is_main`, `no_main`: a remote with no `main`, so push a first commit to it, `diverged`, `switch_blocked`); `stop_reason` names it, and the result carries `branch`
-- `failed_at_seed` — `/seed` stopped (`no_source`: pass `pipeline`; `not_a_repo`, `no_remote`, `dirty_tree`: tracked changes outside `.claude/` and `CLAUDE.md`); `stop_reason` quotes it, and the result carries nothing else (with `branch`, `branch`)
-- `failed_at_start` — before the Intake. Brief mode: `brief_not_found` (the checkpoints never commit the brief: copy it into the checkout), `partial_docs` (only one of `architecture.md` and `roadmap.md`; `force` regenerates both), `no_docs` (`from` past `architecture` without the docs), or the existing-docs stage did not report. Either mode: `context_not_found` (`context_file` does not exist and the state branch holds no `context/builder-context.md` to restore it from: copy it back or rewrite it with the person; concern mode checks it in a stage of its own, `context-check`). `stop_reason` says which
-- `failed_at_roadmap` — `/roadmap` stopped or did not finish (e.g. `error=exists`: pass `force`, or revise instead); `stop_reason` quotes it
+- `failed_at_seed` — `/seed` stopped (`no_source`: pass `pipeline`; `not_a_repo`, `no_remote`, `dirty_tree`: tracked changes outside `.claude/` and `CLAUDE.md`); `stop_reason` quotes it, and the result carries nothing else (with `branch`, `branch`; with `save_answers: false`, that)
+- `failed_at_start` — before the Intake. Brief mode: `brief_not_found` (the checkpoints never commit the brief: copy it into the checkout), `partial_docs` (only one of `architecture.md` and `roadmap.md`; `force` regenerates both), `no_docs` (`from` past `architecture` without the docs), or the existing-docs stage did not report. Either mode: `answer_id_reused` (an id passed for another question than its saved answer holds, or twice in `answers` with different answers or questions; `stop_reason` names each id, the next number not yet in use and the ids in use, and nothing is saved); `context_not_found` (`context_file` does not exist and the state branch holds no `context/builder-context.md` to restore it from: copy it back or rewrite it with the person; concern mode checks it in a stage of its own, `context-check`). `stop_reason` says which
+- `failed_at_intake` — the Intake failed to report: nothing was designed, and the docs on disk are as they were. `stop_reason` is `the intake stage failed to report`; in brief mode `resume_from: 'intake'`; `next_steps` say to re-run with the same args. The answers the run was given are still saved
+- `failed_at_roadmap` — `/roadmap` stopped or did not finish (e.g. `error=exists`: pass `force`, or revise instead); `stop_reason` quotes it; `next_steps` holds the notes `blocked_at_architecture_review` lists after its ways forward (it may be empty)
 - `failed_at_propose` — concern mode: `/propose` stopped, routed the work elsewhere (e.g. to `/plan`) or did not finish; `stop_reason` quotes it
 
-Every result past the Intake carries `assumptions`. `failed_at_start`,
-`failed_at_roadmap` and every status the Lint phase sets (`ready`,
-`proposals_need_attention`, `lint_errors`, `lint_failed`) also carry `seeded`: what
-was copied, kept and written; `review_failed`, `blocked_at_architecture_review` and
-`failed_at_propose` do not. When the Seed phase installed anything, the session
+Every result from the Intake on carries `assumptions`, and every result past the
+Seed phase but `failed_at_propose` carries `seeded`: what was copied, kept and
+written. When the Seed phase installed anything, the session
 that ran the workflow loaded none of it: a `needs_input` relay, else a next step,
 tells it to read the `How work happens here` section of the repository's
-`CLAUDE.md` now and to start every other workflow from a new session there (a
-re-run of this one can stay). In brief mode, every result past the start carries
+`CLAUDE.md` now, to start every other workflow from a new session there (a
+re-run of this one can stay), and, before it leaves, to read and follow
+`.claude/commands/handoff.md` (it cannot invoke the command by name), so the new
+session starts from `STATE.md`. In brief mode, every result past the start carries
 `from`, the stage the run started at. Every result past the Seed phase carries
-`answers_saved` (true or false) when the run was given answers and had reached the
-stage that saves them, and `answers_restored` (the ids) when it restored any
+`answers_saved` (true or false) when the run had answers, or assumptions of its
+Intake, to save and had reached the stage that saves them (false, with nothing
+written, when the state branch could not be read), `answers_restored` (the ids)
+when it restored any, and `save_answers: false` when it was given that arg
 ([Workflow args](#workflow-args)). With `branch`, every result carries
 `branch: { name, action, recovered, checkpoints }`: `action` is `created`,
 `continued` or `current`, `recovered` the changed design docs committed before the
@@ -984,18 +1124,35 @@ run, and each checkpoint `{ after, committed, commit, pushed, files, reason }`. 
 Lint-phase result also carries the doc paths, `panel` (`{ winner, scores, saved }`,
 `{ reused: true }` when the saved synthesis was used, or null), each doc's review
 outcome, `kept` (the proposals kept from an earlier run, `{ milestone, title, doc }`,
-consistency-checked and linted but not re-reviewed), the consistency findings (each
+consistency-checked and linted but not re-reviewed), `not_proposed` (the pending
+code milestones left without a proposal, `{ milestone, title, doc }`), the
+consistency findings (each
 with its `pair`), `consistency.pairs` (`{ key, docs, findings, failed }`), revisions
 and re-reviews, the lint and lane summary, and `next_steps`. `lint` also lists what
 no person confirmed, read with `--decisions` from the architecture, the roadmap and
 each proposal: `lint.unconfirmed`, the decisions tagged `(assumed)` or untagged
 (`{ doc, id, title, by }`), and `lint.proposed`, the values an author proposed
 (`{ doc, line, text }`). When there are any, or any `assumptions`, a next step says
-to show all three to the person before a doc is accepted, and how a correction
-comes back: as an answer (`architecture.d<N>`, or `m<N>.d<K>` with
-`milestones: [N]`, its question naming the decision by title) with `from` set to
-that stage, or through `refresh-proposal` on the one doc; the revise tags the
-decision `(person, <date>)`. Deferred findings
+to show all three to the person before a doc is accepted, and how each comes
+back. A decision they confirm as it stands needs no re-run: its heading tag
+becomes `(person, <today's date>, edit)`, edited by the person while accepting the
+doc, or by the session when they say so (the tag only, never the Choice or any
+other text). A decision, an assumption or a proposed value they change goes back
+as an answer, its question naming the decision by title and its number the next
+one not yet in use: `architecture.d<N>` for what the architecture or the roadmap
+says, `m<N>.d<K>` for milestone N's proposal, in concern mode `proposal.d<N>`. It
+is passed to `refresh-proposal` on the one doc, or to a re-run with the same args
+(without `force` after a force run): `from: 'architecture'` with
+`max_milestones: 0`, so the re-run writes no further proposal, or
+`from: 'proposals'` with `milestones: [N]`, which writes that proposal again as a
+draft. The revise tags the decision `(person, <date>, <id>)`, and a confirmation
+may be passed as an answer the same way when such a re-run happens anyway. The
+other next steps that depend on the run: on a finished run given `force`, an
+entry of its own that says to leave `force` out of every re-run; with
+`save_answers: false`, the note to pass every answer so far; for the milestones
+in `not_proposed`, the re-run that writes them (`from: 'proposals'`,
+`milestones: [N]`); and the step that builds each proposal only when one exists.
+Deferred findings
 (`architecture_review.deferred`, concern mode's `deferred_findings`) carry
 `raised_by`, the docs under review. A review that reports only suggestions and nits is clean
 once a revise round has run, or once `max_review_rounds` is reached.
@@ -1027,7 +1184,8 @@ entry per lane, `{ lane, status, ... }` with `lane` the lane's key. `status` is:
   line each), `declined`, `polish_unfixed`, `plan_ref`, `handoff`, `resume_monitor`
   and `left_uncommitted`. A lane whose run ended before its PR was open (any status
   but `pushed`, `OPEN`, `MERGED` or `CLOSED`, with no `resume_monitor`) carries
-  `resume_args`, the args that run was given (the verified plan as `plan_text`). A
+  `resume_args`, the args that run was given (the verified plan as `plan_text`),
+  plus, as `assumptions`, what its stages assumed, when there are any. A
   `needs_input` lane also carries `questions` (each with its `lane`) and `relay`
 - `failed` — also a lane that failed outright: `{ lane, status }` only
 
@@ -1056,7 +1214,10 @@ holds the bootstrap stage's, every line of `/bootstrap`'s report under
 **Assumptions** included, and the ship run's as stage `ship.<its stage>`. The
 bootstrap stage's also reach the PR body (`## Assumptions to review`) and the
 commit's body, and the first next step says to show them to the person before the
-merge (in root mode, before the push). `status` is:
+merge (in root mode, before the push). Once the bootstrap commit exists, a line
+they correct is no answer to a re-run, which would apply nothing: they leave it as
+a review comment on the PR, and a monitor run's comment step applies it (root
+mode: it is a change to commit on `main` before the push). `status` is:
 
 - `pr_open` — the bootstrap PR is open and handed off (`plan-to-merged-pr` `OPEN`, or `monitor_failed`): review and merge it; `ship.resume_monitor` re-runs its monitor
 - `merged` — the PR merged while the monitor watched it
@@ -1066,7 +1227,7 @@ merge (in root mode, before the push). `status` is:
 - `root_commit` — the remote was empty: the root commit is on local `main`, nothing was shipped, and the first next step is the push you make by hand
 - `already_bootstrapped` — the bootstrap commit (trailer `Bootstrapped-by: /bootstrap`) is already on `main`; nothing ran but the check. A bootstrap branch that holds the commit and still waits for its PR is shipped instead; a `bootstrap/<date>` branch with no bootstrap commit is an unfinished run, which `/bootstrap` resumes
 - `failed_at_bootstrap` — `/bootstrap` stopped (`stop_reason` quotes its `error=`, and the next steps are the action it names), the stage did not report, it reported an earlier bootstrap with no bootstrap commit, or it reported a branch other than `bootstrap/<date>` (nothing is shipped)
-- `needs_input` — the bootstrap stage (`bootstrap.q<N>`) or the ship run (`merge_check.q<N>`, `monitor.q<N>`) asked; `questions` and `relay`. From the bootstrap stage nothing is committed, and nothing was written unless `bootstrap.branch` names the unfinished branch that holds its files; a question from the ship run's monitor is answered in monitor-only mode (`ship.resume_monitor`)
+- `needs_input` — the bootstrap stage (`bootstrap.q<N>`; a confirmation carries `confirm: true`) or the ship run (`merge_check.q<N>`, `monitor.q<N>`) asked; `questions` and `relay`. A relay that names `resumeFromRunId` also says how a new session, which has no run record, re-runs: the same way without it. From the bootstrap stage nothing is committed, and nothing was written unless `bootstrap.branch` names the unfinished branch that holds its files; a question from the ship run's monitor is answered in monitor-only mode (`ship.resume_monitor`)
 
 `refresh-proposal`: `{ status, doc, doc_status, rounds, revisions, findings_remaining, other_docs?, lint, assumptions, next_steps, questions?, relay?, stop_reason? }`.
 `rounds` counts reviews, `revisions` the revise rounds applied.
@@ -1081,8 +1242,13 @@ are never applied here. `lint` is
 values an author proposed, each one line per item, at most 20 plus a line counting
 the rest), or null when the lint did not run. The next steps say to show the
 person the `assumptions`, `lint.unconfirmed` and `lint.proposed` before the doc is
-accepted (a confirmation or a correction comes back as `revise.d<N>`, its question
-naming the decision by title), to re-accept a revised doc (a
+accepted (with no lint result: what `proposal-lint.py <doc> --decisions` lists).
+A decision they confirm as it stands needs no re-run: its heading tag becomes
+`(person, <today>, edit)`, edited by the person while accepting the doc, or by the
+session when they say so (the tag only). A decision they change comes back as
+`revise.d<N>`, N the next number not yet in use, its question naming the decision
+by title; a confirmation may be passed the same way when a re-run happens anyway.
+The next steps also say to re-accept a revised doc (a
 revise resets `Status:` to draft) and land it through a docs PR, to copy any
 drifted `CLAUDE.md` section in the same PR, and, for a clean proposal, how to build
 it. `status` is:
@@ -1120,9 +1286,12 @@ choice that waits on evidence the plan produces stays a `decision` gate
 **What the person said outranks the source.** The framing (`context`,
 `context_file`), an answer, and a decision a doc tags `(person, …)` bind every
 stage. On the point it addresses, what the person said replaces the source's value:
-the author follows it, says so in the doc and never asks it again. A stage asks
-only where another part of the source, the tree or its research makes what the
-person said impossible to follow; it then names both and picks no side. What the
+the author follows it, says so in the doc and never asks it again. The same holds
+past the design: an answer that differs from the plan, the concern, the
+architecture or the issue is followed, and that difference is no conflict. A
+stage asks only where another part of the source, the tree or its research makes
+what the person said impossible to follow; it then names both and picks no side.
+What the
 person settled changes only on a newer answer from them: a reviewer reports a doc
 or a change that departs from it as a `bug` whose fix is the question to ask. A
 `new-software-idea` brief (its header has `**Verdict:**` and `**Assumed builder:**`
@@ -1140,7 +1309,7 @@ and a recommendation, and waits: `/start-product`, `/roadmap`, `/propose`, `/pla
 `error=needs_input` and prints its questions; told to proceed on assumptions, it
 takes each recommended option and lists it under **Assumptions**, except a question
 about departing from what the person settled, which stays open with what the person
-said kept. Three of them ask in a way of their own:
+said kept. Four of them ask in a way of their own:
 
 - `/polish` asks before its first fix: a fix that changes observable behaviour the
   plan and the design doc do not call for, a concern that is a product or trade-off
@@ -1154,12 +1323,34 @@ said kept. Three of them ask in a way of their own:
   Unattended, it handles every other item, posts no reply on that one, and ends
   with `error=needs_input`, so the next run still finds the item and reaches it
   with the answer. A thread that already has a terminal reply is eligible again
-  once a person replies after it, asking for a change or asking a question.
+  once a person replies after it, asking for a change or asking a question. A
+  human comment that corrects a choice nobody confirmed (an `assumed` line of the
+  plan's `## Assumptions to review`, a bullet of its `## Assumptions`) is no such
+  contradiction: the PR shows those lines to be corrected, so the comment is
+  validated, applied and answered `Fixed locally …` like any actionable request.
+  It is `needs-person` only when it also departs from an `answered` line, an
+  answer handed in or a decision tagged `(person, …)`. A run that stopped on a
+  merge conflict that was the person's call leaves a fix commit whose message
+  names the comments it answers: the re-run records those items as applied, skips
+  only the commit when it changed nothing, merges as the answer says, pushes, and
+  then replies.
 - `/quality-gates`, and the monitor's CI fix, never get green by changing what a
   test asserts, a CI workflow, a required check or the `QUALITY_GATES` line unless
   the plan or the design doc calls for that change. When neither says whether the
   test or the code is right, that is the question, naming the test, what it asserts
-  and the two readings.
+  and the two readings. A `/quality-gates` run handed the answer to an earlier
+  run's `error=needs_input` stop picks up what that run left behind: fixes left
+  uncommitted are staged with its own, and a fix commit left unpushed is merged
+  and pushed.
+- `/bootstrap` asks before its first write, and reads the answers the design run
+  saved (`design/answers.json` on the state branch) as answers handed in. Its
+  unattended stop prints a baked-in Decision nobody confirmed with the word
+  `confirmation` after its id, its Choice the recommended option. A stop after the
+  person answered a question in the same run (red gates, a later question) prints
+  those answers as an `answers` list (`q1`, `q2`, … with question text, answer and
+  date), which the re-run is handed. Its next steps say how the architecture
+  records what the person decided there: a tag edit for a Decision confirmed as
+  it stands, a revise with the answer for a corrected one.
 
 Inside a workflow no one can answer mid-run, so the stage stops and the workflow
 returns `status: 'needs_input'` with:
@@ -1167,8 +1358,8 @@ returns `status: 'needs_input'` with:
 ```js
 questions: [{ id: 'plan.q1', stage: 'plan', question: '...', why: 'what changes with the answer',
               options: ['...', '...'], recommended: '...' }],
-              // a lane workflow adds lane: '<key>'; brief-to-proposals and refresh-proposal add
-              // confirm: true on a confirmation, whose recommended option is the unconfirmed value
+              // a lane workflow adds lane: '<key>'; brief-to-proposals, refresh-proposal and bootstrap-repo
+              // add confirm: true on a confirmation, whose recommended option is the unconfirmed value
 relay: 'Ask the person these questions yourself ...',
 ```
 
@@ -1181,8 +1372,14 @@ relay says, with the same args plus `answers`:
 ```js
 answers: [{ id: 'intake.q2', question: 'the question as asked', answer: "the person's words", date: '2026-11-12' }],
               // a lane workflow's entries add lane: '<key>'; brief-to-proposals also reads stage, the
-              // stage that asked; { '<id>': '<answer>' } is accepted too
+              // stage that asked
 ```
+
+`plan-to-merged-pr`, `brief-to-proposals`, `bootstrap-repo` and `refresh-proposal`
+also accept a map, `{ '<id>': '<answer>' }`. The three lane workflows
+(`proposal-build-chain`, `ship-chain`, `bug-fix-backlog`) do not: a map cannot name
+a lane, so they throw on one instead of dropping it
+(`answers must be an array of { lane?, id, answer, question?, date? }`).
 
 `question` and `date` are optional and travel with the answer: into every prompt,
 the saved plan and the PR body (a lane), `design/answers.json` (a design run), and
@@ -1192,18 +1389,42 @@ cannot tell from the answer alone what it settles treats it as settling nothing,
 never guessing what it meant. Answers add up: every re-run passes the earlier ones
 again.
 
-**A decision made outside a question** (an assumption the person corrects, an
-unconfirmed decision they confirm, something they decide in chat) is passed the
-same way, under a `d<N>` id, its `question` saying what it settles. Such an id
-takes no part in the `q<N>` numbering:
+**A decision made outside a question** (an assumption the person corrects, a
+decision of a written doc they change, something they decide in chat) is passed
+the same way, under a `d<N>` id, its `question` saying what it settles. `N` is the
+next number not yet in use for that form: an id is never reused for another
+question. A relay names the next free one where the run can tell, and a design
+run refuses a reused id (`failed_at_start`, `answer_id_reused`). Such an id takes
+no part in the `q<N>` numbering:
 
 | Id | For | Read by |
 |---|---|---|
 | `intake.d<N>` | a decision for the whole product; `/start-product` prints the choices it confirmed this way | every stage of a design run, and of a `refresh-proposal`, `bootstrap-repo` or lane run it is passed to (`bug-fix-backlog` reads an `intake` id as its own Intake's and passes it to no lane) |
-| `architecture.d<N>` | a correction to the written architecture or roadmap | a design run with `from: 'architecture'`, which applies it to both docs before their review |
-| `m<N>.d<K>` | a correction to milestone N's written proposal | a design run with N in `milestones` |
-| `<stage>.d<N>` (`plan.d1`, `impl.d2`) | a lane's assumption the person corrected | that lane's `plan-to-merged-pr` run, from that stage on |
-| `bootstrap.d<N>`, `revise.d<N>` | the same, for `bootstrap-repo` and `refresh-proposal` | every stage of the run |
+| `architecture.d<N>` | a correction to the written architecture or roadmap | a design run with `from: 'architecture'`, which applies it to both docs before their review (with `max_milestones: 0`, it writes no further proposal); or `refresh-proposal` on the one doc |
+| `m<N>.d<K>` | a correction to milestone N's written proposal | a design run with `from: 'proposals'` and N in `milestones`, which writes that proposal again as a draft; or `refresh-proposal` on that proposal |
+| `proposal.d<N>` | a correction to a concern's written proposal | a concern-mode re-run, which writes the proposal again; or `refresh-proposal` on the doc |
+| `<stage>.d<N>` (`plan.d1`, `impl.d2`) | a lane's assumption the person corrected, while the lane's re-run still builds | that lane's `plan-to-merged-pr` run, from that stage on |
+| `bootstrap.d<N>` | an assumption of the bootstrap stage the person corrected before the bootstrap commit existed, or a decision they made outside its questions | every stage of the `bootstrap-repo` run |
+| `revise.d<N>` | for `refresh-proposal`: an assumption the person corrected, a decision they changed or one they made outside the questions | every stage of the run |
+
+Two things the person says about an assumption are not answers:
+
+- **A decision of a design doc confirmed as it stands** needs no re-run. Its
+  heading tag becomes `(person, <today's date>, edit)`: the person changes it while
+  accepting the doc, or the session makes that one-line edit when they say so (the
+  tag only, never the Choice or any other text). A revise would reset the doc to
+  draft for nothing. A confirmation may still be passed as an answer when a re-run
+  happens anyway.
+- **A correction to an assumption of a run whose re-run builds nothing**: a
+  ship-only or monitor-only `plan-to-merged-pr` run, a `ship-chain` lane,
+  `bootstrap-repo` once the bootstrap commit exists, a `bug-fix-backlog` lane whose
+  PR is open. No stage of such a re-run would apply it. The person leaves it as a
+  review comment on the PR (once it is open), and the monitor's comment step
+  (`/process-comments`) applies it as an ordinary request
+  ([Workflow args](#workflow-args)). The relay of each such result says so, and
+  that only the answers to its questions go into `answers`. In `bootstrap-repo`'s
+  root mode there is no PR: the correction is a change committed on local `main`
+  before the push.
 
 How an answer is routed, and how the re-run goes on:
 
@@ -1212,8 +1433,11 @@ How an answer is routed, and how the re-run goes on:
   later stage, never an earlier one; an id whose first part names no stage reaches
   every stage. In the session that ran it, re-run with `resumeFromRunId` set to
   the stopped run's id: the stages before the one that asked replay from the
-  record. A new session re-runs the same way without it, and the run continues
-  from the branch's saved plan ([Workflow args](#workflow-args)). An answer to a
+  record. A new session re-runs the same way without it, adding `branch` when
+  the run created its branch and `assumptions` when its result lists any, and the
+  run continues from the branch's saved plan ([Workflow args](#workflow-args)). A
+  run given `replan` whose later stage asked is re-run without `replan`: it applied
+  to that run, which planned the work again. An answer to a
   `monitor` question is given in monitor-only mode instead: the result's
   `resume_monitor`, with the new answers added to the `answers` it already carries
   (the ones given before).
@@ -1231,17 +1455,29 @@ How an answer is routed, and how the re-run goes on:
   replayed (`resumeFromRunId` also works, in the same session). After a
   milestone's question, pass `milestones` as the relay names them: the answers are
   passed again on every later run, so they select no milestone, and without
-  `milestones` an answer to a reviser of a written proposal would go unused. From
-  the Proposals stage on, no stage applies an answer to the architecture or the
-  roadmap: a correction to either is passed as `architecture.d<N>` with
-  `from: 'architecture'`, and a correction to one written proposal as `m<N>.d<K>`
-  with N in `milestones`.
+  `milestones` an answer to a reviser of a written proposal would go unused.
+  Questions from different milestones that ask the same choice are one question
+  to the person: it is asked once, and the one answer is passed back under each of
+  their ids. From the Proposals stage on, no stage applies an answer to the
+  architecture or the roadmap: a correction to either is passed as
+  `architecture.d<N>` with `from: 'architecture'` and `max_milestones: 0`, so the
+  re-run writes no proposal but the milestones the relay names (a `milestones`
+  list is never cut by it), and a correction to one written proposal as
+  `m<N>.d<K>` with N in `milestones`. In a new checkout or container the re-run
+  points `dir` at the new checkout, and `pipeline` at the pipeline's checkout
+  there; `pipeline` is left out once the checkout holds the seeded `.claude` files,
+  as a clone of the design branch does after its first checkpoint.
 - `proposal-build-chain`: each answer keeps the `lane` its question carried and
-  goes to that lane only. Re-run with the same args (the same `date`): pushed lanes
+  goes to that lane only. Re-run with the same args (the same `date`) and the
+  earlier `assumptions` (a derive-mode result's, as they are; with explicit lanes,
+  each lane's result's with `lane: '<its key>'` added), since a lane that builds
+  on does not report them again: pushed lanes
   come back `already_built`, and the lane that asked continues from the plan its
   earlier run saved (`plan_ref`), so no planner re-asks or contradicts the answer;
   it plans again only when no plan for the same work is saved, when the saved plan
-  contradicts an answer, or when its key is in `replan`. Its uncommitted work is
+  contradicts an answer, or when its key is in `replan` (which is for one run: the
+  relay of a run given it says which keys, if any, the re-run passes). Its
+  uncommitted work is
   kept only while its worktree exists: a new container builds the lane again from
   that plan, with the answers. A lane that already pushed is not built again, so a
   correction to one of its assumptions is no answer: the person makes it on that
@@ -1251,25 +1487,36 @@ How an answer is routed, and how the re-run goes on:
   lane's question is answered by re-running `plan-to-merged-pr` with that lane's
   `resume_args`, or with its `resume_monitor` (monitor-only) once its PR is open,
   plus `answers` without the lane key (added to any those args already hold) and
-  without `resumeFromRunId`, as the lane's relay says.
+  without `resumeFromRunId`, as the lane's relay says. An assumption the person
+  corrects is an answer (`<its stage>.d<N>`) while the lane still builds, and a
+  review comment on the lane's PR once it is open.
 - `ship-chain`: each answer keeps its `lane` and goes to that lane's
   `plan-to-merged-pr` run only. Re-run with the same args: lanes whose PR merged are
   skipped, and the lane that asked ships again (monitor-only, with its answers, when
-  its PR is already open, as a `monitor` question needs).
+  its PR is already open, as a `monitor` question needs). A chain builds nothing,
+  so an assumption the person corrects is a review comment on that lane's PR, once
+  it is open, which the lane's monitor applies.
 - In the three lane workflows, an answer with no `lane` reaches every lane. That is
   for a decision the person made for the whole run, under an id no lane issues
   (`intake.d<N>`; `bug-fix-backlog` passes no `intake` id to a lane). The ids a
   lane's own run issues (`plan`, `impl`, `fix`, `polish`, `merge_check`, `monitor`;
   `.q<N>` or `.d<N>`) repeat across lanes, so one of those with no `lane` throws
   when the run has more than one lane (`answers: <ids> names no lane`): pass the
-  lane its question carried. With one lane it goes to that lane.
+  lane its question carried. With one lane it goes to that lane. An answer whose
+  `lane` is no lane of the run would reach nobody, so it throws too (`names no
+  lane of this run`, or `of this chain`); `proposal-build-chain` in derive mode,
+  where a lane may have merged since, logs it and returns it in `answers_unused`
+  instead.
 - `bootstrap-repo`: `bootstrap` → the ship run. Every answer reaches the bootstrap
   stage and the ship run, a design run's `intake.d<N>` passed on included. The one
   exception is the ship run's own ids (`plan`, `impl`, `fix`, `polish`,
   `merge_check` and `monitor`): they reach the ship run only, which routes them to
   its stages, so a resume replays the bootstrap stage. A `monitor` question is
   answered in monitor-only mode instead: `ship.resume_monitor`, with the new
-  answers added to the ones it carries, as its relay says.
+  answers added to the ones it carries, as its relay says. An assumption the
+  person corrects is `bootstrap.d<N>` only while the bootstrap stage will run
+  again (its question came before the commit); once the commit exists it is a
+  review comment on the bootstrap PR.
 - `refresh-proposal`: one scope. Every answer reaches every review (so a choice that
   follows it is not reported as a defect) and every revise, so a re-run starts again
   from the doc as it is now: the revisions already applied are kept, and
@@ -1279,7 +1526,9 @@ How an answer is routed, and how the re-run goes on:
 A question asked on a later run continues the numbering after the highest answered
 `q<N>` in its scope (`revise.q2` after an answered `revise.q1`, `m2.q2` after
 `m2.q1`; in `brief-to-proposals`, the Consistency phase's revisers and re-reviews
-share one numbering), so ids never repeat across re-runs.
+share one numbering), so ids never repeat across re-runs. The workflow issues the
+id: one a stage wrote on its own question (the `q1` its command printed) is
+dropped.
 
 `on_question: 'assume'` is for runs no one will answer, and the person's choice to
 make: the relays, and the working rules `/seed` writes into `CLAUDE.md`, tell the
@@ -1317,26 +1566,33 @@ repository, origin and the [state branch](#the-state-branch) say the work is.
 - `brief-to-proposals`: the same args plus every answer and `from` (the result's
   `resume_from`; inferred, it can start earlier: below), and after a milestone's
   question the `milestones` its relay names. With `branch`, a fresh
-  clone checks the branch out and continues from the docs on it. The answers saved
-  on the state branch are restored, so one the new session does not pass is not
-  lost. The brief and the context file are never committed. Copy the brief into the
-  checkout first, or the run stops with `failed_at_start` (`brief_not_found`). The
+  clone checks the branch out and continues from the docs on it. Point `dir` at
+  the new checkout, and `pipeline` at the pipeline's checkout there (leave
+  `pipeline` out once the checkout holds the seeded `.claude` files). The answers
+  saved on the state branch are restored, so one the new session does not pass is
+  not lost, and so is what the Intake took as given when the run starts past the
+  Intake. With `save_answers: false` nothing is restored: pass every answer given
+  so far. The brief and the context file are never committed. Copy the brief into
+  the checkout first, or the run stops with `failed_at_start` (`brief_not_found`). The
   context file is restored from the state branch when the person consented to keep
   it there; otherwise the person rewrites it or copies it back, or the run stops
   (`context_not_found`).
-- `proposal-build-chain`: the same args and `date`: lanes already on origin come
+- `proposal-build-chain`: the same args and `date`, plus the earlier result's
+  `assumptions`: lanes already on origin come
   back `already_built` and are not rebuilt, and the ship plan points at the plans
   their runs saved. A lane that stopped before it pushed continues from its saved
   plan (`plan_ref`); what it had not committed and pushed is in its checkout alone,
   and a new container builds it again from that plan.
 - `plan-to-merged-pr`, full or build-only: the same args, with `branch` naming the
-  branch when an earlier run created it: the run continues from that branch's
-  saved plan (`replan: true` plans again).
+  branch when an earlier run created it and `assumptions` set to that run's
+  result's when it lists any: the run continues from that branch's saved plan
+  (`replan: true` plans again, for one run).
 - `ship-chain`, and `plan-to-merged-pr` ship-only or monitor-only: each lane's plan
   comes from the state branch (`plan_ref`), and a missing checkout is recreated on
   its branch from origin, or cloned from `repo`. `ship-chain` skips lanes whose PR
   merged and picks up an open PR where it is; a handed-off PR's `resume_monitor`
-  carries `plan_ref`, `dir` and the answers the run was given.
+  carries `plan_ref`, `dir`, the answers the run was given and what it lists as
+  assumed.
 - `bootstrap-repo`: the same args: `/bootstrap` finds its commit and changes
   nothing, and an open PR is picked up, not opened twice. A run that stopped after
   its first write and before its commit (red gates, a question) left an unfinished
@@ -1354,7 +1610,13 @@ the work stands and the exact next action, it keeps what the person said: under
 `## Answers given`, one line per answer,
 `<id> (from <workflow or command>[, lane <key> | branch <name> | doc <path>]): <question> → <answer> (<date>)`,
 never dropped and never reworded, a decision made outside a workflow question
-included (under an `intake.d<N>` or `<scope>.d<N>` id, so it can be passed back);
+included. Such a decision gets the id the workflow it goes to accepts, N being the
+next number not yet in use, so it can be passed back: `intake.d<N>` for the whole
+product; `<scope>.d<N>` for one design stage (`architecture`, `m<N>`,
+`consistency`); `<its stage>.d<N>`, with the lane's key or the branch, for a
+lane whose re-run builds again; `bootstrap.d<N>`; `revise.d<N>`, with the doc's
+path. A correction to what a branch assumed when its re-run builds nothing gets no
+id: it is no answer, and the person leaves it as a review comment on the PR. Then,
 under `## Standing rules from the person`, each rule they set for the work as a
 whole, in their words, with its date; and under `## Assumptions to review`, the
 choices a workflow, a command or the session made that no person has reviewed. The
@@ -1365,7 +1627,13 @@ settle is never listed under the assumptions: it is settled, or written as a che
 to run under `## Next`. A lane a workflow stopped on a question is listed among the
 branches with its checkout and its `plan_ref`: its plan is on the state branch,
 and what it had not committed and pushed is in that checkout alone.
-`## Environment` says how the brief and the builder context restore.
+`## Environment` says how the brief and the builder context restore. When a
+design run's args carry `save_answers: false`, the person keeps that run's
+answers off the state branch, where `STATE.md` lives: `STATE.md` and the `runs/`
+files hold each of them as id, asker and date only, with
+`kept off the state branch by the person` in place of the question and the answer,
+and the args' `answers` as a list of ids. A question of that run that is still
+open is written in full.
 
 A session asked to "Continue from the pipeline handoff" reads `STATE.md`
 (`python3 .claude/scripts/pipeline-state.py get STATE.md`; the SessionStart hook
@@ -1373,10 +1641,25 @@ says when one exists and quotes its `## Next`) and the files it links. It follow
 the standing rules from its first action, re-checks what may have moved (PR states,
 checks, branches) and runs the checks `## Next` lists, and restores the brief and
 the builder context before a design run (the builder context from the state branch
-when it is there, else from the person: never from memory or from the handoff).
-It then shows the person `## Assumptions to review` together with the questions
-under `## Waiting on the person`, in one batch; an assumption they confirm or
-correct becomes an answer. It passes answers to the workflow `## Next` names as
+when it is there, else from the person: never from memory or from the handoff),
+adding each restored file to the checkout's local exclude file when its line is
+not there. It then shows the person `## Assumptions to review` together with the
+questions under `## Waiting on the person`, in one batch. What they say about an
+assumption goes where the assumption lives:
+
+- a decision a design doc tags `(assumed)` or leaves untagged, confirmed as it
+  stands: its heading tag becomes `(person, <today's date>, edit)`, changed by the
+  person or by the session when they say so; no re-run;
+- a decision, an assumption or a proposed value of a design doc that they change:
+  an answer to `refresh-proposal` on the one doc, or to a `brief-to-proposals`
+  re-run (`from: 'architecture'` with `max_milestones: 0` for the architecture or
+  the roadmap; `from: 'proposals'` with `milestones: [N]` for a proposal);
+- an assumption shown on a PR, or made by a run whose re-run builds nothing: a
+  review comment on the PR, never an answer;
+- any other assumption (an Intake's, a lane's whose re-run builds again): an
+  answer, passed with the next run of the workflow that made it.
+
+It passes answers to the workflow `## Next` names as
 `answers`, each with its id, question, answer and date; an entry whose question or
 date was not recorded is passed without that field, never with a guess. Which
 ones:
@@ -1390,13 +1673,19 @@ ones:
 - an answer whose id starts `plan`, `impl`, `fix`, `polish`, `merge_check` or
   `monitor` only to a run of the branch that asked it: as it is to that
   `plan-to-merged-pr` run, or to `bootstrap-repo` for its bootstrap branch, and
-  with the `lane` key its line records to `proposal-build-chain`, `ship-chain` or
-  `bug-fix-backlog`.
+  with the `lane` key its line records to `proposal-build-chain` or `ship-chain`.
+  The answer to a `bug-fix-backlog` lane's question never goes back through
+  `bug-fix-backlog`: it goes to `plan-to-merged-pr` with that lane's `resume_args`
+  (its PR is not open yet) or `resume_monitor` (its PR is open), without the lane
+  key.
 
 An answer never goes to another lane, branch, doc or workflow than the one its line
-names. Only then does the session do `## Next`. It runs `/handoff` again before it
-ends. A checkout without the pipeline's files (a fresh clone of `main` before the
-design branch has landed) can read the handoff with plain git:
+names. An entry that reads `kept off the state branch by the person` is never
+passed from the handoff: the session asks the person for the call `/start-product`
+printed and the answers they gave since. Only then does the session do `## Next`.
+It runs `/handoff` again before it ends. A checkout without the pipeline's files
+(a fresh clone of `main` before the design branch has landed) can read the
+handoff with plain git:
 `git fetch origin pipeline/state`, then `git show FETCH_HEAD:STATE.md`.
 
 ### Re-running a design run
@@ -1419,7 +1708,7 @@ to draft. Pass `from` set to the result's `resume_from`, as its relay says.
 |---|---|
 | `intake` | the Intake, then every later stage; with existing docs (and no `force`) the architecture review resumes on them instead of `/roadmap`, after the answers they do not yet reflect are applied, and only the milestones not yet written (or exactly `milestones`) are proposed |
 | `architecture` | no Intake; with the docs, the Intake's and the architecture's answers applied to them, then their review loop; without them (or with `force`), `/roadmap` on the panel synthesis saved on the state branch (`design/panel-synthesis.md`, when its `Source:` names this brief), else on a new panel; then the later stages |
-| `proposals` | the milestones whose proposal does not exist yet (`proposal_exists`; an author that asked wrote none), or exactly `milestones`, at most `max_milestones` (0: none), keeping every other proposal; then Consistency over all docs, then Lint. Answers select no milestone: `/propose` on a written proposal rewrites it as a draft, so a reviser's answer reaches it only through `milestones`. No answer is applied to the architecture or the roadmap from here on |
+| `proposals` | the milestones whose proposal does not exist yet (`proposal_exists`; an author that asked wrote none), at most `max_milestones` of them (0: none), or exactly `milestones`, which `max_milestones` never cuts, keeping every other proposal; then Consistency over all docs, then Lint. Answers select no milestone: `/propose` on a written proposal rewrites it as a draft, so a reviser's answer reaches it only through `milestones`. No answer is applied to the architecture or the roadmap from here on |
 | `consistency` | Consistency over all docs, keeping every proposal, then Lint |
 | `lint` | the Lint only |
 
@@ -1431,14 +1720,20 @@ counted as unreviewed in the status. A `from` past `architecture` needs both doc
 stop at the Intake, the judge or `/roadmap`), since without it the re-run would
 resume the review of the docs `force` was to replace; leave it out once this run's
 `/roadmap` has written them, or it would write them again. The relay and the next
-steps of a run given `force` say which holds. `/roadmap --force` carries over every
+steps of a run given `force` say which holds: a finished one says to leave `force`
+out, in a next step of its own, with or without `branch`. `/roadmap --force`
+carries over every
 D-record tagged `(person, …)` and every recorded `Outcome:` from the docs it
 overwrites.
 
 `max_milestones: 0` writes and reviews the architecture and the roadmap, lints
 them and proposes nothing: a stop to confirm the two docs (the result's
 `assumptions`, `lint.unconfirmed` and `lint.proposed`) before any proposal builds
-on them. A re-run with `from: 'proposals'` then writes the proposals. A later
+on them. The result lists the milestones left without a proposal (`not_proposed`),
+and a next step names the re-run that writes them: the same args with
+`from: 'proposals'` and `milestones: [N]`, which `max_milestones` does not cut. A
+correction to the two docs in between is a re-run with `from: 'architecture'`
+that keeps `max_milestones: 0`. A later
 milestone's proposal is best written the same way (`from: 'proposals'`,
 `milestones: [N]`): the workflow restores the person's saved answers, which
 `/propose --milestone=N` run by hand does not get. `/bootstrap`'s next steps name
@@ -1461,8 +1756,10 @@ happen on its own, re-run it on a schedule; no extra infrastructure is needed:
 `resume_monitor` carries the plan as `plan_ref` and the checkout as `dir`, so the
 re-run works in a fresh session or container: it restores the plan from the state
 branch and recreates a missing checkout from origin. It also carries the answers
-the run was given, so no comment, conflict or CI fix reverses what the person
-settled, and nothing is asked twice. Each re-run is a full monitor
+the run was given and what it lists as assumed, so no comment, conflict or CI fix
+reverses what the person settled, and nothing is asked twice. A review comment
+from the person that corrects an assumed line is applied by the comment step.
+Each re-run is a full monitor
 of up to `max_monitor_rounds`; pass a small one (2 or 3) so a quiet PR costs one or
 two observe rounds. Never run two monitors on one PR
 at once: both would push to its branch. A re-run that sees the PR `MERGED` with
@@ -1569,8 +1866,9 @@ The pipeline keeps what must outlive a container on a branch of origin,
 never force-pushed, written with git plumbing and a temporary index, so any
 worktree can save to it without a checkout and the working tree never changes. The
 first save creates it as a root commit. It is as visible as the repository: it
-never holds the brief, secrets or `.env` values, and it holds the builder context
-only when the person consented to keep it there
+never holds the brief, secrets or `.env` values, it holds the builder context
+only when the person consented to keep it there, and it holds a design run's
+answers unless the person chose to keep them off it (`save_answers: false`)
 (`pipeline-state.py` refuses a `.env` file, any file over 5 MB, and `main`, `master`
 or origin's default branch as the state branch). A branch rule that blocks pushing
 new branches blocks it too.
@@ -1581,9 +1879,9 @@ new branches blocks it too.
 | `plans/<branch-slug>.md` | `plan-to-merged-pr`'s planner, and again its merge check | a lane's plan (`plan_ref`); from the merge check on, ending with `## Assumptions to review` |
 | `reviews/<branch-slug>.json` | `/review-changes`, `/polish` | the review-findings ledger |
 | `reviews/proposal-<doc-slug>.json` | `/review-proposal`, `/propose --revise` | design-review ledgers |
-| `design/panel-synthesis.md` | `brief-to-proposals` | the judged architecture synthesis |
-| `design/answers.json` | `brief-to-proposals`, brief mode | every answer the run holds, `{ source, answers: [{ id, stage, question, answer, date }] }`; a later brief-mode run on the same brief restores the ones it is not passed, and `refresh-proposal` reads it |
-| `design/answers-concern.json` | `brief-to-proposals`, concern mode | the same, for a concern; no run restores it |
+| `design/panel-synthesis.md` | `brief-to-proposals` | the judged architecture synthesis; when the judge asked, it ends with `## Open questions for the person` (each question, its options and the option the judge recommended) |
+| `design/answers.json` | `brief-to-proposals`, brief mode (not with `save_answers: false`) | every answer the run holds and what its Intake took as given, `{ source, answers: [{ id, stage, question, answer, date }], assumptions: [string] }`; an option the run assumed is never among the answers. A later brief-mode run on the same brief restores the answers it is not passed and, when it starts past the Intake, the assumptions; `refresh-proposal`, `/bootstrap` and a `/start-product` re-run read it. A state branch that cannot be read is never written |
+| `design/answers-concern.json` | `brief-to-proposals`, concern mode (not with `save_answers: false`) | a concern's answers, `{ source, answers }`; no run restores it |
 | `context/builder-context.md` | `/start-product`, `/handoff` | the builder framing (`docs/builder-context.md`), only with the person's consent; `brief-to-proposals` and `refresh-proposal` restore a missing `context_file` from it, and list the restored file in the checkout's local exclude file |
 | `runs/<YYYYMMDDTHHMMSSZ>-<workflow>.json` | `/handoff` | a workflow's args too large for `STATE.md`, linked from it |
 
