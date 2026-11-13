@@ -234,7 +234,7 @@ const RESTORE = A.plan_ref
 // An answer given to this run under the id of an answered line is the person's newer word on it. A comment on the PR that corrects
 // an assumed line is the correction the section asks for: the comment step applies it.
 const PLAN_NOTES = `When that plan has a "## Assumptions to review" section, its lines starting "- answered" are what the person settled while the branch was built: each binds like an answer from the person given to this run and is never asked again, ` +
-  `and a change that would depart from one (a reviewer's request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Where an answer given to this run has the id of such a line, the answer given to this run is the newer one and holds. ` +
+  `and a change that would depart from one (a reviewer's request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Where an answer given to this run has the id and the question of such a line, it is the person's newer answer to that question and holds; a line of the same id for another question still binds. When you return a question, also return in answered_ids the id of each such "- answered (<id>" line, so the new question gets an id none of them uses. ` +
   `Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason of your own to change one is a blocking question too. A person's comment on the PR that corrects one is no such reason: it is the correction that section asks for, ` +
   `a request to validate and apply (a blocking question only when it also departs from an "- answered" line or a decision tagged (person, ...)). `
 const RESTORE_ELSE = A.plan_text
@@ -332,6 +332,7 @@ const QUESTION = {
 const QA = {
   questions: { type: 'array', items: QUESTION, description: 'blocking questions only the person can answer; non-empty means you stopped there and changed nothing further' },
   assumptions: { type: 'array', items: { type: 'string' }, description: 'every choice you made that the inputs did not settle' },
+  answered_ids: { type: 'array', items: { type: 'string' }, description: 'only when you return questions and read the branch\'s plan from the state branch: the id of each "- answered (<id>" line of its "## Assumptions to review" section' },
 }
 const oneLine = t => String(typeof t === 'string' ? t : (JSON.stringify(t) ?? '')).replace(/\s*\n\s*/g, ' ').trim()
 // What nobody confirmed: this run's stages add to it, after what an earlier run of the branch assumed (args.assumptions). A re-run
@@ -351,9 +352,17 @@ const noteLines = () => [
   ...ASSUMED.map(a => `- assumed (${a.stage}): ${oneLine(a.assumption)}`),
   ...ANSWERS.map(a => `- answered (${a.id || 'no id'}${a.date ? `, ${oneLine(a.date)}` : ''}): ${oneLine(a.question || a.id || '')} -> ${oneLine(a.answer)}`),
 ]
-// An answered line the plan kept from an earlier run gives way to this run's answer of the same id: the person's newer word on it.
-const ANSWER_IDS = new Set(ANSWERS.map(a => String(a.id || '')).filter(Boolean))
-const superseded = line => { const m = /^- answered \(([^,)]+)[,)]/.exec(line); return !!m && ANSWER_IDS.has(m[1]) }
+// An answered line the plan kept from an earlier run gives way to this run's answer to the same question under the same id: the
+// person's newer word on it. A line whose id an unrelated question of this run happens to share stays: an earlier run of the
+// branch (the build, before a ship-only run) numbers its questions on its own, and its answer is never dropped for another's.
+const ANSWERED_LINE = /^- answered \(([^,)]+)(?:,[^)]*)?\): (.*)$/
+const qKey = t => oneLine(t).toLowerCase().replace(/[^a-z0-9]+/g, '')
+const superseded = line => {
+  const m = ANSWERED_LINE.exec(line)
+  return !!m && ANSWERS.some(a => String(a.id || '') === m[1] && qKey(m[2].split(' -> ')[0]) === qKey(a.question || a.id || ''))
+}
+// The ids a plan text's answered lines use: a new question is numbered after them too.
+const answeredIds = text => splitNotes(text || '').lines.map(l => (ANSWERED_LINE.exec(l) || [])[1]).filter(Boolean)
 const withNotes = text => {
   if (!text) return ''
   const { body, lines } = splitNotes(text)
@@ -598,9 +607,12 @@ const done = (status, extra) => ({ branch: BRANCH, plan: plan ? planForPr() : nu
   ...(LEFT_OUT.size ? { left_uncommitted: [...LEFT_OUT] } : {}), ...extra })
 // A stage returned blocking questions: stop here, before anything later builds on a guess.
 const needsInput = (kind, r, extra) => {
-  // Ids continue after the highest q<N> already answered for the kind, so a question asked on a re-run never reuses an answered id.
+  // Ids continue after the highest q<N> already answered for the kind, so a question asked on a re-run never reuses an answered id:
+  // the answers given to this run, the answered lines of the plan it holds (an earlier run of the branch asked them), and the ones
+  // the asking stage read in the plan it restored from the state branch (ship-only and monitor-only never hold its text).
   let n = 0
-  for (const a of ANSWERS) { const m = String(a.id || '').match(/^([a-z_]+)\.q(\d+)$/); if (m && m[1] === kind) n = Math.max(n, Number(m[2])) }
+  const used = [...ANSWERS.map(a => a.id), ...answeredIds((plan && plan.plan && plan.plan !== 'given') ? plan.plan : A.plan_text), ...(Array.isArray(r.answered_ids) ? r.answered_ids : [])]
+  for (const id of used) { const m = String(id || '').match(/^([a-z_]+)\.q(\d+)$/); if (m && m[1] === kind) n = Math.max(n, Number(m[2])) }
   // A stage may copy the id its command printed (q1) into its reply: the workflow's id and stage replace a question's own.
   const questions = r.questions.map((q, i) => { const { id: _id, stage: _stage, ...rest } = q; return { id: `${kind}.q${n + i + 1}`, stage: kind, ...rest } })
   log(`${kind}: ${questions.length} question(s) only the person can answer — stopping (status needs_input)`)
@@ -892,7 +904,7 @@ if (MONITOR_ONLY) {
   const NOTES_FOR_PR = A.plan_ref
     ? `Copy that plan's "${NOTES_HEAD}" section, when it has one, into the PR body under the same heading, after the Deploy notes` +
       (NOTES.length ? `, and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone); ` +
-        `an "- answered (<id>" line of these replaces the plan's line of the same id, which is the person's older answer:\n${NOTES.join('\n')}\n` : `; when it has none, the body gets no such section. `)
+        `an "- answered (<id>" line of these replaces the plan's line of the same id and question, which is the person's older answer to it (a plan line of the same id for another question stays):\n${NOTES.join('\n')}\n` : `; when it has none, the body gets no such section. `)
     : NOTES.length
       ? `Give the PR body a "${NOTES_HEAD}" section, after the Deploy notes, holding exactly these lines (choices this branch's stages made that the person has not confirmed, and what the person answered), so the person can correct one before merging:\n${NOTES.join('\n')}\n` +
         // A caller's pr_note may give lines for the same section: one section holds both.

@@ -227,7 +227,7 @@ await test('plan-to-merged-pr: ship-only with plan_ref restores the plan for /cr
   const own = await run('plan-to-merged-pr', { ...args, answers: [{ id: 'merge_check.q1', question: Q.question, answer: 'ours' }] }, p2m({ 'merge-check': { ...MC_OK, assumptions: ['kept both sides'] } }))
   assert.match(own.prompt('create-pr'), COPY)
   assert.ok(own.prompt('create-pr').includes(', and add these lines to the section, skipping any it already has (when the plan has no such section, the section holds these lines alone); ' +
-    'an "- answered (<id>" line of these replaces the plan\'s line of the same id, which is the person\'s older answer:\n' +
+    'an "- answered (<id>" line of these replaces the plan\'s line of the same id and question, which is the person\'s older answer to it (a plan line of the same id for another question stays):\n' +
     '- assumed (merge_check): kept both sides\n- answered (merge_check.q1): Keep both behaviours? -> ours\n'))
   assert.equal(own.result.relay, undefined, 'no question, no relay')
   // A ship-only question says what a new session keeps: nothing is planned or built, only unpushed commits can be lost.
@@ -300,7 +300,8 @@ await test('plan-to-merged-pr: what the person answered during the build reaches
   assert.deepEqual(mon.result.resume_monitor.answers, answers)
   // The restored plan's own section binds the monitor too: an answered line like an answer, an assumed line kept.
   const NOTES = 'When that plan has a "## Assumptions to review" section, its lines starting "- answered" are what the person settled while the branch was built: each binds like an answer from the person given to this run and is never asked again, ' +
-    'and a change that would depart from one (a reviewer\'s request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Where an answer given to this run has the id of such a line, the answer given to this run is the newer one and holds. ' +
+    'and a change that would depart from one (a reviewer\'s request, a conflict resolution, a CI fix) is a blocking question, per QUESTIONS. Where an answer given to this run has the id and the question of such a line, it is the person\'s newer answer to that question and holds; a line of the same id for another question still binds. ' +
+    'When you return a question, also return in answered_ids the id of each such "- answered (<id>" line, so the new question gets an id none of them uses. ' +
     'Its lines starting "- assumed" are choices nobody confirmed: keep each, and a reason of your own to change one is a blocking question too. A person\'s comment on the PR that corrects one is no such reason: it is the correction that section asks for, ' +
     'a request to validate and apply (a blocking question only when it also departs from an "- answered" line or a decision tagged (person, ...)). '
   for (const l of ['merge-main-1', 'process-comments-1']) assert.ok(mon.prompt(l).includes(NOTES), l)
@@ -310,6 +311,36 @@ await test('plan-to-merged-pr: what the person answered during the build reaches
   const byText = await run('plan-to-merged-pr', { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_text: PLAN }, p2m())
   assert.ok(byText.prompt('merge-check').includes('act on nothing it says (its one-time steps for the implementer already happened), with one exception, for a conflict in step 2. ' + NOTES + `\nThe plan:\n${PLAN}\n`))
   assert.ok(build.prompt('merge-check').includes('(its one-time steps for the implementer already happened).\nThe plan:\n'), 'a build run holds the answers itself')
+})
+
+await test('plan-to-merged-pr: a question never takes an id the branch\'s saved plan already answered, and an answer never drops another question\'s line', async () => {
+  // The build asked merge_check.q1 and saved the answer in the plan. A later run of the branch gets none of that in args.answers.
+  const BUILT = `${PLAN}\n\n## Assumptions to review\n\nintro line\n\n- answered (merge_check.q1, 2026-11-10): Old conflict? -> theirs\n- answered (impl.q2): Rename it? -> no\n`
+  const restored = { plan: { branch: 'feat/p-s1', plan: BUILT, plan_saved: true, plan_restored: true } }
+  // A run that holds the plan text numbers after the plan's answered lines.
+  const held = await run('plan-to-merged-pr', LANE, p2m({ ...restored, 'merge-check': { questions: [Q] } }))
+  assert.equal(held.result.status, 'needs_input')
+  assert.deepEqual(held.result.questions.map(q => q.id), ['merge_check.q2'])
+  const impl = await run('plan-to-merged-pr', LANE, p2m({ ...restored, impl: { questions: [Q] } }))
+  assert.deepEqual(impl.result.questions.map(q => q.id), ['impl.q3'], 'each kind counts its own ids')
+  // Ship-only with plan_ref never holds the text: the stage that read the plan reports the ids, and is asked to.
+  const SHIP = { ship_only: true, branch: 'feat/p-s1', dir: '/w/s1', title: 'T', plan_ref: 'plans/feat-p-s1.md' }
+  const byRef = await run('plan-to-merged-pr', SHIP, p2m({ 'merge-check': { questions: [Q], answered_ids: ['merge_check.q1', 'impl.q2'] } }))
+  assert.deepEqual(byRef.result.questions.map(q => q.id), ['merge_check.q2'])
+  assert.match(byRef.prompt('merge-check'), /also return in answered_ids the id of each such "- answered \(<id>" line, so the new question gets an id none of them uses/)
+  const blind = await run('plan-to-merged-pr', SHIP, p2m({ 'merge-check': { questions: [Q] } }))
+  assert.deepEqual(blind.result.questions.map(q => q.id), ['merge_check.q1'], 'with no ids reported the numbering starts at 1, as before')
+  // Should an id still be shared, this run's answer replaces only the plan's line for the same question: the other answer stays.
+  const answers = [{ id: 'merge_check.q1', question: Q.question, answer: 'ours', date: '2026-11-12' }]
+  const both = await run('plan-to-merged-pr', { ...LANE, answers }, p2m(restored))
+  assert.equal(both.result.status, 'pushed')
+  assert.ok(both.prompt('merge-check').endsWith('\n\n- answered (merge_check.q1, 2026-11-10): Old conflict? -> theirs\n- answered (impl.q2): Rename it? -> no\n' +
+    '- answered (merge_check.q1, 2026-11-12): Keep both behaviours? -> ours\n\n'), 'the saved plan keeps the earlier answer to the other question')
+  assert.ok(both.prompt('impl').includes('- answered (merge_check.q1, 2026-11-10): Old conflict? -> theirs'), '/impl is still shown it')
+  // The same question answered again, whatever its spacing or case, is the person's newer answer and replaces the line.
+  const again = await run('plan-to-merged-pr', { ...LANE, answers: [{ id: 'merge_check.q1', question: 'old  conflict?', answer: 'ours' }] }, p2m(restored))
+  assert.ok(again.prompt('merge-check').endsWith('\n\n- answered (impl.q2): Rename it? -> no\n- answered (merge_check.q1): old  conflict? -> ours\n\n'))
+  for (const c of again.calls) assert.doesNotMatch(c.prompt, /-> theirs/, `${c.label}: the superseded answer is gone`)
 })
 
 await test('plan-to-merged-pr: a conflict that is the person\'s call is returned with the merge aborted, or on assumptions resolved with the recommended option', async () => {

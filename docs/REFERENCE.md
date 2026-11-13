@@ -1567,7 +1567,11 @@ A question asked on a later run continues the numbering after the highest answer
 `m2.q1`; in `brief-to-proposals`, the Consistency phase's revisers and re-reviews
 share one numbering), so ids never repeat across re-runs. The workflow issues the
 id: one a stage wrote on its own question (the `q1` its command printed) is
-dropped.
+dropped. `plan-to-merged-pr` also counts the ids of the `- answered` lines in the
+branch's saved plan, which a ship-only run reads from the state branch, so a
+question asked while shipping never takes an id the build already used. An answer
+replaces a line of the saved plan only when it has that line's id and question;
+another question's answer under the same id stays.
 
 `on_question: 'assume'` is for runs no one will answer, and the person's choice to
 make: the relays, and the working rules `/seed` writes into `CLAUDE.md`, tell the
