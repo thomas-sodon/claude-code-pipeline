@@ -1,6 +1,6 @@
 # Pipeline handoff: claude-code-pipeline
 
-<!-- Written by /handoff at 2026-11-13T14:20:46Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
+<!-- Written by /handoff at 2026-11-13T15:04:48Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
 
 ## Goal
 
@@ -8,12 +8,12 @@ This is work on the pipeline itself, not a product run. The person asked for a c
 
 ## Where things stand
 
-- Roadmap: none (the pipeline's own repository has no design docs). Stage: the change is complete and pushed; it waits for the person's review.
+- Roadmap: none (the pipeline's own repository has no design docs). Stage: the change is complete and pushed, and pull request #11 is open for the person's review.
 - Done: the review (eight reviewers plus a pass over a real product run in a private repository, each finding checked by a skeptic); the implementation in the commands, the workflows, the lint and the tests; the docs; a review of the whole diff by six fresh reviewers (62 findings, fixed); a regression check of those fixes (17 findings, fixed).
-- Branch: `claude/gallant-pascal-w9y8ez`, pushed at `3e76a3f`, 14 commits ahead of `origin/main` (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`). No pull request: the person has not asked for one.
-- CI: every step of `.github/workflows/ci.yml` passes locally at `3e76a3f`, shellcheck and the gate-slot smoke test included. GitHub has not run it, since no PR is open.
+- Branch: `claude/gallant-pascal-w9y8ez`, pushed at `3e76a3f`, 14 commits ahead of `origin/main` (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`). Pull request #11 (https://github.com/thomas-sodon/claude-code-pipeline/pull/11), opened on the person's word.
+- CI: every step of `.github/workflows/ci.yml` passes locally at `3e76a3f`, shellcheck and the gate-slot smoke test included. GitHub runs it on PR #11: read the checks there.
 - Also unmerged on origin and not part of this work: `feat/idea-to-inception`, and the branch of PR #10.
-- Open PRs: #10 "ci: configure Mergify merge queue" (not this work).
+- Open PRs: #11 "Ask the person their choices, keep their answers, and show what was assumed" (`claude/gallant-pascal-w9y8ez`, this work; checks and review: see the PR); #10 "ci: configure Mergify merge queue" (not this work).
 - Uncommitted work: none.
 
 ## In flight
@@ -30,6 +30,7 @@ none
 - `session.d2`: may a real product run be used as evidence? → the person offered one of their private product repositories as "an example of what the pipeline is currently producing"; its name is left out here because this branch is public (2026-11-12).
 - `session.d3`: may the handoff be pushed to the state branch? → "Push what you need to pipeline/state" (2026-11-12).
 - `session.d4`: hand off to a new session, or finish in this one? → "Continue and finish" (2026-11-13).
+- `session.d5`: open a pull request for the branch? → "Open the pr" (2026-11-13).
 
 These ids are this session's own: no pipeline workflow takes them as `answers`.
 
@@ -54,12 +55,12 @@ These ids are this session's own: no pipeline workflow takes them as `answers`.
 
 ## Next
 
-The change is complete. Nothing is to be run until the person has looked at it.
+The change is complete and pull request #11 is open. A person reviews and merges it; never merge it.
 
 Checks to run first:
-- `git fetch origin claude/gallant-pascal-w9y8ez && git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`: the branch ends at `3e76a3f`.
+- Read PR #11's checks, reviews and unanswered comments through the GitHub access in use: they say what to do next.
 
-Then: show the person "Assumptions to review" above and ask them to confirm or correct each. If they ask for a pull request, open one from `claude/gallant-pascal-w9y8ez` to `main` with /create-pr (its body from the commit messages) and watch its CI. A correction they give is a change on this branch: make it, run every step of `.github/workflows/ci.yml`, commit and push.
+Then: fix a failing check that the change caused (reproduce it locally first, show the same check passing, push to `claude/gallant-pascal-w9y8ez`), and answer or apply review comments. Show the person "Assumptions to review" above and ask them to confirm or correct each; a correction is a change on this branch: make it, run every step of `.github/workflows/ci.yml`, commit and push.
 
 The files under `runs/20261112T03*` on this branch are the instructions and lists of the earlier rounds, kept as a record: every item in them is done or recorded as open in `docs/PROCESS.md`.
 
