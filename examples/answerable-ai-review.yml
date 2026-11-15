@@ -44,10 +44,10 @@ jobs:
       group: answerable-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+      - uses: thomas-sodon/answerable-ai-review@d50bfe62f68857496fc137e7f6dd6e24daf6dbbe # v0.1.1
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -70,6 +70,6 @@ jobs:
       group: answerable-replies-${{ github.event.pull_request.number }}-push
       cancel-in-progress: true
     steps:
-      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+      - uses: thomas-sodon/answerable-ai-review@d50bfe62f68857496fc137e7f6dd6e24daf6dbbe # v0.1.1
         with:
           mode: replies
