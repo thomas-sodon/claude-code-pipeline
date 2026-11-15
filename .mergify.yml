@@ -1,0 +1,10 @@
+queue_rules:
+  - name: default
+    queue_conditions:
+      - base = main
+      - check-success = check
+    merge_conditions:
+      - check-success = check
+    merge_method: squash
+merge_queue:
+  max_parallel_checks: 1
