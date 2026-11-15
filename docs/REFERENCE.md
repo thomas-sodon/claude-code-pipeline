@@ -185,7 +185,8 @@ session has it, and connector use inside a workflow run is not verified yet
 
 **AI review.** [`examples/answerable-ai-review.yml`](../examples/answerable-ai-review.yml)
 is a GitHub Action that reviews each PR push with Claude, posts findings as review
-comments and resolves its threads whose defect is fixed;
+comments and resolves its threads whose defect is fixed (which is why its job has
+`contents: write`; it never pushes);
 [`answerable-ai-review-replies.yml`](../examples/answerable-ai-review-replies.yml)
 re-runs the reply gate when a finding is answered. Copy both to `.github/workflows/` and add the secret `CLAUDE_CODE_OAUTH_TOKEN`
 by name (`gh secret set CLAUDE_CODE_OAUTH_TOKEN`; never write the value down). Its
@@ -194,10 +195,13 @@ checks:
 | Check | Does | Use |
 |---|---|---|
 | `Review` | reviews the diff and posts findings; skipped on fork PRs (no secrets) | pass `ai_review_check: 'Review'` |
-| `Reply coverage` | fails while a finding has no reply; re-runs after each review and on each reply or review (from `answerable-ai-review-replies.yml`) | require it on `main` to block merge on unanswered findings |
+| `Reply coverage` | fails while a finding has no reply; re-runs after each review, on each reply or review, and when a maintainer posts, edits or deletes an `<!-- answerable:overflow-ack -->` comment (from `answerable-ai-review-replies.yml`) | require it on `main` to block merge on unanswered findings |
 
 `/process-comments`, which the monitor runs, fixes or answers each finding, so
-`Reply coverage` turns green without another push. `/bootstrap`'s next steps offer
+`Reply coverage` turns green without another push. It answers a finding listed in a
+review body instead of as a thread (an overflow finding) in that reviewer's own
+acknowledgement comment, `<!-- answerable:overflow-ack -->` for this one, so the gate
+counts it; another reviewer's go in `<!-- pipeline:overflow-ack -->`. `/bootstrap`'s next steps offer
 it; `/seed` offers it on an existing repository with no AI review check.
 
 ## Gate wrappers

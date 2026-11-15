@@ -19,8 +19,10 @@ jobs:
     name: Review
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'metronome-light' || 'ubuntu-latest' }}
+    # contents: write only so GitHub lets it resolve fixed threads; it never
+    # pushes, and persist-credentials: false keeps the token out of git config.
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
     # One review per PR at a time; a newer push cancels an older review, so
@@ -29,10 +31,11 @@ jobs:
       group: answerable-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+          persist-credentials: false
+      - uses: thomas-sodon/answerable-ai-review@a8ddd89a5292db98e1a92f2e02629db00d0d1147 # v0.1.2
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -55,6 +58,6 @@ jobs:
       group: answerable-replies-${{ github.event.pull_request.number }}-push
       cancel-in-progress: true
     steps:
-      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+      - uses: thomas-sodon/answerable-ai-review@a8ddd89a5292db98e1a92f2e02629db00d0d1147 # v0.1.2
         with:
           mode: replies

@@ -14,6 +14,9 @@
 #   so the monitor waits for this check (proposal-build-chain copies it into each lane's ship plan).
 # - To make unanswered findings block merge, require the status check `Reply coverage` on main
 #   (Settings -> Rules, or branch protection), next to your CI check. It is offered after its first run.
+# - The review job asks for contents: write because GitHub refuses to resolve a review thread without it;
+#   it never pushes, and its checkout sets persist-credentials: false. With contents: read the review
+#   still runs, but fixed threads stay open and the run warns.
 # - Fork PRs get no secrets, so `Review` is skipped on them.
 name: Answerable AI Review
 
@@ -34,8 +37,10 @@ jobs:
     name: Review
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # contents: write only so GitHub lets it resolve fixed threads; it never
+    # pushes, and persist-credentials: false keeps the token out of git config.
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
     # One review per PR at a time; a newer push cancels an older review, so
@@ -44,10 +49,11 @@ jobs:
       group: answerable-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+          persist-credentials: false
+      - uses: thomas-sodon/answerable-ai-review@a8ddd89a5292db98e1a92f2e02629db00d0d1147 # v0.1.2
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -70,6 +76,6 @@ jobs:
       group: answerable-replies-${{ github.event.pull_request.number }}-push
       cancel-in-progress: true
     steps:
-      - uses: thomas-sodon/answerable-ai-review@0f36be76c555b50bee326bae44a2e513fe4be8e5 # v0
+      - uses: thomas-sodon/answerable-ai-review@a8ddd89a5292db98e1a92f2e02629db00d0d1147 # v0.1.2
         with:
           mode: replies
