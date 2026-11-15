@@ -7,6 +7,15 @@ on:
     types: [created, edited, deleted]
   pull_request_review:
     types: [submitted, edited, dismissed]
+  # An overflow finding (one listed in the review body, not as a thread) is
+  # answered by a PR comment carrying the <!-- answerable:overflow-ack -->
+  # marker, which raises only issue_comment. That event runs on the default
+  # branch, so a check it reported would not land on the PR; the overflow-ack
+  # job re-runs the PR's latest `Reply coverage` check instead. Edits and
+  # deletions count too, since they can take an answer back. Resolving a thread
+  # raises no event at all: push, or re-run the check by hand.
+  issue_comment:
+    types: [created, edited, deleted]
 
 permissions:
   contents: read
@@ -16,6 +25,7 @@ jobs:
   # Same check name as the push-triggered gate, so it updates the same check.
   replies:
     name: Reply coverage
+    if: github.event_name != 'issue_comment'
     runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'metronome-light' || 'ubuntu-latest' }}
     # A review with comments fires pull_request_review and
     # pull_request_review_comment at once, and each reports its own check.
@@ -24,6 +34,99 @@ jobs:
     concurrency:
       group: answerable-replies-${{ github.event.pull_request.number }}-${{ github.event_name }}
     steps:
-      - uses: thomas-sodon/answerable-ai-review@d50bfe62f68857496fc137e7f6dd6e24daf6dbbe # v0.1.1
+      - uses: thomas-sodon/answerable-ai-review@a8ddd89a5292db98e1a92f2e02629db00d0d1147 # v0.1.2
         with:
           mode: replies
+
+  # Re-run the PR's latest `Reply coverage` check when an overflow-ack comment
+  # is posted, edited or deleted, so the gate re-reads the PR's current acks.
+  # An edit that removes the marker counts, through the comment's previous body.
+  # Only comments from people with write access start it, because it holds an
+  # actions: write token.
+  overflow-ack:
+    name: Overflow ack
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      (contains(github.event.comment.body, '<!-- answerable:overflow-ack -->') ||
+       contains(github.event.changes.body.from, '<!-- answerable:overflow-ack -->')) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: metronome-light
+    permissions:
+      actions: write
+      checks: read
+      contents: read
+      pull-requests: read
+    # Job-level, so a run whose job is skipped (an ordinary comment) never
+    # cancels one in progress. A newer ack supersedes an older one.
+    concurrency:
+      group: answerable-overflow-ack-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    # The wait below is bounded at 40 minutes, inside this limit, so a check
+    # that is still going ends in an explicit error rather than a killed job.
+    timeout-minutes: 45
+    steps:
+      - name: Re-run the Reply coverage check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # Command substitution, not < <(...), so set -e stops on a failed call.
+          info="$(gh pr view "$PR" --json headRefOid,isCrossRepository \
+            --jq '"\(.headRefOid) \(.isCrossRepository)"')"
+          read -r sha cross <<< "$info"
+          if [ -z "$sha" ] || { [ "$cross" != "true" ] && [ "$cross" != "false" ]; }; then
+            echo "::error::Could not read the head commit of PR #$PR."
+            exit 1
+          fi
+          # issue_comment carries no head repo, so fork PRs are filtered here:
+          # their review never runs, and re-running a fork's job would run the
+          # fork's code on a maintainer's comment.
+          if [ "$cross" = "true" ]; then
+            echo "PR #$PR is from a fork; nothing to re-run."
+            exit 0
+          fi
+          # The newest `Reply coverage` check from either workflow is the one
+          # branch protection reads. A check that is still queued or running may
+          # have read the PR before this comment, and a job can be re-run only
+          # once its whole run has finished, so wait for both.
+          deadline=$(( $(date +%s) + 40 * 60 ))
+          while :; do
+            check="$(gh api "repos/$GH_REPO/commits/$sha/check-runs?check_name=Reply%20coverage&filter=all&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | max_by(.id) // empty | "\(.id) \(.status) \(.conclusion)"')"
+            if [ -z "$check" ]; then
+              echo "No Reply coverage check on $sha; nothing to re-run."
+              exit 0
+            fi
+            read -r job status conclusion <<< "$check"
+            if [ "$status" = "completed" ]; then
+              run="$(gh api "repos/$GH_REPO/actions/jobs/$job" --jq .run_id)"
+              run_status="$(gh api "repos/$GH_REPO/actions/runs/$run" --jq .status)"
+              if [ "$run_status" = "completed" ]; then break; fi
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::The Reply coverage check on $sha is still running; re-run it by hand once it finishes."
+              exit 1
+            fi
+            sleep 15
+          done
+          # Re-run whatever the check concluded: a passing gate must turn red
+          # when an ack is edited or deleted. A skipped check (its review was
+          # cancelled) would only skip again.
+          if [ "$conclusion" = "skipped" ]; then
+            echo "The Reply coverage check on $sha was skipped; nothing to re-run."
+            exit 0
+          fi
+          # A push during the wait makes $sha stale. Re-running its push-gate
+          # job would rejoin that workflow's concurrency group and cancel the
+          # new head's gate, which reads the acks itself.
+          head="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
+          if [ "$head" != "$sha" ]; then
+            echo "PR #$PR moved from $sha to $head; the new head's gate reads the acks."
+            exit 0
+          fi
+          # Re-runs this job alone; a review job it needs keeps its result.
+          gh api -X POST "repos/$GH_REPO/actions/jobs/$job/rerun" --silent
+          echo "Re-ran the Reply coverage check (job $job) on $sha."
