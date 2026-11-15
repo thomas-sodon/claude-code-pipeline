@@ -198,7 +198,10 @@ checks:
 | `Reply coverage` | fails while a finding has no reply; re-runs after each review, on each reply or review, and when a maintainer posts, edits or deletes an `<!-- answerable:overflow-ack -->` comment (from `answerable-ai-review-replies.yml`) | require it on `main` to block merge on unanswered findings |
 
 `/process-comments`, which the monitor runs, fixes or answers each finding, so
-`Reply coverage` turns green without another push. `/bootstrap`'s next steps offer
+`Reply coverage` turns green without another push. It answers a finding listed in a
+review body instead of as a thread (an overflow finding) in that reviewer's own
+acknowledgement comment, `<!-- answerable:overflow-ack -->` for this one, so the gate
+counts it; another reviewer's go in `<!-- pipeline:overflow-ack -->`. `/bootstrap`'s next steps offer
 it; `/seed` offers it on an existing repository with no AI review check.
 
 ## Gate wrappers
