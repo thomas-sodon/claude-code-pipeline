@@ -1,6 +1,6 @@
 # Pipeline handoff: claude-code-pipeline
 
-<!-- Written by /handoff at 2026-11-15T13:23:47Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
+<!-- Written by /handoff at 2026-11-15T14:13:36Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
 
 ## Goal
 
@@ -11,7 +11,7 @@ This is work on the pipeline itself, not a product run. The person asked for a c
 - Roadmap: none (the pipeline's own repository has no design docs). Stage: the change is complete and pushed, and pull request #11 is open for the person's review.
 - Done: the review (eight reviewers plus a pass over a real product run in a private repository, each finding checked by a skeptic); the implementation in the commands, the workflows, the lint and the tests; the docs; a review of the whole diff by six fresh reviewers (62 findings, fixed); a regression check of those fixes (17 findings, fixed).
 - Branch: `claude/gallant-pascal-w9y8ez`, pushed at `f35d403`, which is `6938b42` plus the person's merge of `main` into the branch on 2026-11-15 (`main` now holds PR #10, the Mergify queue config) (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`). Pull request #11 (https://github.com/thomas-sodon/claude-code-pipeline/pull/11), opened on the person's word.
-- CI: every step of `.github/workflows/ci.yml` passed locally at `6938b42`, shellcheck and the gate-slot smoke test included. On PR #11 every check is green at `f35d403` (the CI job, the AI review, the reply check); the AI review's five findings on the PR were fixed and answered. The PR waits for the person's review and merge.
+- CI: every step of `.github/workflows/ci.yml` passed locally at `6938b42`, shellcheck and the gate-slot smoke test included. On PR #11 every check is green at `f35d403` (the CI job, the AI review, the reply check); the AI review's five findings on the PR were fixed and answered. Its five review threads are resolved (2026-11-15, on the person's word), GitHub reports it mergeable and clean, and `main` requires `check`, `Reply coverage` and `Review`, all passing. It waits for the person to merge or queue it.
 - Also unmerged on origin and not part of this work: `feat/idea-to-inception`.
 - Open PRs: #11 "Ask the person their choices, keep their answers, and show what was assumed" (`claude/gallant-pascal-w9y8ez`, this work; checks and review: see the PR). PR #10 (the Mergify merge queue) has merged: `.mergify.yml` queues a PR into `main` once its `check` job is green and squashes it; queueing is the person's action.
 - Uncommitted work: none.
@@ -31,6 +31,7 @@ none
 - `session.d3`: may the handoff be pushed to the state branch? → "Push what you need to pipeline/state" (2026-11-12).
 - `session.d4`: hand off to a new session, or finish in this one? → "Continue and finish" (2026-11-13).
 - `session.d5`: open a pull request for the branch? → "Open the pr" (2026-11-13).
+- `session.d6`: what to do with the comments on PR #11? → "Address comments in pr 11, iterate until green" (2026-11-15).
 
 These ids are this session's own: no pipeline workflow takes them as `answers`.
 
