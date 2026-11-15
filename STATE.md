@@ -1,6 +1,6 @@
 # Pipeline handoff: claude-code-pipeline
 
-<!-- Written by /handoff at 2026-11-15T14:41:30Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
+<!-- Written by /handoff at 2026-11-15T15:13:49Z from claude/gallant-pascal-w9y8ez in thomas-sodon/claude-code-pipeline. A new session: read this file and what it links, follow "Standing rules from the person", settle "Waiting on the person" and "Assumptions to review" with the person first, then do "Next". -->
 
 ## Goal
 
@@ -8,12 +8,12 @@ This is work on the pipeline itself, not a product run. The person asked for a c
 
 ## Where things stand
 
-- Roadmap: none (the pipeline's own repository has no design docs). Stage: the change is complete and pushed, and pull request #11 is open for the person's review.
-- Done: the review (eight reviewers plus a pass over a real product run in a private repository, each finding checked by a skeptic); the implementation in the commands, the workflows, the lint and the tests; the docs; a review of the whole diff by six fresh reviewers (62 findings, fixed); a regression check of those fixes (17 findings, fixed).
-- Branch: `claude/gallant-pascal-w9y8ez`, pushed at `22a7d12`: `6938b42`, then the person's merge of `main` on 2026-11-15 (`f35d403`, bringing PR #10, the Mergify queue config), then a second merge of `main` at `99857d1` the same day on the person's word (`22a7d12`, bringing PR #12: an overflow finding is answered in its reviewer's own acknowledgement comment). That merge conflicted in `.claude/commands/process-comments.md`, `.claude/workflows/plan-to-merged-pr.js` and `docs/REFERENCE.md`; each resolution keeps both sides, and one line of `.claude/workflows/ship-chain.js` was aligned with `main`'s change (`git log --oneline origin/main..origin/claude/gallant-pascal-w9y8ez`). Pull request #11 (https://github.com/thomas-sodon/claude-code-pipeline/pull/11), opened on the person's word.
-- CI: every step of `.github/workflows/ci.yml` passed locally on the merged tree before `22a7d12` was pushed (shellcheck was not re-run: the merge changed no shell script). On PR #11 every check is green on `22a7d12` (`check`, `Review`, `Reply coverage`, which are the three `main` requires), and the AI review reported nothing new on that head. Its five earlier findings were fixed and answered and their threads are resolved. GitHub reports the PR mergeable and clean, and its description records both merges of `main`. It waits for the person to merge or queue it.
+- Roadmap: none (the pipeline's own repository has no design docs). Stage: done. The person merged pull request #11 on 2026-11-15; `main` is at `bdb89f5` and holds the whole change.
+- Done: the review (eight reviewers plus a pass over a real product run in a private repository, each finding checked by a skeptic); the implementation in the commands, the workflows, the lint and the tests; the docs; a review of the whole diff by six fresh reviewers (62 findings, fixed); a regression check of those fixes (17 findings, fixed); five AI-review findings on the PR (fixed and answered); two merges of `main` into the branch, the second resolving conflicts with PR #12 in three files.
+- Branch: `claude/gallant-pascal-w9y8ez` is at `22a7d12` and fully merged: its tree is identical to `main`'s at `bdb89f5`. New work starts from `main`, not from this branch.
+- CI: `check`, `Review` and `Reply coverage` passed on `22a7d12` before the merge.
 - Also unmerged on origin and not part of this work: `feat/idea-to-inception`.
-- Open PRs: #11 "Ask the person their choices, keep their answers, and show what was assumed" (`claude/gallant-pascal-w9y8ez`, this work; checks and review: see the PR). PR #12 (overflow findings answered per reviewer) and PR #10 (the Mergify merge queue) have merged: `.mergify.yml` queues a PR into `main` once its `check` job is green and squashes it; queueing is the person's action.
+- Open PRs: none from this work. PR #11 "Ask the person their choices, keep their answers, and show what was assumed" (https://github.com/thomas-sodon/claude-code-pipeline/pull/11) is merged.
 - Uncommitted work: none.
 
 ## In flight
@@ -33,6 +33,7 @@ none
 - `session.d5`: open a pull request for the branch? → "Open the pr" (2026-11-13).
 - `session.d6`: what to do with the comments on PR #11? → "Address comments in pr 11, iterate until green" (2026-11-15).
 - `session.d7`: what to do about PR #11's conflicts with `main`? → "Resolve merge conflicts" (2026-11-15).
+- The person merged PR #11 themselves on 2026-11-15 (seen as a GitHub event, not said in this session).
 
 These ids are this session's own: no pipeline workflow takes them as `answers`.
 
@@ -57,12 +58,12 @@ These ids are this session's own: no pipeline workflow takes them as `answers`.
 
 ## Next
 
-The change is complete and pull request #11 is open. A person reviews and merges it; never merge it.
+Nothing is left of this task: the change is on `main`.
 
-Checks to run first:
-- Read PR #11's checks, reviews and unanswered comments through the GitHub access in use: they say what to do next.
-
-Then: fix a failing check that the change caused (reproduce it locally first, show the same check passing, push to `claude/gallant-pascal-w9y8ez`), and answer or apply review comments. Show the person "Assumptions to review" above and ask them to confirm or correct each; a correction is a change on this branch: make it, run every step of `.github/workflows/ci.yml`, commit and push.
+If the person asks for more:
+- Start from the latest `main`.
+- The items the change left open are recorded in `docs/PROCESS.md`: the 20-milestone budget still counts human gates; build lanes have no up-front question pass; a correction re-run of the design workflow must leave `milestones` out (the relay says so, the code does not enforce it); nothing tests the rules the commands state in prose.
+- The changed pipeline has not been run on a real product. The first real run is the place to check the asking: show the person "Assumptions to review" above if they have not confirmed them.
 
 The files under `runs/20261112T03*` on this branch are the instructions and lists of the earlier rounds, kept as a record: every item in them is done or recorded as open in `docs/PROCESS.md`.
 
