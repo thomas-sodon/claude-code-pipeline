@@ -15,7 +15,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
 - `--no-issue` skips Step 7 (issue detection); a caller (e.g. a workflow that already knows there is no issue, or that writes its own closing keyword) may also say "skip step 7".
 - `--base=<branch>` — the PR's base branch; a caller may instead say "its base branch is <branch>". `<base>` below is that branch, else `$MAIN_BRANCH`; it overrides `$MAIN_BRANCH` for the work check, the existing-PR check, the issue-detection commit range and the new PR's base (`gh pr create --base`, or the connector's `base`). Empty after `=`, containing whitespace, or a bare `--base` → stop with `error=invalid_argument`.
 
-A caller may also hand over the branch's plan (a path or its text); it is then *the plan* for Steps 7 and 8, ahead of any plan file found by name or pointer.
+A caller may also hand over the branch's plan (a path or its text); it is then *the plan* for Steps 7 and 8, ahead of any plan file found by name or pointer. A caller may also hand over the lines of the PR body's `## Assumptions to review` section, or name the plan section to copy there (Step 8).
 
 ## Steps
 
@@ -53,11 +53,11 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
    - **Plan file** — the first `Fixes: #<N>` (or `Closes: #<N>`) line under the plan's title. A plan the caller handed over wins. Otherwise prefer the branch-derived plan: strip a leading `feat/`/`fix/`/`refactor/` and read `$PLANS_DIR/<slug>.md`; if absent and the branch ends in a `/impl` uid segment (`-<token>` matching `^[0-9]{12}[0-9a-f]*$`), strip only that segment and retry once. Only if no branch-derived plan exists, fall back to `~/.claude/last-plan-by-folder.json` (keyed by absolute working directory; the named plan must still exist). That pointer is the most recently written plan for the folder, not for this branch, so discard it when it disagrees with `branch_issue`, and when `branch_issue` is absent unless `commit_issue` corroborates it. Call the survivor `plan_issue`.
    - **Commits** — a `Fixes #<N>` / `Closes #<N>` in `git log origin/<base>..HEAD`. Call it `commit_issue`.
 
-   Reconcile: no number → not an issue-closing PR, add no keyword. All surfaced numbers agree → that issue. Distinct numbers → ask the user; never guess.
+   Reconcile: no number → not an issue-closing PR, add no keyword. All surfaced numbers agree → that issue. Distinct numbers → ask the user; never guess. When no one can answer (the invoking prompt says the run is unattended, or there is no question tool), add no keyword and name the numbers and where each came from in the report.
 
    Verify a settled number with `$GH_WRAPPER gh issue view <N> --json number,state,title` (connector: `issue_read` `get`). Open → use it. Closed or not found → omit the keyword and tell the user what was found.
 
-8. **Create the PR** (only when Step 6 found no open PR). Non-draft; include `Fixes #<N>` only when Step 7 settled an open issue. **Deploy notes:** find the plan as Step 7's *Plan file* bullet does, even when Step 7 was skipped — but take the folder pointer's plan only when its `## Critical files` overlap the files `git diff --name-only origin/<base>...HEAD` lists. When that plan has a `## Rollout` section, copy its body verbatim (credentials redacted) under `## Deploy notes`; omit the section when there is no such plan or no Rollout.
+8. **Create the PR** (only when Step 6 found no open PR). Non-draft; include `Fixes #<N>` only when Step 7 settled an open issue. **Deploy notes:** find the plan as Step 7's *Plan file* bullet does, even when Step 7 was skipped — but take the folder pointer's plan only when its `## Critical files` overlap the files `git diff --name-only origin/<base>...HEAD` lists. When that plan has a `## Rollout` section, copy its body verbatim (credentials redacted) under `## Deploy notes`; omit the section when there is no such plan or no Rollout. **Assumptions to review:** the choices made while building this branch that nobody confirmed with the person, and what the person answered, shown where whoever merges the PR can correct one first. The person corrects an `assumed` line with a review comment on the PR, which `/process-comments` applies (the `plan-to-merged-pr` monitor runs it). A correction is never passed as an answer to a ship-only or monitor-only run: such a run builds nothing, so nothing would apply it. When the caller hands over this section's lines, or names the plan section to copy, the section holds exactly what the caller says and the rest of this paragraph does not apply. Otherwise take it from the same plan as the deploy notes: when that plan has a `## Assumptions to review` section (a workflow saves the plan with one), copy its body verbatim (credentials redacted) under the same heading; when it has no such section but has a `## Assumptions` section with at least one bullet (`/plan` and `/bug-fix` write one), write this sentence, then each of its bullets as `- assumed (plan): <the bullet's text>`: `Choices made for this branch that the person has not confirmed. To correct one, leave a review comment on this PR before it is merged.` Apart from that sentence, add no line of your own, reword none and drop none. Omit the section when there is no such plan, or the plan has neither section.
    ```
    $GH_WRAPPER gh pr create --base "<base>" --title "<title>" --body "$(cat <<'EOF'
    ## Summary
@@ -68,6 +68,9 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
    ## Deploy notes
    <the plan's ## Rollout body>
 
+   ## Assumptions to review
+   <the lines the caller handed over, or the plan's, as above>
+
    ## Test plan
    - [ ] `$QUALITY_GATES` pass
    - [ ] <additional items>
@@ -77,7 +80,7 @@ A caller may also hand over the branch's plan (a path or its text); it is then *
    Connector: `create_pull_request` with `head: <branch>`, `base: <base>`, the same title, the body as a plain string, and `draft: false`.
    Keep the title under 70 characters. End the body with the attribution line the session uses for PRs.
 
-9. **Report.** Show the PR URL (new from Step 8, or the existing one from Step 6), its base, which issue, if any, auto-closes on merge, and whether deploy notes were included (from which plan). Unless a workflow that called this command monitors the PR itself, add that nothing watches it now: CI, review comments and conflicts are babysat by the `plan-to-merged-pr` workflow in monitor-only mode, `{ pr: <N>, branch: <branch>, dir: <this checkout> }`, re-run (or scheduled) whenever the PR may have moved.
+9. **Report.** Show the PR URL (new from Step 8, or the existing one from Step 6), its base, which issue, if any, auto-closes on merge, and whether deploy notes were included (from which plan). When Step 8 wrote a `## Assumptions to review` section, say how many lines it holds and where they came from (the caller, or which section of which plan), and that the person reads them before the PR is merged: they correct an `assumed` line with a review comment on the PR, which `/process-comments` (or the monitor, which runs it) applies on the branch before the merge. Say too that such a correction is never an answer to a ship-only or monitor-only run of `plan-to-merged-pr`: nothing would apply it. Unless a workflow that called this command monitors the PR itself, add that nothing watches it now: CI, review comments and conflicts are babysat by the `plan-to-merged-pr` workflow in monitor-only mode, `{ pr: <N>, branch: <branch>, dir: <this checkout> }`, re-run (or scheduled) whenever the PR may have moved.
 
 ## Safety
 

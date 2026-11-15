@@ -445,6 +445,9 @@ class PreCompact(Orchestrating):
         text = self.hook('PreCompact', trigger='auto')
         self.assertTrue(text.startswith('Keep the pipeline state in this summary'), text)
         self.assertTrue(text.endswith('and the exact next action.'), text)
+        # An answer is kept with what a later run needs to pass it back: its id, who asked, the question text and the date.
+        self.assertIn("the answers the person gave, each with its id, what asked it (the workflow, and its lane or doc), "
+                      "the question's text, the answer in their words and its date; the standing rules the person set;", text)
         for said in ('handoff', 'end the session', 'fresh session'):
             self.assertNotIn(said, text, 'the guard asked for no handoff, so the session goes on with its budget')
         self.assertIsNone(self.status()['precompact_blocked'])
@@ -703,6 +706,10 @@ class SessionStart(Guard):
         text = self.context()
         self.assertIn('Read it before acting', text)
         self.assertIn('python3 .claude/scripts/pipeline-state.py get STATE.md', text)
+        # The new session asks before it acts: the open questions and the assumptions to review, in one batch.
+        self.assertIn('Before you do its Next: follow its "Standing rules from the person", and put its "Waiting on the '
+                      'person" questions and its "Assumptions to review" to the person in one batch', text)
+        self.assertIn('Never answer or confirm one for them.\n\nIts ## Next section:', text)
         self.assertRegex(text, r'saved \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC \(just now\)')
         self.assertIn('Run the workflow `brief-to-proposals`', text)
         self.assertIn('## not a heading: inside a fence', text)

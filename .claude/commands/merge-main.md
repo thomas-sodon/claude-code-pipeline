@@ -29,8 +29,8 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
    - For each conflicted file, read the whole file and both sides of every hunk. Read `git log --oneline HEAD..origin/$MAIN_BRANCH -- <file>` and `git log --oneline origin/$MAIN_BRANCH..HEAD -- <file>` to learn what each side was doing.
    - Produce a merged result that keeps **both** intents: the branch's intended change (as the plan states it, when there is one) *and* main's change. Never silently drop either side to match the plan.
    - Remove all conflict markers, `git add <file>`, and finish with `git commit --no-edit`.
-   - For an ambiguous or high-risk resolution (both sides changed the same logic incompatibly), explain it to the user, citing the plan step or acceptance criterion that drove it.
-   - When neither the plan nor either side's intent decides which behaviour wins, never pick one: that is the person's call. `git merge --abort` and push nothing, then ask them, with the options (keep ours, keep theirs, a named combination) and the one you recommend; when no one can answer (the invoking prompt says the run is unattended, or there is no question tool), stop with `error=needs_input` and print that question instead.
+   - For an ambiguous or high-risk resolution (both sides changed the same logic incompatibly), explain it to the user, citing by its title the plan step or acceptance criterion that drove it.
+   - When neither the plan nor either side's intent decides which behaviour wins, never pick one: that is the person's call. So is a resolution that would change what the person settled (an answer the invoking prompt carries, an `answered` line of the plan's `## Assumptions to review` section, a decision tagged `(person, …)` in the design doc the plan or the invoking prompt names), whichever side holds it. The question has the options keep ours, keep theirs and a named combination, with the one you recommend first; it names the conflicted file and behaviour, and any plan step or decision by its title (a number may follow the title, but a number alone is never enough). An answer to it that the invoking prompt hands in settles it: resolve as it says, and never ask it again. Otherwise one of three cases holds. Someone can answer (an interactive session with a question tool): `git merge --abort`, push nothing, ask, and once they answer merge again and resolve as they said. No one can answer (the invoking prompt says the run is unattended, or there is no question tool): `git merge --abort`, push nothing, and stop with `error=needs_input`, printing the question with an id (`q1`), why it blocks (what changes with the answer), its options and the one you recommend. The invoking prompt says to proceed on assumptions: do not abort; resolve with the option you recommend (where the person settled one side, always that side) and list the question with the option taken in the report.
 
 6. **Run the quality gates** in the foreground with the maximum tool timeout — never in the background, since a backgrounded run can be reaped when the turn yields. Run exactly one of these, with the text of `QUALITY_GATES` in place of `<QUALITY_GATES>`:
    ```
@@ -52,11 +52,13 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md`:
      4. Push again. At most 3 recovery cycles; then stop with `error=push_contended` — the branch is being actively pushed and the user must coordinate.
    - Any other failure (auth, protected branch, hook) → stop and surface it; do not retry blindly.
 
-8. **Report.** Commits merged from `origin/$MAIN_BRANCH`; conflicts and how each was resolved; which originating plan informed them and how it was found (branch name, folder pointer, or none); gate result; whether upstream branch commits had to be integrated; whether the push succeeded.
+8. **Report.** Commits merged from `origin/$MAIN_BRANCH`; conflicts and how each was resolved; which originating plan informed them and how it was found (handed over, branch name, folder pointer, or none); each question asked about a conflict, with the person's answer or, on assumptions, the option taken; gate result; whether upstream branch commits had to be integrated; whether the push succeeded.
 
 ## Originating plan (for conflict resolution)
 
 Only when step 5 has conflicts. Read-only, best-effort context: a missing or unclear plan never blocks, reorders, or aborts the merge — fall back to git history.
+
+A plan the caller handed over (a path or its text) is the originating plan, ahead of the lookup below.
 
 1. **From the branch name.** `git rev-parse --abbrev-ref HEAD`, strip a leading `feat/`/`fix/`/`refactor/`, and read `$PLANS_DIR/<slug>.md`. If absent and the branch ends in a `/impl` uid segment (`-<token>` matching `^[0-9]{12}[0-9a-f]*$`), strip only that segment and retry once — never strip an ordinary slug word. When `$PROPOSALS_DIR` is set and the slug names a doc there (as a `/impl` doc-mode branch, `feat/<doc-slug>-step<M>-…`, does), that doc's steps and acceptance criteria may serve as the intent source if no plan file exists.
 2. **Folder pointer fallback.** Otherwise read `~/.claude/last-plan-by-folder.json`, look up this absolute working directory, and use the named plan if it still exists and is non-empty — announcing that it came from the pointer so the user can object.
@@ -68,6 +70,7 @@ Only when step 5 has conflicts. Read-only, best-effort context: a missing or unc
 - Never run on `$MAIN_BRANCH`; never rebase; never force-push.
 - Never push while a gate is failing.
 - Never discard the branch's changes in favour of main, or main's in favour of the plan — always a proper merge.
+- Never resolve a conflict in a way that changes what the person settled: that is a question for them (step 5).
 - Never `git stash` (parallel worktrees share the stash); stop on a dirty tree instead.
 - Never write plan files or `~/.claude/last-plan-by-folder.json`.
 - Explain every non-trivial conflict resolution.

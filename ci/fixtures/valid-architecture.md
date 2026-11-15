@@ -22,7 +22,7 @@ A web app calls an API that parses uploaded statements in-process.
 
 ## Decisions
 
-### D1: One repository
+### D1: One repository (assumed)
 
 - Options: one repository, one per package.
 - Choice: one repository.

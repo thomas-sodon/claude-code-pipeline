@@ -21,7 +21,12 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 1. **Pull plan context.** Before reading the diff, recover what the branch was *trying* to do.
 
-   **1a — Plan file (primary).** Read `~/.claude/last-plan-by-folder.json` (keyed by absolute working directory, maintained by `/plan`). If this directory's entry points at an existing, non-empty plan, use it and announce `Plan context: <path> (written <written_at>)`. Otherwise fall back to the most recently modified non-empty `*.md` in `$PLANS_DIR` and warn `No folder plan pointer — using the most-recent plan globally; verify it matches this branch`. If none exists, `plan_path` is null. Read the plan in full: goal, files/symbols touched, verification/acceptance criteria, and its `## Rollout` if any. If most paths it cites do not exist in the tree, warn that it looks unrelated, set `plan_path` to null, and lean on 1b and the code. Never edit the plan.
+   **1a — Plan file (primary).** Find the plan this branch was built from, the way `/merge-main` finds its originating plan. Take the first of these that exists:
+   - **A plan the caller handed over** (a path or its text). Use it, ahead of any plan file found by name or pointer.
+   - **From the branch name.** `git rev-parse --abbrev-ref HEAD`, strip a leading `feat/`/`fix/`/`refactor/`, and read `$PLANS_DIR/<slug>.md`. If it is absent and the branch ends in a `/impl` uid segment (`-<token>` matching `^[0-9]{12}[0-9a-f]*$`), strip only that segment and retry once. Announce `Plan context: <path> (from the branch name)`.
+   - **Folder pointer.** This directory's entry in `~/.claude/last-plan-by-folder.json` (keyed by absolute working directory, maintained by `/plan`). Use the plan it names only when that file exists, is non-empty, and cites at least one file this review covers (the paths `git status --porcelain` lists, plus, unless the scope is `uncommitted`, those `git diff --name-only <base>...HEAD` lists, with `<base>` as Step 2 resolves it): the pointer is the folder's most recent plan, not this branch's. Announce `Plan context: <path> (from the folder pointer, written <written_at>)`.
+
+   Never fall back to the newest plan in `$PLANS_DIR`: the directory is shared by every checkout, and its newest plan may belong to another branch. If none of the three exists, `plan_path` is null (it is also null for a plan handed over as text). Read the plan in full: goal, files/symbols touched, verification/acceptance criteria, its `## Rollout` if any, and its `## Assumptions` and `## Assumptions to review` sections if any. If most paths it cites do not exist in the tree, warn that it looks unrelated, set `plan_path` to null, and lean on 1b and the code. Never edit the plan.
 
    **1b — Session transcript (supplement).** Claude Code stores sessions under `~/.claude/projects/<slug>/`, where `<slug>` is the absolute working directory with every non-alphanumeric character replaced by `-`. From the most recent non-empty `.jsonl` there, extract the first user message, any `ExitPlanMode` plan inputs, and the final `TodoWrite` snapshot. These files are large — parse them with a script, never Read them whole:
 
@@ -54,7 +59,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
    **Synthesize** a 3–5 line **Plan Context**: the plan file is the authoritative intent; the transcript supplies the original ask and what landed (and its `ExitPlanMode` plan stands in when there is no plan file). Prefer the plan file when they disagree and note the divergence. If nothing was recovered, say so — never invent intent. If the context is unrelated to the diff, say so and set `plan_path` to null.
 
-   **1c — Proposal.** When the plan's Context (or the caller) names a proposal or design doc, read its named steps and its `## Security and privacy` and `## Rollout and operations` sections; Steps 5 and 6 judge the diff against them too. A named doc that does not exist is a concern, not a stop.
+   **1c — Proposal.** When the plan's Context (or the caller) names a proposal or design doc, read its named steps and its `## Decisions`, `## Security and privacy` and `## Rollout and operations` sections; Steps 5 and 6 judge the diff against them too. A decision whose heading ends in `(person, …)` is the person's own choice (Step 5, *What the person settled*). A named doc that does not exist is a concern, not a stop.
 
    Then recall this branch's **review-findings ledger** (below).
 
@@ -75,6 +80,7 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 5. **Check project rules.** The change must respect the architecture invariants and conventions in the project's `CLAUDE.md` (and any docs it points to). Ground each claim in today's tree — cite the code, not memory. Any new data flowing into a prompt, log, or persisted file must be bounded.
    - **Data handling.** Trace personal data (names, emails, addresses, phone or account numbers, identifiers) into fixtures, logs, error messages, analytics events, prompts sent to third-party APIs, and persisted data; judge each against the `CLAUDE.md` invariants and the proposal's Security and privacy. Breaking an invariant is a bug; an unjudged new flow is a concern. A listed fixture or data file that could hold personal data or secrets, with no provenance or redaction note beside it (a README in its directory, a header comment, a sidecar), is a concern.
    - **Deploy readiness.** A migration, new env var or secret, feature flag or scheduled job in the diff with no entry in the plan's `## Rollout` (or the proposal's Rollout and operations) is a concern. A destructive or non-reversible migration (dropping or renaming a table or column, a data-rewriting backfill, a narrowing type change) with no stated plan for it (backup, expand/contract, rollback) is a bug.
+   - **What the person settled.** The person settled a choice when an answer or framing the invoking prompt carries states it, when the plan's `## Assumptions to review` section has an `answered` line for it, or when the design doc records it in a decision tagged `(person, …)`. A change that departs from such a choice without a newer answer from the person is a bug, whatever reason the code, a comment or the plan gives. This review picks no side: describe the finding as the question to ask the person, with its options, naming both what they settled and what the change does, never as a fix to apply. A **person-owned choice** the change makes that no doc, plan or answer settles (money or an account in the person's name; a new third-party service or dependency that receives data; a change to what the product promises its users or to its public interface; a licence; a name: product, package, domain, organization or bundle id) is a concern whose fix is the question to ask. A choice nobody confirmed (a bullet of the plan's `## Assumptions` section, an `assumed` line of its `## Assumptions to review` section, or one the invoking prompt hands over as assumed) is no defect while the code follows it; a reason to change one is a concern that names the question to ask the person. A question names steps and decisions by title; a number may follow the title, but a number alone is never enough, because numbers move between revisions.
 
 6. **Look for bugs and logic errors.** Off-by-one, edge cases, null/empty handling; races in async code or file I/O; unbounded growth; exceptions caught at the wrong level or swallowed; type escape hatches; command injection, path traversal, secrets in logs.
 
@@ -88,11 +94,11 @@ Read the `## Pipeline config` section of the project's root `CLAUDE.md` (`KEY: v
 
 11. **Persist the ledger** (below) — on every run, clean or not. It and its copy on the state branch are the command's only writes.
 
-12. **Hand off — do not fix.** Never invoke `/polish` from here. Recommend it in a fresh session when there are findings; it recalls the ledger and fixes every recorded finding. If the scope is `committed` only and the working tree is clean, `/polish` cannot apply the findings — ask the user how to proceed (revert, follow-up branch, fix-forward).
+12. **Hand off — do not fix.** Never invoke `/polish` from here. Recommend it in a fresh session when there are findings; it recalls the ledger and fixes every recorded finding, asking the person first where a finding's fix is a question for them. If the scope is `committed` only and the working tree is clean, `/polish` cannot apply the findings — ask the user how to proceed (revert, follow-up branch, fix-forward).
 
 ## Severities
 
-- **bug** — will cause incorrect behavior; blocks merge.
+- **bug** — will cause incorrect behavior, or changes a choice the person made without a newer answer from them; blocks merge.
 - **concern** — design, safety, or invariant issue that needs discussion; may block merge.
 - **suggestion** — a meaningful improvement; not blocking alone.
 - **nit** — trivial polish (wording, naming, small cleanup); never blocking.
@@ -117,7 +123,7 @@ A copy lives on the repository's state branch (origin's `pipeline/state`, writte
           "file": "src/parser.ts",
           "line": 42,                  // best-effort; never the match key
           "title": "off-by-one in chunk split",
-          "detail": "<one or two lines: why it matters + the fix>",
+          "detail": "<one or two lines: why it matters + the fix, or the question to ask the person>",
           "status": "new",             // new | open | fixed
           "first_seen": "2026-01-01T12:00:00Z",
           "resolved_at": null

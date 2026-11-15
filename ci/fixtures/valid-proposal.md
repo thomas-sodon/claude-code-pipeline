@@ -30,7 +30,7 @@ A pure parser package feeds an import endpoint. Example input:
 
 ## Decisions
 
-### D1: Parse in-process
+### D1: Parse in-process (person, 2026-11-05, intake.q2)
 
 - Options: in-process parser, hosted extraction service.
 - Choice: in-process parser.
